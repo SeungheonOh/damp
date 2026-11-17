@@ -1,0 +1,46 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+// Cross-contract calls (docs/calls.md): adder.compact and rich.compact are the callees.
+contract Adder {
+  circuit addTo(x: Field): Field;
+  circuit clear(): [];
+}
+struct Pt { x: Field; y: Uint<8>; }
+contract Rich {
+  circuit mix(p: Pt, b: Bytes<32>, k: Uint<16>): [Pt, Bytes<32>];
+}
+export ledger adder: Adder;
+export ledger rich: Rich;
+export ledger last: Field;
+export ledger lastB: Bytes<32>;
+constructor(a: Adder, r: Rich) {
+  adder = disclose(a);
+  rich = disclose(r);
+}
+export circuit bump(x: Field): Field {
+  const r = adder.addTo(disclose(x));
+  last = r;
+  return r;
+}
+export circuit maybe(go: Boolean, x: Field): Field {
+  if (disclose(go)) {
+    last = adder.addTo(disclose(x));
+  }
+  return last;
+}
+export circuit twice(x: Field, y: Field): Field {
+  const a = adder.addTo(disclose(x));
+  const b = adder.addTo(disclose(y));
+  return a + b;
+}
+export circuit via(a: Adder, x: Field): Field {
+  return disclose(a).addTo(disclose(x));
+}
+export circuit reset(): [] {
+  adder.clear();
+}
+export circuit fancy(p: Pt, b: Bytes<32>, k: Uint<16>): Field {
+  const [q, bb] = rich.mix(disclose(p), disclose(b), disclose(k));
+  lastB = bb;
+  return q.x + (q.y as Field);
+}

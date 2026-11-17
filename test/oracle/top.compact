@@ -1,0 +1,16 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+// The top of a nested call: top -> relay.compact -> adder.compact.
+contract Relay {
+  circuit relay(x: Field): Field;
+}
+export ledger relay: Relay;
+export ledger got: Field;
+constructor(r: Relay) {
+  relay = disclose(r);
+}
+export circuit go(x: Field): Field {
+  const r = relay.relay(disclose(x));
+  got = r;
+  return r;
+}

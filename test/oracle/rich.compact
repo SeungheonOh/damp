@@ -1,0 +1,11 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+// Called by caller.compact: structure and bytes arguments, several results.
+export struct Pt { x: Field; y: Uint<8>; }
+export ledger last: Pt;
+export ledger tag: Bytes<32>;
+export circuit mix(p: Pt, b: Bytes<32>, k: Uint<16>): [Pt, Bytes<32>] {
+  last = disclose(p);
+  tag = disclose(b);
+  return [Pt { x: p.x + k, y: p.y }, b];
+}

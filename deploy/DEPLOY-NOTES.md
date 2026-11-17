@@ -327,6 +327,50 @@ Findings:
   observed on chain; nothing after `keep` changed the wallet or `held` except
   that one `mergeHeld`.
 
+## Cross-contract calls
+
+`node src/calls.mjs [simple|nested|cast|all]` (2026-11-16, fresh
+`docker compose -p damp-local -f compose.yml up -d --wait`, midnight-js 5.0.0,
+real proofs from the proof server). All contracts are Damp builds from
+`../build/oracle-cc/lean`, packaged by `executor/src/package.mjs` into
+`build/calls/<name>`. Logs: `out/calls-simple.log`, `out/calls-nested.log`,
+`out/calls-all.log`, `out/calls-cast.log`; results `out/calls-*-result.json`.
+
+What midnight-js 5.0.0 needs for a circuit that makes a call (read in
+`midnight-js-contracts/dist/index.js`, `runLedger9Call`, and confirmed by the
+runs): `providers.contractModuleProvider` (`{ resolve(address) => thunk | undefined }`,
+here the packaged callee's `contract/index.js`); callee states are read from the
+indexer itself (`makeCalleeStateResolver`, `queryZSwapAndContractState` at the
+root's block); the transaction gets one `ContractCallPrototype` per entry of
+`callProofDataTrace`, each callee with the opening the runtime bound it with;
+each call's key location embeds the hash of its deployed verifier key, which a
+`ZKConfigRegistry` resolves.
+
+1. First attempt, `zkConfigProvider: new ZKConfigRegistry([...])`:
+   `CALL caller.bump("5") FAILED: source.getArtifactRuntimeVersion is not a function`
+   (`resolveArtifactEra` reads the runtime version from `zkConfigProvider`;
+   the registry is not a `ZKConfigProvider` and has no such method).
+2. With the caller's own `NodeZkConfigProvider` as `zkConfigProvider` and the
+   registry only in `httpClientProofProvider(url, registry)`:
+   - simple: `[caller] DEPLOYED address=2deaed1d…e0ab … block=69`;
+     `CALL caller.bump("5") result="5" tx=56285acf21526467734c6a9b37fa77039d61899fb9e49c8b2b88b0eb90a7ec49 block=72 status=SucceedEntirely`;
+     indexer before `{"adder":{"total":"0"},"caller":{…"last":"0"…}}`, after
+     `{"adder":{"total":"5"},"caller":{…"last":"5"…}}`; latest action of the
+     adder `{"__typename":"ContractCall",…,"entryPoint":"addTo","transaction":{"hash":"56285acf…","block":{"height":72}}}`,
+     of the caller the same transaction with `"entryPoint":"bump"`; the
+     transaction: `"transactionResult":{"status":"SUCCESS"}`, contract
+     actions `bump` (caller), `addTo` (adder).
+   - nested: `CALL top.go("9") result="14" tx=bd1219fd6a742cf315a6d838e55adb67b922c8a07b85e3d9193c8efff0f042d0 block=81 status=SucceedEntirely`;
+     after `{"adder":{"total":"14"},"relay":{…"hops":"1"},"top":{…"got":"14"}}`;
+     the transaction's contract actions `go`, `relay`, `addTo`, status `SUCCESS`.
+   - cast (`picker`, the adder's address passed as plain bytes, then stored in
+     a `Map` and read back): `viaArg(…, 3)` `result="3" block=139`,
+     `register(1, …)` `block=142`, `viaMap(1, 4)` `result="7" tx=2b200d05bbf553d90786792c94b52c92554df66ba9670053f86fae6b76712d08 block=145`,
+     all `SucceedEntirely`; adder `{"total":"7"}`; transaction actions
+     `viaMap` (picker), `addTo` (adder), status `SUCCESS`.
+
+The network was taken down afterwards.
+
 ## Not covered
 
 * Only `counter` and `vault` were tried on chain. `step`, `shapes`, `loops`,

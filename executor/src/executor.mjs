@@ -495,7 +495,7 @@ const ledgerGroups = (env, active, ops) =>
  * new private / ledger state once the statement has succeeded (in Lean the
  * new state is part of the step's result).
  */
-function step(io, st, s, ev) {
+async function step(io, st, s, ev) {
   switch (s.kind) {
     // | .bind v _ e => do let x ← e.eval; pure { s with env := s.env.set v x }
     case 'bind':
@@ -526,7 +526,7 @@ function step(io, st, s, ev) {
       if (s.outs.length === 0) {
         if (g === 1n) {
           const argVals = evalList(s.args, st.env);
-          const { vals, commit } = io.witness(s, argVals, ev);
+          const { vals, commit } = await io.witness(s, argVals, ev);
           if (vals.length !== 0) fail(`witness ${s.name} returned a value where none is declared`);
           commit();
         }
@@ -537,7 +537,7 @@ function step(io, st, s, ev) {
         //   let argVals ← Expr.evalList p s.env args
         const argVals = evalList(s.args, st.env);
         //   let (vals, private_) ← O.witness name argVals s.private_
-        const { vals, commit } = io.witness(s, argVals, ev);
+        const { vals, commit } = await io.witness(s, argVals, ev);
         //   let env ← assign s.env outs vals
         assign(st.env, s.outs, vals, `result of witness ${s.name}`);
         //   pure { s with env, private_, priv := s.priv ++ vals }
@@ -653,6 +653,7 @@ function oracles(spec, witnesses, context, ppd) {
     witness(s, argVals, ev) {
       ev.witness = { name: s.name, args: argVals, answer: null };
       if (Object.hasOwn(BUILTIN_WITNESSES, s.name)) return builtinWitness(s, argVals, ev, context, ppd);
+      if (isCallWitness(s.name)) return callWitness(spec, s, argVals, ev, context, ppd);
       const impl = witnesses[s.name];
       if (typeof impl !== 'function') fail(`no implementation for witness ${s.name}`);
       let next, aligned, vals;
@@ -778,6 +779,154 @@ function builtinWitness(s, argVals, ev, context, ppd) {
   };
 }
 
+// ---------------------------------------------------------------- cross-contract calls
+//
+// A call of circuit `c` of a contract of type `I` (an `interface` in Lean;
+// Compact's `contract I { … }`) is, in the IR, a witness named `call:I.c`
+// whose arguments are the callee's address (2 field elements) and the call's
+// arguments, and whose answer is the callee's results followed by the random
+// opening of the communication commitment (Damp/Calls.lean). To the definition
+// it is a witness like any other. The executor answers it by running the
+// callee through the runtime's `crossContractCall`, exactly what compactc's
+// module does at the call site: the runtime resolves the callee's module
+// (`context.moduleProvider`) and deployed state (`context.stateProvider`),
+// checks the module against the declared contract type and its verifier key
+// fingerprints against the deployed keys, runs the callee's circuit on its own
+// query context (its proof data goes onto `context.callProofDataTrace`), and
+// samples the opening. The runtime also makes the kernel claim of the call on
+// the caller's query context; in Damp that claim is an instruction sequence of
+// the caller's circuit (the ledger statement after the witness), so the
+// runtime's own claim is undone here and the circuit's runs instead: the same
+// instructions with the same operands, so the same transcript and state.
+
+export const CALL_PREFIX = 'call:';
+const isCallWitness = (name) => typeof name === 'string' && name.startsWith(CALL_PREFIX);
+
+/** The contract type and declared circuit a call witness names, from `spec.interfaces`. */
+function calleeOf(spec, name) {
+  const rest = name.slice(CALL_PREFIX.length);
+  const dot = rest.lastIndexOf('.');
+  const iface = (spec.interfaces ?? []).find((i) => i.name === rest.slice(0, dot));
+  return { iface, circuit: iface?.circuits.find((c) => c.name === rest.slice(dot + 1)) };
+}
+
+const isInterface = (spec, shape) =>
+  shape.kind === 'struct' && shape.fieldNames.length === 1 && shape.fieldNames[0] === 'bytes' &&
+  (spec.interfaces ?? []).some((i) => i.name === shape.name);
+
+/**
+ * A shape as a signature type (the runtime's `SignatureType`, compactc's
+ * `circuitSignatures` / `declaredInterfaces`). A struct shape named after one
+ * of the contract's contract types is that contract type. Damp's enum shape
+ * carries neither the enum's name nor its variants' names, so an enum is
+ * written with placeholders: it conforms to a Damp contract's, not to
+ * compactc's.
+ */
+function signatureType(spec, shape) {
+  switch (shape.kind) {
+    case 'field': return { tag: 'Field' };
+    case 'bool': return { tag: 'Boolean' };
+    case 'uint': return { tag: 'Uint', maxval: String(shape.max) };
+    case 'bytes': return { tag: 'Bytes', length: Number(shape.length) };
+    case 'enum':
+      return { tag: 'Enum', name: 'enum', elements: Array.from({ length: Number(shape.max) + 1 }, (_, i) => String(i)) };
+    case 'struct':
+      if (isInterface(spec, shape)) {
+        return { tag: 'Contract', name: shape.name, circuits: declarationOf(spec, spec.interfaces.find((i) => i.name === shape.name)) };
+      }
+      return { tag: 'Struct', name: shape.name, elements: shape.fields.map((f, i) => ({ name: shape.fieldNames[i], type: signatureType(spec, f) })) };
+    case 'tuple': return { tag: 'Tuple', types: shape.elems.map((e) => signatureType(spec, e)) };
+    case 'vector': return { tag: 'Vector', length: Number(shape.length), type: signatureType(spec, shape.elem) };
+    default: throw new Error(`unknown shape ${shape.kind}`);
+  }
+}
+
+/** A contract type as the runtime's `InterfaceDescriptor` (compactc's `declaredInterfaces[I]`). */
+export function declarationOf(spec, iface) {
+  return Object.fromEntries(iface.circuits.map((c) => [c.name, {
+    argumentTypes: c.args.map((a) => signatureType(spec, a.shape)),
+    resultType: signatureType(spec, c.result),
+  }]));
+}
+
+/** compactc's `circuitSignatures` for a Damp contract: what a caller's runtime checks it against. */
+export function circuitSignatures(spec) {
+  return Object.fromEntries(spec.circuits.map((c) => [c.name, {
+    pure: !c.proof && !c.body.some((s) => s.kind === 'witness'),
+    provable: !!c.proof,
+    argumentTypes: c.args.map((a) => signatureType(spec, a.shape)),
+    resultType: signatureType(spec, c.result),
+  }]));
+}
+
+/** compactc's `declaredInterfaces` for a Damp contract. */
+export const declaredInterfaces = (spec) =>
+  Object.fromEntries((spec.interfaces ?? []).map((i) => [i.name, declarationOf(spec, i)]));
+
+const alignedKey = (a) =>
+  JSON.stringify(a, (_k, v) =>
+    (v instanceof Uint8Array ? Array.from(v, (b) => b.toString(16).padStart(2, '0')).join('') : typeof v === 'bigint' ? `${v}` : v));
+
+/**
+ * `O.witness` for a cross-contract call: decode the address and arguments, run
+ * the callee, and answer with the field elements of its result and of the
+ * commitment's opening. The callee runs when the witness is asked: its answer
+ * is its result. If the statement then fails, so does the whole call, whose
+ * context is a copy, so nothing the callee did survives. At commit, the two
+ * aligned values compactc's module records are pushed onto the private
+ * transcript: the callee's output, then the opening.
+ */
+async function callWitness(spec, s, argVals, ev, context, ppd) {
+  let vals, outputs;
+  try {
+    const { iface, circuit } = calleeOf(spec, s.name);
+    if (!circuit) throw new Error(`not a circuit of a contract type declared in contract.json`);
+    let k = 0;
+    const next = () => {
+      if (k >= argVals.length) throw new Error('too few arguments');
+      return argVals[k++];
+    };
+    const address = fromFields(BYTES32, next);
+    const args = circuit.args.map((a) => build(a.shape, (ty) => fromFields(ty, next)));
+    if (k !== argVals.length) throw new Error(`${argVals.length} argument field element(s) for ${k}`);
+    const back = [...toFields(BYTES32, address), ...fieldsOfLeaves(circuit.args.flatMap((a, i) => flatten(a.shape, args[i])))];
+    if (back.some((x, i) => x !== argVals[i])) throw new Error('arguments are not values of their types');
+
+    // The runtime's own claim of the call is undone: the circuit claims it.
+    const cc = context.callContext;
+    const self = cc.contractAddress;
+    const saved = { qc: cc.currentQueryContext, gas: cc.currentGasCost, cell: context.queryContexts?.[self], cost: context.gasCosts?.[self] };
+    const scratch = emptyProofData();
+    const result = await rt.crossContractCall({
+      context,
+      interfaceName: iface.name,
+      declaration: declarationOf(spec, iface),
+      calleeCircuitId: circuit.name,
+      calleeAddress: rt.decodeContractAddress(address),
+      partialProofData: scratch,
+      args,
+    });
+    cc.currentQueryContext = saved.qc;
+    cc.currentGasCost = saved.gas;
+    if (context.queryContexts) context.queryContexts[self] = saved.cell;
+    if (context.gasCosts) context.gasCosts[self] = saved.cost;
+
+    outputs = scratch.privateTranscriptOutputs;
+    if (outputs.length !== 2) throw new Error(`the runtime recorded ${outputs.length} private outputs, expected 2`);
+    const leaves = flatten(circuit.result, result);
+    if (alignedKey(alignedOfLeaves(leaves)) !== alignedKey(outputs[0])) {
+      throw new Error('the callee\'s output is not its result as the contract type declares it');
+    }
+    vals = [...fieldsOfLeaves(leaves), rt.valueToBigInt(outputs[1].value)];
+    if (!vals.every(isFieldElement)) throw new Error('result is not made of field elements');
+  } catch (e) {
+    ev.witness.error = errorText(e);
+    return fail(`cross-contract call ${s.name.slice(CALL_PREFIX.length)} refused: ${errorText(e)}`);
+  }
+  ev.witness.answer = vals;
+  return { vals, commit: () => { ppd.privateTranscriptOutputs.push(...outputs); } };
+}
+
 // ---------------------------------------------------------------- ledger view
 //
 // The public state as JS values, for witnesses and for applications reading a
@@ -879,7 +1028,7 @@ function newRecord(name, ppd) {
  * circuit inputs before, the output field elements to a JS value after.
  * Records into `ppd` and `rec`; returns the result as a JS value.
  */
-function execBody(spec, circuit, witnesses, context, ppd, args, rec) {
+async function execBody(spec, circuit, witnesses, context, ppd, args, rec) {
   // ---- boundary: arguments to field elements
   if (args.length !== circuit.args.length) {
     rec.failure = { at: 'arguments', reason: `expected ${circuit.args.length} argument(s), received ${args.length}` };
@@ -906,12 +1055,12 @@ function execBody(spec, circuit, witnesses, context, ppd, args, rec) {
     // let env ← bindInputs (fun _ => 0) c.inputs inputs
     const st = { env: bindInputs(circuit.inputs, inputs), priv: [], pub: [], groups: rec.groups };
     // let s ← steps p O c.body.toList { env, private_, ledger }     (Exec.steps: one step per statement, in order)
-    circuit.body.forEach((s, i) => {
+    for (const [i, s] of circuit.body.entries()) {
       at = i;
       const ev = { index: i, kind: s.kind };
       rec.steps.push(ev);
-      step(io, st, s, ev);
-    });
+      await step(io, st, s, ev);
+    }
     // let outputs ← Expr.evalList p s.env c.outputs
     at = 'outputs';
     outs = evalList(circuit.outputs, st.env);
@@ -939,12 +1088,12 @@ function execBody(spec, circuit, witnesses, context, ppd, args, rec) {
 
 const emptyProofData = () => ({ input: { value: [], alignment: [] }, output: undefined, publicTranscript: [], privateTranscriptOutputs: [] });
 
-function runCircuit(spec, circuit, witnesses, contextIn, args, trace) {
+async function runCircuit(spec, circuit, witnesses, contextIn, args, trace) {
   const context = rt.copyCircuitContext(contextIn);
   const ppd = emptyProofData();
   const rec = newRecord(circuit.name, ppd);
   try {
-    const result = execBody(spec, circuit, witnesses, context, ppd, args, rec);
+    const result = await execBody(spec, circuit, witnesses, context, ppd, args, rec);
     try {
       ppd.output = alignedOfShape(circuit.result, result);
     } catch (e) {
@@ -1019,6 +1168,9 @@ export function makeContract(spec, witnesses = {}, options = {}) {
   for (const name of RESERVED_WITNESSES) {
     if (Object.hasOwn(witnesses, name)) throw new Error(`witness ${name} is built in and cannot be supplied`);
   }
+  for (const name of Object.keys(witnesses)) {
+    if (isCallWitness(name)) throw new Error(`witness ${name}: names starting with "${CALL_PREFIX}" are cross-contract calls`);
+  }
   const { trace } = options;
   // `circuits` holds every exported circuit. Only those that touch the ledger
   // are proved; the rest run locally and have no ZKIR or keys.
@@ -1050,7 +1202,7 @@ export function makeContract(spec, witnesses = {}, options = {}) {
       const ppd = emptyProofData();
       const rec = newRecord('constructor', ppd);
       try {
-        const result = execBody(spec, spec.constructor, witnesses, context, ppd, args, rec);
+        const result = await execBody(spec, spec.constructor, witnesses, context, ppd, args, rec);
         try {
           ppd.output = alignedOfShape(spec.constructor.result, result);
         } catch (e) {
@@ -1075,6 +1227,30 @@ export function makeContract(spec, witnesses = {}, options = {}) {
   return {
     spec, witnesses, circuits, impureCircuits: provableCircuits, provableCircuits, initialState,
     /** The public state as JS values. */
+    ledger: (state) => ledgerView(spec, state),
+  };
+}
+
+/**
+ * The module a caller's runtime loads for a Damp contract deployed at some
+ * address: what `crossContractCall` reads off compactc's generated
+ * `contract/index.js` (`Contract`, `circuitSignatures`, `expectedVk`), plus
+ * `ledger` and `declaredInterfaces`. `expectedVk` maps each provable circuit
+ * to the SHA-256 (lowercase hex) of its verifier key, as compactc records it;
+ * the runtime refuses the call unless it equals the fingerprint of the key
+ * deployed on chain. `options.trace` is passed to `makeContract`.
+ */
+export function contractModule(spec, expectedVk = {}, options = {}) {
+  class Contract {
+    constructor(witnesses = {}) {
+      return makeContract(spec, witnesses, options);
+    }
+  }
+  return {
+    Contract,
+    circuitSignatures: circuitSignatures(spec),
+    expectedVk,
+    declaredInterfaces: declaredInterfaces(spec),
     ledger: (state) => ledgerView(spec, state),
   };
 }

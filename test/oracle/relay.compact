@@ -1,0 +1,15 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+// The middle of a nested call: top.compact calls relay, which calls adder.compact.
+contract Adder {
+  circuit addTo(x: Field): Field;
+}
+export ledger adder: Adder;
+export ledger hops: Counter;
+constructor(a: Adder) {
+  adder = disclose(a);
+}
+export circuit relay(x: Field): Field {
+  hops.increment(1);
+  return adder.addTo(disclose(x));
+}

@@ -1,0 +1,35 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+// The callee chosen at run time (docs/calls.md, "Casting an address"). Damp's
+// counterpart (Examples/Calls.lean) takes plain Bytes<32> and casts them to a
+// contract type; Compact cannot cast, so here the same bytes arrive already
+// contract-typed. A contract-typed value is exactly its 32-byte address, so the
+// circuits are the same.
+contract Adder {
+  circuit addTo(x: Field): Field;
+}
+contract Full {
+  circuit addTo(x: Field): Field;
+  circuit clear(): [];
+}
+contract Wrong {
+  circuit addTo(x: Uint<16>): Field;
+}
+export ledger refs: Map<Field, Adder>;
+export circuit register(k: Field, a: Adder): [] {
+  refs.insert(disclose(k), disclose(a));
+}
+export circuit viaArg(a: Adder, x: Field): Field {
+  return disclose(a).addTo(disclose(x));
+}
+export circuit viaMap(k: Field, x: Field): Field {
+  return refs.lookup(disclose(k)).addTo(disclose(x));
+}
+export circuit both(a: Full, x: Field): Field {
+  const r = disclose(a).addTo(disclose(x));
+  disclose(a).clear();
+  return r;
+}
+export circuit wrongSig(a: Wrong, x: Uint<16>): Field {
+  return disclose(a).addTo(disclose(x));
+}

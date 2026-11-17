@@ -1,0 +1,12 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+// Called by caller.compact and relay.compact (cross-contract calls; docs/calls.md).
+export ledger total: Field;
+export circuit addTo(x: Field): Field {
+  assert(disclose(x) != (13 as Field), "unlucky");
+  total = disclose(total + x);
+  return total;
+}
+export circuit clear(): [] {
+  total = 0 as Field;
+}

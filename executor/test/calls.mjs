@@ -26,9 +26,43 @@ export const witnesses = {
   note: ({ privateState }, x) => [{ ...privateState, notes: [...(privateState.notes ?? []), x] }, []],
 };
 
+// ---------------------------------------------------------------- cross-contract calls (docs/calls.md)
+//
+// These contracts run in a simulated chain (world.mjs), each deployed at its
+// address below, in this order (callees before their callers), and every call
+// on one of them is made against that chain. A contract value is its address,
+// `{ bytes }` in JS.
+export const addresses = {
+  adder: 'a0'.repeat(32),
+  rich: 'a1'.repeat(32),
+  relay: 'a2'.repeat(32),
+  caller: 'a3'.repeat(32),
+  top: 'a4'.repeat(32),
+  picker: 'a5'.repeat(32),
+};
+// Addresses that hold something else than they claim:
+//   ghost: the adder's code and state, but no module bound to the address
+//     (the caller cannot find the implementation);
+//   impostor: the adder's module, but the verifier key deployed for `addTo` is
+//     `clear`'s (the runtime's verifier-key guard refuses the module);
+//   nobody: nothing deployed at all.
+export const strangers = {
+  ghost: { address: 'b0'.repeat(32), like: 'adder', bound: false },
+  impostor: { address: 'b1'.repeat(32), like: 'adder', bound: true, keys: (k) => ({ ...k, addTo: k.clear }) },
+  nobody: { address: 'b2'.repeat(32) },
+};
+const ref = (name) => ({ bytes: rt.encodeContractAddress(addresses[name] ?? strangers[name].address) });
+// An address as `picker` takes it: plain bytes in the Damp build (which casts
+// them), a contract value in compactc's (which cannot). The argument lists of
+// its calls are functions of the implementation, 'damp' or 'compactc'.
+const addrFor = (kind, name) => (kind === 'damp' ? ref(name).bytes : ref(name));
+
 // Constructor arguments, per contract.
 export const constructorArgs = {
   vault: [rt.persistentHash(new rt.CompactTypeBytes(32), vaultKey), 40n],
+  caller: [ref('adder'), ref('rich')],
+  relay: [ref('adder')],
+  top: [ref('relay')],
 };
 
 // Coins and recipients for the tokens contract. The test contract's address is
@@ -216,5 +250,36 @@ export const calls = [
   ['tokens', 'keepSet', [coin(34, blue, 7n)], true],
   ['tokens', 'keepList', [coin(35, blue, 8n)], true],
   ['tokens', 'keepList', [coin(36, blue, 9n)], true],
+  // cross-contract calls (in the simulated chain; see `addresses`)
+  ['adder', 'addTo', [100n], true],
+  ['caller', 'bump', [5n], true],
+  ['caller', 'bump', [13n], false],                  // the callee's assert fails
+  ['caller', 'maybe', [true, 7n], true],
+  ['caller', 'maybe', [false, 8n], true],            // not called, not claimed
+  ['caller', 'twice', [1n, 2n], true],
+  ['caller', 'twice', [3n, 13n], false],             // the second call fails
+  ['caller', 'via', [ref('adder'), 4n], true],
+  ['caller', 'via', [ref('rich'), 4n], false],       // rich does not have the contract type Adder
+  ['caller', 'via', [ref('ghost'), 4n], false],      // no implementation for the address
+  ['caller', 'via', [ref('impostor'), 4n], false],   // verifier key differs from the module's
+  ['caller', 'via', [ref('nobody'), 4n], false],     // nothing deployed there
+  ['caller', 'reset', [], true],
+  ['caller', 'fancy', [{ x: 10n, y: 3n }, bytes(32, 7, 8), 500n], true],
+  ['caller', 'fancy', [{ x: 10n, y: 300n }, bytes(32, 7, 8), 1n], false],   // argument out of range
+  ['caller', 'fancy', [{ x: 1n, y: 255n }, bytes(32, 9, 9), 65535n], true],
+  ['top', 'go', [9n], true],                         // top -> relay -> adder
+  ['top', 'go', [13n], false],                       // the innermost callee's assert fails
+  ['relay', 'relay', [2n], true],
+  ['top', 'go', [1n], true],
+  // the callee chosen at run time: an address cast to a contract type
+  ['picker', 'viaArg', (k) => [addrFor(k, 'adder'), 3n], true],
+  ['picker', 'register', (k) => [1n, addrFor(k, 'adder')], true],
+  ['picker', 'viaMap', [1n, 4n], true],                          // the address from a Map lookup
+  ['picker', 'both', (k) => [addrFor(k, 'adder'), 2n], true],    // one address, two contract types
+  ['picker', 'viaArg', (k) => [addrFor(k, 'rich'), 1n], false],  // no such entry point at that address
+  ['picker', 'wrongSig', (k) => [addrFor(k, 'adder'), 1n], false], // the entry point has another signature
+  ['picker', 'viaArg', (k) => [addrFor(k, 'ghost'), 1n], false], // no implementation registered for the address
+  ['picker', 'register', (k) => [2n, addrFor(k, 'rich')], true],
+  ['picker', 'viaMap', [2n, 1n], false],                         // the stored address has no `addTo`
 ];
 

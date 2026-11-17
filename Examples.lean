@@ -10,6 +10,7 @@ import Examples.Structures
 import Examples.StructuresNested
 import Examples.Tokens
 import Examples.Tuned
+import Examples.Calls
 import Examples.Diagnostics
 import Examples.Optimizer
 import Examples.EmitAgrees

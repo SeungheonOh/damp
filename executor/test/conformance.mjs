@@ -19,9 +19,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as rt from '@midnight-ntwrk/compact-runtime';
-import { makeContract } from '../src/executor.mjs';
+import { makeContract, contractModule } from '../src/executor.mjs';
 import { parsePreimage } from './preimage.mjs';
-import { witnesses, constructorArgs, calls, startState } from './calls.mjs';
+import { witnesses, constructorArgs, calls, startState, addresses, strangers } from './calls.mjs';
+import { World, expectedVkOf } from './world.mjs';
 
 const dir = path.resolve(process.argv[2] ?? 'build/executor');
 const COIN_PK = '3c'.repeat(32);   // the user's coin public key (what ownPublicKey returns)
@@ -67,9 +68,18 @@ const digestOf = (sv) => {
 // ---------------------------------------------------------------- running
 
 const results = [];
-let pending = [];
-const trace = (rec) => pending.push(rec);
+let pending = [];   // { rec, contract }: one per circuit run, callees' before their caller's
+const traceOf = (contract) => (rec) => pending.push({ rec, contract });
 const take = () => { const r = pending; pending = []; return r; };
+
+// Cross-contract calls (docs/calls.md): the contracts of `addresses` are
+// deployed in a simulated chain (world.mjs), every one the Damp build, so a
+// call runs its callees through the executor too, each traced as a call of its
+// own (labelled `… > callee.circuit`) and replayed through the definition as
+// such. The verifier keys are stand-ins (the bytes of `contract.circuit`): the
+// runtime's guard only compares their fingerprints with `expectedVk`.
+const inWorld = (name) => Object.hasOwn(addresses, name);
+const world = new World({ standInKeys: true });
 
 function record(label, contract, circuit, rec) {
   const entry = { label, contract, circuit, record: plain({ ...rec, proofData: undefined }), preimage: null, outputFields: null };
@@ -82,7 +92,7 @@ function record(label, contract, circuit, rec) {
 
 async function load(name, wits, ctorArgs) {
   const spec = JSON.parse(fs.readFileSync(path.join(dir, 'contracts', name, 'contract.json'), 'utf-8'));
-  const contract = makeContract(spec, wits, { trace });
+  const contract = makeContract(spec, wits, { trace: traceOf(name) });
   const c = { spec, contract, init: null, state: undefined };
   const stateValue = () => {
     const s = c.state ?? c.init.currentContractState.data;
@@ -98,40 +108,62 @@ async function load(name, wits, ctorArgs) {
   try {
     c.init = await contract.initialState(rt.createConstructorContext({}, COIN_PK), ...ctorArgs);
   } finally {
-    for (const rec of take()) record(`${name}.constructor`, name, 'constructor', rec);
+    for (const { rec } of take()) record(`${name}.constructor`, name, 'constructor', rec);
+  }
+  if (inWorld(name)) {
+    const keys = Object.fromEntries(spec.circuits.filter((k) => k.proof).map((k) => [k.name, new TextEncoder().encode(`${name}.${k.name}`)]));
+    const mod = contractModule(spec, expectedVkOf(keys), { trace: traceOf(name) });
+    world.deploy(addresses[name], name, c.init.currentContractState.data, keys, mod);
+    for (const s of Object.values(strangers)) {
+      if (s.like !== name) continue;
+      world.deploy(s.address, name, c.init.currentContractState.data, s.keys ? s.keys(keys) : keys, s.bound ? mod : undefined);
+    }
   }
   return c;
 }
 
 async function call(c, name, circuit, args, label) {
-  const ctx = rt.createCircuitContext({
-    circuitId: circuit, contractAddress: rt.dummyContractAddress(),
-    coinPublicKeyOrZswapState: c.init.currentZswapLocalState.coinPublicKey,
-    contractState: startState(name, c.state ?? c.init.currentContractState), privateState: c.init.currentPrivateState, time: 0,
-  });
+  const ctx = inWorld(name)
+    ? world.context(addresses[name], circuit, c.init.currentPrivateState, c.init.currentZswapLocalState.coinPublicKey)
+    : rt.createCircuitContext({
+      circuitId: circuit, contractAddress: rt.dummyContractAddress(),
+      coinPublicKeyOrZswapState: c.init.currentZswapLocalState.coinPublicKey,
+      contractState: startState(name, c.state ?? c.init.currentContractState), privateState: c.init.currentPrivateState, time: 0,
+    });
   let ok = false;
   try {
     const run = await c.contract.circuits[circuit](ctx, ...args);
     c.state = run.context.callContext.currentQueryContext.state;
+    if (inWorld(name)) world.commit(run);
     ok = true;
   } catch { /* recorded by the trace */ }
   const recs = take();
-  if (recs.length !== 1) throw new Error(`${label}: ${recs.length} trace records`);
-  record(label, name, circuit, recs[0]);
+  // The call's own record comes last; any before it are its callees' runs.
+  if (recs.length < 1 || recs.at(-1).contract !== name || (!inWorld(name) && recs.length !== 1)) {
+    throw new Error(`${label}: ${recs.length} trace records`);
+  }
+  recs.forEach(({ rec, contract }, i) => {
+    const last = i === recs.length - 1;
+    record(last ? label : `${label} > ${contract}.${rec.circuit} (run ${i + 1} of ${recs.length})`, contract, rec.circuit, rec);
+  });
   return ok;
 }
 
 const show = (x) => JSON.stringify(x, (_k, v) => (typeof v === 'bigint' ? `${v}` : v instanceof Uint8Array ? `0x${Buffer.from(v).toString('hex')}` : v)).replaceAll('"', '');
 
-// The example contracts.
+// The example contracts. Those in the chain are deployed first, callees before callers.
 const loaded = new Map();
 let ran = 0, completed = 0;
+if (calls.some(([name]) => inWorld(name))) {
+  for (const name of Object.keys(addresses)) loaded.set(name, await load(name, witnesses, constructorArgs[name] ?? []));
+}
 for (const [name, circuit, argsOf] of [...calls, ...extraCalls]) {
   if (!loaded.has(name)) loaded.set(name, await load(name, witnesses, constructorArgs[name] ?? []));
   const c = loaded.get(name);
   let args;
   try {
-    args = typeof argsOf === 'function' ? argsOf(c) : argsOf;
+    // In the chain, an argument list may depend on the implementation: here always Damp's.
+    args = typeof argsOf === 'function' ? argsOf(inWorld(name) ? 'damp' : c) : argsOf;
   } catch (e) {
     // The arguments depend on the state earlier calls left (a Merkle root).
     results.push({ label: `${name}.${circuit}(...)`, contract: name, circuit, driverError: `cannot form the arguments: ${e.message}` });
@@ -160,4 +192,4 @@ for (const s of synthetic) {
 }
 
 fs.writeFileSync(path.join(dir, 'traces.json'), JSON.stringify({ calls: results }, null, 1));
-console.log(`${results.length} trace records (${ran} calls, ${completed} completed; ${results.length - ran} constructor runs) written to ${path.join(dir, 'traces.json')}`);
+console.log(`${results.length} trace records (${ran} calls, ${completed} completed; ${results.length - ran} constructor and nested callee runs) written to ${path.join(dir, 'traces.json')}`);

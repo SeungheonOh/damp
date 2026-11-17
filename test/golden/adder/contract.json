@@ -1,0 +1,95 @@
+{"name": "adder",
+ "ledger":
+ [{"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "total",
+   "index": 0}],
+ "format": "damp-contract/5",
+ "constructor": null,
+ "circuits":
+ [{"result": {"kind": "field"},
+   "proof": true,
+   "outputs": [{"var": 2, "kind": "var"}],
+   "name": "addTo",
+   "inputs": [0],
+   "body":
+   [{"msg": "unlucky",
+     "kind": "assert",
+     "cond":
+     {"kind": "select",
+      "c":
+      {"kind": "eq",
+       "b": {"value": "13", "kind": "const"},
+       "a": {"var": 0, "kind": "var"}},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"reads": [1],
+     "ops":
+     [{"n": 0, "kind": "dup"},
+      {"pushPath": false,
+       "path":
+       [{"vals": [{"value": "0", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"result": [{"var": 1, "kind": "var"}],
+       "kind": "popeq",
+       "cached": false,
+       "align": [{"kind": "field"}]}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals":
+        [{"kind": "add",
+          "b": {"var": 0, "kind": "var"},
+          "a": {"var": 1, "kind": "var"}}],
+        "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [2],
+     "ops":
+     [{"n": 0, "kind": "dup"},
+      {"pushPath": false,
+       "path":
+       [{"vals": [{"value": "0", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"result": [{"var": 2, "kind": "var"}],
+       "kind": "popeq",
+       "cached": false,
+       "align": [{"kind": "field"}]}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args": [{"shape": {"kind": "field"}, "name": "x"}]},
+  {"result": {"kind": "tuple", "elems": []},
+   "proof": true,
+   "outputs": [],
+   "name": "clear",
+   "inputs": [],
+   "body":
+   [{"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args": []}]}

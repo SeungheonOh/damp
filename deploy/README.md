@@ -90,6 +90,7 @@ copy.
 | `src/tokens.mjs` | the `tokens` contract (from `../build/oracle-tok`): `whoami`, shielded and unshielded mints to the wallet, a deposit the wallet pays for, mints to and an unshielded send from the contract; prints what the wallet and the indexer show (see "Tokens" in DEPLOY-NOTES.md) |
 | `src/hold.mjs` | a contract holding a coin: `mint` to the wallet, `keep` (store a received coin with `writeCoin`), `spend` (`sendShielded` of it, change stored), `mergeHeld`; `node src/hold.mjs compact` runs compactc's build (`hold.compact`, `artifacts/compact-hold`) for comparison (see "Holding a coin" in DEPLOY-NOTES.md) |
 | `src/vault.mjs` | the `vault` contract: deploy with constructor args `(persistentHash(key), 40)`, `spend(30)`, `spend(5)`, then `spend(6)`, which must fail with "over limit" |
+| `src/calls.mjs` | cross-contract calls between packaged Damp contracts (from `../build/oracle-cc`): `caller.bump` → `adder.addTo`, nested `top.go` → `relay.relay` → `adder.addTo`, and a callee chosen by a cast address (`picker`); see "Cross-contract calls" in DEPLOY-NOTES.md and `../docs/calls.md` |
 | `scripts/all.sh` | runs everything against a fresh network |
 | `scripts/refresh-artifacts.sh` | copies `../build/oracle` output into `artifacts/` |
 | `artifacts/` | copies of `build/oracle/{lean,compact}/{counter,vault}` (taken 2026-11-16 16:27, format `damp-contract/4`) |

@@ -1,0 +1,144 @@
+{"name": "top",
+ "ledger":
+ [{"type":
+   {"shape":
+    {"name": "Relay",
+     "kind": "struct",
+     "fields": [{"length": 32, "kind": "bytes"}],
+     "fieldNames": ["bytes"]},
+    "kind": "cell"},
+   "name": "relay",
+   "index": 0},
+  {"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "got",
+   "index": 1}],
+ "interfaces":
+ [{"name": "Relay",
+   "circuits":
+   [{"result": {"kind": "field"},
+     "name": "relay",
+     "args": [{"shape": {"kind": "field"}, "name": "x"}]}]}],
+ "format": "damp-contract/5",
+ "constructor":
+ {"result": {"kind": "tuple", "elems": []},
+  "proof": true,
+  "outputs": [],
+  "name": "constructor",
+  "inputs": [0, 1],
+  "body":
+  [{"range": {"n": 8, "kind": "bits"},
+    "kind": "constrain",
+    "expr": {"var": 0, "kind": "var"}},
+   {"range": {"n": 248, "kind": "bits"},
+    "kind": "constrain",
+    "expr": {"var": 1, "kind": "var"}},
+   {"reads": [],
+    "ops":
+    [{"value":
+      {"vals": [{"value": "0", "kind": "const"}],
+       "align": [{"length": 1, "kind": "bytes"}]},
+      "storage": false,
+      "kind": "push"},
+     {"value":
+      {"vals": [{"var": 0, "kind": "var"}, {"var": 1, "kind": "var"}],
+       "align": [{"length": 32, "kind": "bytes"}]},
+      "storage": true,
+      "kind": "push"},
+     {"n": 1, "kind": "ins", "cached": false}],
+    "kind": "ledger",
+    "guard": {"value": "1", "kind": "const"}}],
+  "args":
+  [{"shape":
+    {"name": "Relay",
+     "kind": "struct",
+     "fields": [{"length": 32, "kind": "bytes"}],
+     "fieldNames": ["bytes"]},
+    "name": "r"}]},
+ "circuits":
+ [{"result": {"kind": "field"},
+   "proof": true,
+   "outputs": [{"var": 3, "kind": "var"}],
+   "name": "go",
+   "inputs": [0],
+   "body":
+   [{"reads": [1, 2],
+     "ops":
+     [{"n": 0, "kind": "dup"},
+      {"pushPath": false,
+       "path":
+       [{"vals": [{"value": "0", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"result": [{"var": 1, "kind": "var"}, {"var": 2, "kind": "var"}],
+       "kind": "popeq",
+       "cached": false,
+       "align": [{"length": 32, "kind": "bytes"}]}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"shape":
+     {"kind": "tuple", "elems": [{"kind": "field"}, {"kind": "field"}]},
+     "outs": [{"var": 3, "range": null}, {"var": 4, "range": null}],
+     "name": "call:Relay.relay",
+     "kind": "witness",
+     "guard": {"value": "1", "kind": "const"},
+     "args":
+     [{"var": 1, "kind": "var"},
+      {"var": 2, "kind": "var"},
+      {"var": 0, "kind": "var"}]},
+    {"var": 5,
+     "kind": "bind",
+     "hint": "comm",
+     "expr":
+     {"xs":
+      [{"var": 4, "kind": "var"},
+       {"var": 0, "kind": "var"},
+       {"var": 3, "kind": "var"}],
+      "kind": "hash"}},
+    {"reads": [],
+     "ops":
+     [{"n": 0, "kind": "swap"},
+      {"pushPath": true,
+       "path":
+       [{"vals": [{"value": "3", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": true},
+      {"n": 0, "kind": "dup"},
+      {"kind": "size"},
+      {"value":
+       {"vals":
+        [{"var": 1, "kind": "var"},
+         {"var": 2, "kind": "var"},
+         {"value": "149", "kind": "const"},
+         {"value":
+          "247406338820884095717766558343455835727516939646410518317323306418601823025",
+          "kind": "const"},
+         {"var": 5, "kind": "var"}],
+        "align":
+        [{"length": 32, "kind": "bytes"},
+         {"length": 32, "kind": "bytes"},
+         {"kind": "field"}]},
+       "storage": false,
+       "kind": "push"},
+      {"n": 160, "kind": "concatCached"},
+      {"storage": false, "kind": "pushNull"},
+      {"n": 2, "kind": "ins", "cached": true},
+      {"n": 0, "kind": "swap"}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "1", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"var": 3, "kind": "var"}], "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args": [{"shape": {"kind": "field"}, "name": "x"}]}]}

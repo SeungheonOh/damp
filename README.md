@@ -10,6 +10,8 @@ ZKIR circuits Midnight executes.
   on-chain instructions it becomes.
 - [docs/tokens.md](docs/tokens.md): coins and tokens: the library, the kernel
   operations, the built-in witnesses, and how they match compactc.
+- [docs/calls.md](docs/calls.md): cross-contract calls: contract types, the
+  call's circuit, the executor's part, casting an address, the network trial.
 
 ## Layout
 
@@ -22,6 +24,7 @@ ZKIR circuits Midnight executes.
 | `Damp/Contract.lean` | the interface contracts are written against: values, operators, statements |
 | `Damp/Ledger.lean` | ledger types: `Cell`, `Counter`, `Map`, `Set`, `LedgerList`, Merkle trees, kernel operations (coins included) |
 | `Damp/Tokens.lean` | Compact's coin and token library: minting, sending and receiving shielded and unshielded tokens |
+| `Damp/Calls.lean` | cross-contract calls: contract types, the entry-point hash, the call |
 | `Damp/Optimize.lean` | the optimizer and its soundness proof |
 | `Damp/Disclosure.lean` | the check that private data is disclosed deliberately |
 | `Damp/Syntax.lean` | notation: `circuit`, `witness`, `ledger`, `struct`, `enum`, `contract`, `const`, operators, `if` |

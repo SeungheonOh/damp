@@ -283,15 +283,102 @@ macro_rules
         def $circ : Damp.IR.Circuit := Damp.mkCircuit "constructor" [$names,*] $fn
         check_circuit% $circ)
 
+/-! ### Contract types
+
+`interface Adder where` followed by `circuit (a : A) … : R` lines declares a
+contract type, Compact's `contract Adder { circuit addTo(x: Field): Field; }`:
+the circuits another contract must export for this contract to call them. It
+defines
+
+* `Adder`, the type of a reference to such a contract: its address, 32 bytes
+  (`{ bytes }` in JS, as compactc represents a contract value). It can be a
+  circuit or constructor argument, a witness result, ledger content (`Cell
+  Adder`, a `Map` key or value, …) and compared with `==.`;
+* `Adder.addTo (self : Adder) (x : Field) : CircuitM Field`, one method per
+  declared circuit, so `(← adder.read).addTo (disclose x)` calls it
+  (`Damp.contractCall`, `Damp/Calls.lean`);
+* `Adder.declaration : Damp.Interface`, the declaration as data, which
+  `contract` puts into `contract.json` for the executor;
+* `Adder.ofAddress : Bytes 32 → Adder` and `Adder.address : Adder → Bytes 32`,
+  and a `Damp.ContractType Adder` instance (`castContract Adder b`). Unlike
+  Compact, any 32 bytes can be used as a reference of any contract type: the
+  representation is the same, so the conversion is free, and unchecked.
+
+A circuit with no arguments is written `name : R`. As in Compact, the circuit
+names must be distinct (Lean rejects a repeated method); `bytes`, `ofAddress`,
+`address` and `declaration` are taken. -/
+
+initialize interfaceRegistry : SimplePersistentEnvExtension (Name × Name) (Array (Name × Name)) ←
+  registerSimplePersistentEnvExtension {
+    addEntryFn := Array.push
+    addImportedFn := fun entries => entries.foldl (· ++ ·) #[]
+  }
+
+open Lean.Elab.Command in
+/-- Records a contract type as declared in this namespace. -/
+elab "register_interface% " c:ident : command => do
+  let name ← liftCoreM <| realizeGlobalConstNoOverload c
+  let ns ← getCurrNamespace
+  modifyEnv (interfaceRegistry.addEntry · (ns, name))
+
+syntax (name := interfaceDecl)
+  (docComment)? "interface " ident " where" (ppLine withPosition(ident (ppSpace circuitBinder)* " : " term))+ : command
+
+macro_rules
+  | `($[$doc]? interface $name where $[$cs:ident $bss:circuitBinder* : $rets:term]*) => do
+      let iname := strLit name
+      let decl := mkIdentFrom name (name.getId ++ `declaration)
+      let ofAddr := mkIdentFrom name (name.getId ++ `ofAddress)
+      let addr := mkIdentFrom name (name.getId ++ `address)
+      let mut entries : Array Term := #[]
+      let mut methods : Array (TSyntax `command) := #[]
+      for i in [0:cs.size] do
+        let c : Ident := cs[i]!
+        let bs : Array (TSyntax ``circuitBinder) := bss[i]!
+        let ret := rets[i]!
+        let mut args : Array Term := #[]
+        for h : j in [0:bs.size] do
+          match bs[j] with
+          | `(circuitBinder| ($ids* : $ty)) =>
+              for id in ids do args := args.push (← `(($(strLit id), Damp.Value.shape $ty)))
+          | _ => Macro.throwUnsupported
+        entries := entries.push (← `({ name := $(strLit c), args := [$args,*], result := Damp.Value.shape $ret }))
+        let argNames ← binderNames bs
+        let binders ← toBracketed bs
+        let exprs ← argNames.foldrM (fun a acc => `(Damp.Value.toExprs $a ++ $acc)) (← `([]))
+        let fn := mkIdentFrom c (name.getId ++ c.getId)
+        methods := methods.push (← `(
+          def $fn (self : $name) $binders* : Damp.CircuitM $ret :=
+            Damp.contractCall $ret $iname $(strLit c) self.bytes.limbs $exprs))
+      let main ← `(
+        $[$doc]? structure $name where
+          bytes : Damp.Bytes 32
+          deriving Inhabited
+        instance : Damp.Value $name where
+          shape := .struct $iname ["bytes"] [.prim (.bytes 32)]
+          toExprs a := a.bytes.limbs
+          ofExprs xs := ⟨⟨xs.take (Damp.IR.byteLimbs 32)⟩⟩
+        instance : Damp.CmpEq $name $name := ⟨Damp.valueEq⟩
+        def $decl : Damp.Interface := { name := $iname, circuits := [$entries,*] }
+        def $ofAddr (b : Damp.Bytes 32) : $name := ⟨b⟩
+        def $addr (r : $name) : Damp.Bytes 32 := r.bytes
+        instance : Damp.ContractType $name := ⟨$decl, $ofAddr, $addr⟩
+        register_interface% $decl)
+      return mkNullNode (#[main.raw] ++ methods.map (·.raw))
+
 /-! ### Contracts
 
 `circuit` records each circuit it declares against the enclosing namespace, so
-`contract` can gather them without their names being repeated. -/
+`contract` can gather them without their names being repeated; likewise
+`interface` its contract type, and `contract` takes those declared in its
+namespace or an enclosing one. -/
 
 open Lean.Elab Lean.Elab.Command in
 private def elabContract (name : Ident) (only : Option (Array Ident)) : CommandElabM Unit := do
   let ns ← getCurrNamespace
   let env ← getEnv
+  let ifaces := (interfaceRegistry.getState env).filter (·.1.isPrefixOf ns) |>.map (·.2)
+  let ifaces := ifaces.foldl (fun acc n => if acc.contains n then acc else acc.push n) #[]
   let declared := (circuitRegistry.getState env).filter (·.1 == ns) |>.map (·.2)
   let chosen ← match only with
     | none => pure declared
@@ -308,12 +395,14 @@ private def elabContract (name : Ident) (only : Option (Array Ident)) : CommandE
   let self := mkIdent `contract
   let ctorName := ns ++ `constructorCircuit
   let ctor ← if env.contains ctorName then `(some $(mkCIdent ctorName)) else `(none)
+  let ifaceTerms := ifaces.map mkCIdent
   elabCommand (← `(def $self : Damp.Contract :=
-    ⟨$(Syntax.mkStrLit name.getId.toString), $state, [$circuits,*], $ctor⟩))
+    ⟨$(Syntax.mkStrLit name.getId.toString), $state, [$circuits,*], $ctor, [$ifaceTerms,*]⟩))
 
 /--
 `contract Name` defines `contract`: the ledger and every circuit declared so
-far in this namespace, under the name `Name`. `contract Name exports c₁ c₂ …`
+far in this namespace, under the name `Name`, with the contract types declared
+here or in an enclosing namespace. `contract Name exports c₁ c₂ …`
 includes only the listed circuits.
 -/
 elab (name := contractDecl) "contract " name:ident : command => elabContract name none

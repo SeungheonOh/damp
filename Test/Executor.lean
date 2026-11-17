@@ -44,6 +44,7 @@ import Examples.Structures
 import Examples.StructuresNested
 import Examples.Tokens
 import Examples.Tuned
+import Examples.Calls
 
 open Lean (Json)
 open Damp Damp.IR
@@ -57,7 +58,10 @@ def examples : List Contract :=
   [Examples.Step.contract, Examples.Counter.contract, Examples.Shapes.contract,
    Examples.Loops.contract, Examples.Bytes.contract, Examples.Extras.contract, Examples.Vault.contract, Examples.Notes.contract,
    Examples.Structures.contract, Examples.StructuresNested.contract, Examples.Tuned.contract,
-   Examples.Tokens.contract]
+   Examples.Tokens.contract,
+   -- cross-contract calls (docs/calls.md); a callee's runs are traced and replayed as its own calls
+   Examples.Adder.contract, Examples.Rich.contract, Examples.Caller.contract, Examples.Relay.contract,
+   Examples.Top.contract, Examples.Picker.contract]
 
 /-! ## Synthetic circuits
 

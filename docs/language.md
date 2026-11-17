@@ -99,7 +99,8 @@ branches, and the compiler rejects that when it would repeat an effect.
 | `witness w (a : A) : R` | a private input supplied by the user's machine |
 | `constructor (a : A) := do …` | runs once at deployment |
 | `circuit f (a : A) : R := do …` | an entry point; also a plain function `f` |
-| `contract name` | the ledger, constructor and circuits declared in this namespace |
+| `interface T where …` | a contract type: another contract's circuits, callable through a `T` |
+| `contract name` | the ledger, constructor, circuits and contract types declared in this namespace |
 
 A helper that is not an entry point is a plain `def` returning `CircuitM R`.
 A circuit that never touches the ledger needs no proof and gets no ZKIR; it
@@ -145,6 +146,47 @@ circuit mint (amount : Uint64) (n : Bytes 32) (to : ZswapCoinPublicKey) : Unit :
   last.write (← mintShieldedToken (Bytes.pad 32 "damp:token") (disclose amount) (disclose n)
     (left (disclose to)))
 ```
+
+## Calling other contracts
+
+A contract type (Compact's `contract Adder { … }`) lists the circuits another
+contract must export, with their types. A value of that type is the address of
+such a contract; its circuits are methods on it.
+
+```lean
+interface Adder where
+  addTo (x : Field) : Field
+  clear : Unit
+
+ledger
+  adder : Cell Adder
+  last : Cell Field
+
+constructor (a : Adder) := adder.write (disclose a)
+
+circuit bump (x : Field) : Field := do
+  const r ← (← adder.read).addTo (disclose x)
+  last.write r          -- a call's result is public: no `disclose`
+  return r
+
+circuit via (a : Adder) (x : Field) : Field := (disclose a).addTo (disclose x)
+```
+
+| Form | Meaning |
+|---|---|
+| `interface T where` + `f (a : A) … : R` lines | a contract type; `f : R` for a circuit with no arguments |
+| `T` | a reference to a contract of that type, 32 bytes (`{ bytes }` in JS); usable as an argument, a constructor argument, ledger content, and with `==.` |
+| `t.f a …` | call circuit `f` of the contract `t`: `CircuitM R` |
+
+`contract` records the contract types declared in its namespace (or an
+enclosing one) in `contract.json`; the executor needs them to run a call. As in
+Compact, the arguments of a call, and the reference when it comes from an
+argument or witness, need `disclose`, and so does a condition the call is made
+under; the results do not. The called circuit runs on the user's machine with
+the callee's own code: give midnight-js (or the runtime's circuit context) a
+`moduleProvider` that maps the callee's address to its module, compactc's
+`contract/index.js` or a Damp package. The callee may not use witnesses. See
+[calls.md](calls.md).
 
 ## Hashes and commitments
 

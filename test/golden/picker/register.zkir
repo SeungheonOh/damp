@@ -1,0 +1,19 @@
+{"version": {"minor": 1, "major": 3},
+ "outputs": [],
+ "instructions":
+ [{"val": "%a.1", "op": "constrain_bits", "bits": 8},
+  {"val": "%a.2", "op": "constrain_bits", "bits": 248},
+  {"op": "impact", "inputs": ["0x70", "0x01", "0x01", "0x00"], "guard": "0x01"},
+  {"op": "impact",
+   "inputs": ["0x10", "0x01", "0x01", "-0x02", "%k.0"],
+   "guard": "0x01"},
+  {"op": "impact",
+   "inputs": ["0x11", "0x01", "0x01", "0x20", "%a.1", "%a.2"],
+   "guard": "0x01"},
+  {"op": "impact", "inputs": ["0x91"], "guard": "0x01"},
+  {"op": "impact", "inputs": ["0xa1"], "guard": "0x01"}],
+ "inputs":
+ [{"type": "Scalar<BLS12-381>", "name": "%k.0"},
+  {"type": "Scalar<BLS12-381>", "name": "%a.1"},
+  {"type": "Scalar<BLS12-381>", "name": "%a.2"}],
+ "do_communications_commitment": true}

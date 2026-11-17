@@ -71,7 +71,10 @@ function witnessesOf(spec) {
   const circuits = [...spec.circuits, ...(spec.constructor ? [spec.constructor] : [])];
   for (const c of circuits) {
     for (const s of c.body) {
-      if (s.kind === 'witness' && !seen.has(s.name) && !BUILTIN_WITNESSES.has(s.name)) seen.set(s.name, s);
+      // Built-ins and cross-contract calls (`call:I.c`) are answered by the executor.
+      if (s.kind === 'witness' && !seen.has(s.name) && !BUILTIN_WITNESSES.has(s.name) && !s.name.startsWith('call:')) {
+        seen.set(s.name, s);
+      }
     }
   }
   return [...seen.values()];

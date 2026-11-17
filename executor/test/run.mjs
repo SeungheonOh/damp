@@ -13,10 +13,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as rt from '@midnight-ntwrk/compact-runtime';
-import { makeContract } from '../src/executor.mjs';
+import { makeContract, contractModule } from '../src/executor.mjs';
+import { packageContract } from '../src/package.mjs';
 import { checkProofData } from '../harness/check.mjs';
 import { toJson, proofDataOf } from '../harness/json.mjs';
-import { witnesses, constructorArgs, calls, startState } from './calls.mjs';
+import { witnesses, constructorArgs, calls, startState, addresses, strangers } from './calls.mjs';
+import { World, verifierKeys, expectedVkOf, normalizeTrace, directoryModuleProvider } from './world.mjs';
+
+/** Contracts that call or are called by others run in a simulated chain (below). */
+const inWorld = (name) => Object.hasOwn(addresses, name);
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(process.argv[2] ?? path.join(here, '..', '..', 'build', 'oracle'));
@@ -70,6 +75,7 @@ async function load(name) {
 }
 
 for (const [name, circuit, argsOf, shouldSucceed] of calls) {
+  if (inWorld(name)) continue;
   const c = await load(name);
   const args = typeof argsOf === 'function' ? argsOf(c) : argsOf;
   const label = `${name}.${circuit}(${args.map(show).join(', ')})`.replaceAll('"', '');
@@ -136,6 +142,147 @@ for (const [name, c] of loaded) {
       const entries = (v) => show([...v].map((e) => show(e)).sort());
       report(mine[f.name].size() === theirs[f.name].size() && entries(mine[f.name]) === entries(theirs[f.name]),
         `${name}: ledger view of ${f.name} equals compactc's`, `(${mine[f.name].size()} entries)`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- cross-contract calls
+//
+// The contracts of `addresses` are deployed in four simulated chains (world.mjs)
+// that differ only in which implementation each address runs:
+//   damp      every contract is the Damp build (the executor, `contractModule`);
+//   compactc  every contract is compactc's generated module;
+//   mixed     caller and top are Damp, their callees (adder, rich, relay) compactc's;
+//   packaged  caller and top are compactc's, their callees Damp contracts packaged
+//             by package.mjs and loaded, as compactc's documentation describes,
+//             from `<root>/<T>/contract/index.js`.
+// Each chain deploys with the verifier keys of the implementation it runs. Every
+// call is made in every chain; the proof data of the call and of every call
+// nested in it (the whole `callProofDataTrace`), the result, the Zswap local
+// states and, at the end, the ledger state of every contract must be the same in
+// all four, up to the commitments' random openings (`normalizeTrace`); every
+// proof data entry, Damp's and compactc's, must be accepted by the ZKIR checker
+// against the Damp circuit of its contract.
+
+const worldCalls = calls.filter(([name]) => inWorld(name));
+if (worldCalls.length > 0) {
+  const names = Object.keys(addresses);
+  const specs = {}, compactMods = {}, dampMods = {}, dampKeys = {}, compactKeys = {};
+  const pkgRoot = path.join(root, 'pkg');
+  for (const n of names) {
+    const leanDir = path.join(root, 'lean', n);
+    specs[n] = JSON.parse(await fs.readFile(path.join(leanDir, 'contract.json'), 'utf-8'));
+    compactMods[n] = await import(path.join(root, 'compact', n, 'contract', 'index.js'));
+    dampKeys[n] = verifierKeys(leanDir);
+    compactKeys[n] = verifierKeys(path.join(root, 'compact', n));
+    dampMods[n] = contractModule(specs[n], expectedVkOf(dampKeys[n]));
+    packageContract(leanDir, path.join(pkgRoot, n));
+  }
+  const nameAt = Object.fromEntries(names.map((n) => [addresses[n], n]));
+  const entry = (n) => n === 'caller' || n === 'top' || n === 'picker';
+  const setups = [
+    ['damp', () => 'damp'],
+    ['compactc', () => 'compactc'],
+    ['mixed', (n) => (entry(n) ? 'damp' : 'compactc')],
+    ['packaged', (n) => (entry(n) ? 'compactc' : 'damp')],
+  ];
+  const worlds = [];
+  for (const [label, kindOf] of setups) {
+    const w = new World();
+    const impl = {};
+    for (const n of names) {
+      const kind = kindOf(n);
+      const mod = kind === 'damp' ? dampMods[n] : compactMods[n];
+      const contract = new mod.Contract(witnesses);
+      const init = await contract.initialState(rt.createConstructorContext({}, COIN_PK), ...(constructorArgs[n] ?? []));
+      w.deploy(addresses[n], n, init.currentContractState.data, kind === 'damp' ? dampKeys[n] : compactKeys[n], mod);
+      impl[n] = { contract, init, kind };
+    }
+    for (const s of Object.values(strangers)) {
+      if (!s.like) continue;
+      const base = w.contracts.get(addresses[s.like]);
+      w.deploy(s.address, s.like, base.data, s.keys ? s.keys(base.keys) : base.keys, s.bound ? base.module : undefined);
+      if (s.bound) nameAt[s.address] = s.like;
+    }
+    if (label === 'packaged') {
+      const bound = Object.fromEntries([...w.contracts].filter(([, c]) => c.module !== undefined).map(([a, c]) => [a, c.name]));
+      w.provider = directoryModuleProvider(pkgRoot, bound);
+    }
+    worlds.push({ label, w, impl });
+  }
+  const [damp, compactc] = worlds;
+  for (const n of names) {
+    const enc = (W) => toJson(W.w.state(addresses[n]).encode(), 0);
+    report(worlds.every((W) => enc(W) === enc(compactc)), `${n}: initial ledger state equals compactc's in every chain`);
+  }
+
+  let proved = false;
+  for (const [name, circuit, argsOf, shouldSucceed] of worldCalls) {
+    // An argument list may depend on the implementation called ('damp' or 'compactc').
+    const argsIn = (kind) => (typeof argsOf === 'function' ? argsOf(kind) : argsOf);
+    const label = `${name}.${circuit}(${argsIn('damp').map(show).join(', ')})`.replaceAll('"', '');
+    const runs = [];
+    for (const W of worlds) {
+      const { contract, init, kind } = W.impl[name];
+      const args = argsIn(kind);
+      const ctx = W.w.context(addresses[name], circuit, init.currentPrivateState, init.currentZswapLocalState.coinPublicKey);
+      runs.push(await attempt(() => contract.circuits[circuit](ctx, ...args)));
+    }
+    if (!shouldSucceed) {
+      report(runs.every((r) => r.error), `${label}: fails in every chain`,
+        `[${runs.map((r, i) => `${worlds[i].label}: ${r.error ?? 'succeeded'}`).join(' | ')}]`);
+      continue;
+    }
+    const failed = runs.findIndex((r) => r.error);
+    if (failed >= 0) {
+      report(false, `${label}: runs`, `${worlds[failed].label}: ${runs[failed].error}`);
+      continue;
+    }
+    const traces = runs.map((r) => r.value.context.callProofDataTrace);
+    const norms = traces.map(normalizeTrace);
+    const n = traces[0].length;
+    for (const [i, W] of worlds.entries()) {
+      report(norms[i].problems.length === 0, `${label} [${W.label}]: openings and commitments check`, norms[i].problems.join('; '));
+      if (W === compactc) continue;
+      report(toJson(norms[i].entries, 0) === toJson(norms[1].entries, 0),
+        `${label} [${W.label}]: proof data of all ${n} call(s) equals compactc's`,
+        traces[i].map((e) => `${nameAt[e.contractAddress] ?? e.contractAddress}.${e.circuitId}`).join(' <- '));
+      report(toJson(runs[i].value.result, 0) === toJson(runs[1].value.result, 0),
+        `${label} [${W.label}]: result equals compactc's`, `= ${toJson(runs[i].value.result, 0)}`);
+      report(toJson(runs[i].value.context.zswapLocalStates, 0) === toJson(runs[1].value.context.zswapLocalStates, 0),
+        `${label} [${W.label}]: Zswap local states equal compactc's`);
+    }
+    // Every entry, Damp's and compactc's, against the Damp circuit of its contract.
+    for (const W of [damp, compactc]) {
+      for (const e of W === damp ? traces[0] : traces[1]) {
+        const cn = nameAt[e.contractAddress];
+        const checked = await checkProofData({
+          compiledDir: path.join(root, 'lean', cn), circuitId: e.circuitId, proofData: proofDataOf(e), prove: !proved && W === damp && cn === 'caller',
+        });
+        report(checked.ok, `${label} [${W.label}]: ZKIR check of ${cn}.${e.circuitId} accepts`
+          + (checked.proof ? ` (and a real proof: ${checked.proof.length} bytes)` : ''), checked.ok ? '' : `${checked.stage}: ${checked.error}`);
+        if (checked.proof) proved = true;
+      }
+    }
+    const top = structuredClone(proofDataOf(traces[0].at(-1)));
+    const target = [top.output, ...top.privateTranscriptOutputs, top.input].find((t) => t.value.length > 0);
+    if (target) {
+      const atom = Uint8Array.from(target.value[0].length ? target.value[0] : [0]);
+      atom[0] = atom[0] === 255 ? 254 : atom[0] + 1;
+      target.value[0] = atom;
+      const rejected = await checkProofData({ compiledDir: path.join(root, 'lean', name), circuitId: circuit, proofData: top });
+      report(!rejected.ok, `${label}: ZKIR check rejects a tampered value`);
+    }
+    for (const [i, W] of worlds.entries()) W.w.commit(runs[i].value);
+  }
+  for (const n of names) {
+    const enc = (W) => toJson(W.w.state(addresses[n]).encode(), 0);
+    report(worlds.every((W) => enc(W) === enc(compactc)), `${n}: final ledger state equals compactc's in every chain`);
+    const mine = dampMods[n].ledger(damp.w.state(addresses[n]));
+    const theirs = compactMods[n].ledger(compactc.w.state(addresses[n]));
+    for (const f of specs[n].ledger) {
+      if (f.type.kind !== 'cell' && f.type.kind !== 'counter') continue;
+      report(show(mine[f.name]) === show(theirs[f.name]), `${n}: ledger view of ${f.name} equals compactc's`, `= ${show(mine[f.name])}`);
     }
   }
 }

@@ -4,5 +4,7 @@ import Examples
 def main (args : List String) : IO UInt32 :=
   Damp.cli
     [Examples.Step.contract, Examples.Counter.contract, Examples.Shapes.contract,
-     Examples.Loops.contract, Examples.Bytes.contract, Examples.Extras.contract, Examples.Vault.contract, Examples.Notes.contract, Examples.Structures.contract, Examples.StructuresNested.contract, Examples.Tuned.contract, Examples.Tokens.contract]
+     Examples.Loops.contract, Examples.Bytes.contract, Examples.Extras.contract, Examples.Vault.contract, Examples.Notes.contract, Examples.Structures.contract, Examples.StructuresNested.contract, Examples.Tuned.contract, Examples.Tokens.contract,
+     Examples.Adder.contract, Examples.Rich.contract, Examples.Caller.contract, Examples.Relay.contract,
+     Examples.Top.contract, Examples.Picker.contract]
     args

@@ -7,6 +7,7 @@ Integers are printed as decimal strings: they do not fit in JSON numbers.
 -/
 import Lean.Data.Json
 import Damp.Ledger
+import Damp.Calls
 import Damp.Emit
 
 namespace Damp
@@ -19,14 +20,26 @@ structure Contract where
   circuits : List Circuit
   /-- Runs once at deployment, after every field has its default value. -/
   constructor : Option Circuit := none
+  /-- The contract types (`interface`) the circuits call other contracts through. -/
+  interfaces : List Interface := []
   deriving Inhabited
 
-/-- Ledger fields must be declared in index order with no gaps. -/
+/-- Ledger fields must be declared in index order with no gaps, and every
+    cross-contract call must go through a declared contract type, which the
+    executor needs to run it. -/
 def Contract.check (c : Contract) : Except String Unit := do
   let mut i := 0
   for f in c.ledger do
     unless f.index = i do throw s!"ledger field {f.name} has index {f.index}, expected {i}"
     i := i + 1
+  for circ in c.circuits ++ c.constructor.toList do
+    for s in circ.body do
+      if let .witness _ name _ _ _ := s then
+        if name.startsWith "call:" then
+          let declared := c.interfaces.any fun i =>
+            i.circuits.any fun k => callWitnessName i.name k.name == name
+          unless declared do
+            throw s!"{circ.name}: {name} is not a circuit of a contract type declared for contract {c.name}"
 
 namespace Export
 
@@ -165,13 +178,25 @@ def ledgerField (f : LedgerField) : Json :=
   let kind := ledgerKind f.kind
   Json.mkObj [("name", f.name), ("index", f.index), ("type", kind)]
 
-def contract (c : Contract) : Json :=
+def interfaceCircuit (k : InterfaceCircuit) : Json :=
   Json.mkObj [
+    ("name", k.name),
+    ("args", .arr (k.args.map fun (n, sh) => Json.mkObj [("name", n), ("shape", shape sh)]).toArray),
+    ("result", shape k.result)]
+
+def «interface» (i : Interface) : Json :=
+  Json.mkObj [("name", i.name), ("circuits", .arr (i.circuits.map interfaceCircuit).toArray)]
+
+/-- `interfaces` is written only when there are some, so contracts that call no
+    other contract keep their `contract.json` byte for byte. -/
+def contract (c : Contract) : Json :=
+  Json.mkObj (([
     ("format", "damp-contract/5"),
     ("name", c.name),
     ("ledger", .arr (c.ledger.map ledgerField).toArray),
     ("circuits", .arr (c.circuits.map circuit).toArray),
-    ("constructor", match c.constructor with | some k => circuit k | none => .null)]
+    ("constructor", match c.constructor with | some k => circuit k | none => .null)] : List (String × Json)) ++
+    (if c.interfaces.isEmpty then [] else [("interfaces", Json.arr (c.interfaces.map «interface»).toArray)]))
 
 end Export
 

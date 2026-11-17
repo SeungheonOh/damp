@@ -769,6 +769,28 @@ def incUnshieldedOutputs (tokenType : TokenType) (amount : Uint128) : CircuitM U
 def incUnshieldedInputs (tokenType : TokenType) (amount : Uint128) : CircuitM Unit :=
   addIn 6 (alignedOf tokenType) (u128 amount.expr)
 
+/-- Record, in effects slot 3 (the claimed contract calls), a call of the
+    circuit whose entry point is `entryPoint` on the contract at `address`, with
+    communication commitment `comm`: Compact's
+    `kernel.claimContractCall(address, entryPoint, comm)`. The key is the
+    triple appended to the set's current size (`concat cached 160`); the ledger
+    matches it against the called contract's own transcript. The sequence is
+    the one compactc 0.36.1 emits for every cross-contract call
+    (`docs/calls.md`). -/
+def claimContractCall (address : ContractAddress) (entryPoint : Bytes 32) (comm : Field) :
+    CircuitM Unit :=
+  ledgerOp [] [
+    .swap 0,
+    .idx true true [slot 3],
+    .dup 0,
+    .size,
+    .push false { align := [.bytes 32, .bytes 32, .field],
+                  vals := address.bytes.limbs ++ entryPoint.limbs ++ [comm.expr] },
+    .concatCached 160,
+    .pushNull false,
+    .ins true 2,
+    .swap 0]
+
 /-- Push the contract's balance of `tokenType` (0 if it has none), with the
     context `depth` below the top of the stack. -/
 private def balanceOps (depth : Nat) (tokenType : TokenType) : List (Op Expr) :=

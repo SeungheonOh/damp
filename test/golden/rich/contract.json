@@ -1,0 +1,87 @@
+{"name": "rich",
+ "ledger":
+ [{"type":
+   {"shape":
+    {"name": "Pt",
+     "kind": "struct",
+     "fields": [{"kind": "field"}, {"max": "255", "kind": "uint"}],
+     "fieldNames": ["x", "y"]},
+    "kind": "cell"},
+   "name": "last",
+   "index": 0},
+  {"type": {"shape": {"length": 32, "kind": "bytes"}, "kind": "cell"},
+   "name": "tag",
+   "index": 1}],
+ "format": "damp-contract/5",
+ "constructor": null,
+ "circuits":
+ [{"result":
+   {"kind": "tuple",
+    "elems":
+    [{"name": "Pt",
+      "kind": "struct",
+      "fields": [{"kind": "field"}, {"max": "255", "kind": "uint"}],
+      "fieldNames": ["x", "y"]},
+     {"length": 32, "kind": "bytes"}]},
+   "proof": true,
+   "outputs":
+   [{"kind": "add",
+     "b": {"var": 4, "kind": "var"},
+     "a": {"var": 0, "kind": "var"}},
+    {"var": 1, "kind": "var"},
+    {"var": 2, "kind": "var"},
+    {"var": 3, "kind": "var"}],
+   "name": "mix",
+   "inputs": [0, 1, 2, 3, 4],
+   "body":
+   [{"range": {"n": 8, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 1, "kind": "var"}},
+    {"range": {"n": 8, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 2, "kind": "var"}},
+    {"range": {"n": 248, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 3, "kind": "var"}},
+    {"range": {"n": 16, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 4, "kind": "var"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"var": 0, "kind": "var"}, {"var": 1, "kind": "var"}],
+        "align": [{"kind": "field"}, {"length": 1, "kind": "bytes"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "1", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"var": 2, "kind": "var"}, {"var": 3, "kind": "var"}],
+        "align": [{"length": 32, "kind": "bytes"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args":
+   [{"shape":
+     {"name": "Pt",
+      "kind": "struct",
+      "fields": [{"kind": "field"}, {"max": "255", "kind": "uint"}],
+      "fieldNames": ["x", "y"]},
+     "name": "p"},
+    {"shape": {"length": 32, "kind": "bytes"}, "name": "b"},
+    {"shape": {"max": "65535", "kind": "uint"}, "name": "k"}]}]}

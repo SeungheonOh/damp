@@ -6,6 +6,7 @@ import Damp.Emit
 import Damp.Semantics
 import Damp.Contract
 import Damp.Ledger
+import Damp.Calls
 import Damp.Export
 import Damp.Optimize
 import Damp.OptimizeCorrect
