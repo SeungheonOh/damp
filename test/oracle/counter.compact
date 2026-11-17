@@ -1,0 +1,25 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger count: Counter;
+export ledger total: Field;
+export ledger cap: Uint<32>;
+witness delta(): Uint<0..21>;
+export circuit bump(x: Uint<16>, go: Boolean, stop: Boolean): Uint<64> {
+  if (disclose(go)) {
+    count.increment(disclose(x));
+    if (!disclose(stop)) { total = disclose(x) as Field; }
+    assert(disclose(x) < 500, "too big");
+  }
+  return count.read();
+}
+export circuit arith(a: Uint<8>, b: Uint<8>, f: Field): Field {
+  const d = disclose(delta());
+  const s = a + b;
+  const p = a * b;
+  const m = a - b;
+  const ok = (a == b) || (a < b && d < 5);
+  cap = disclose((s + p + m) as Uint<32>);
+  assert(disclose(ok), "nope");
+  total = disclose(f - (d as Field));
+  return total;
+}

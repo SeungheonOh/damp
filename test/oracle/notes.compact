@@ -1,0 +1,9 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger total: Field;
+witness note(x: Field): [];
+export circuit save(a: Field, b: Field, on: Boolean): [] {
+  if (on) { note(a); }
+  note(b);
+  total = disclose(a);
+}

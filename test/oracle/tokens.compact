@@ -1,0 +1,127 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+
+// Coin and token operations of the standard library. Counterpart of Examples/Tokens.lean.
+
+export ledger treasury: QualifiedShieldedCoinInfo;
+export ledger last: ShieldedCoinInfo;
+export ledger change: Maybe<ShieldedCoinInfo>;
+export ledger color: Bytes<32>;
+export ledger nonce: Bytes<32>;
+export ledger owner: ZswapCoinPublicKey;
+export ledger held: QualifiedShieldedCoinInfo;
+export ledger heldMap: Map<Field, QualifiedShieldedCoinInfo>;
+export ledger heldSet: Set<QualifiedShieldedCoinInfo>;
+export ledger heldList: List<QualifiedShieldedCoinInfo>;
+
+export circuit mint(amount: Uint<64>, n: Bytes<32>, to: ZswapCoinPublicKey): [] {
+  last = mintShieldedToken(pad(32, "damp:token"), disclose(amount), disclose(n),
+    left<ZswapCoinPublicKey, ContractAddress>(disclose(to)));
+}
+export circuit mintSelf(amount: Uint<64>, n: Bytes<32>): [] {
+  last = mintShieldedToken(pad(32, "damp:token"), disclose(amount), disclose(n),
+    right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+export circuit mintTo(amount: Uint<64>, n: Bytes<32>, to: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  last = mintShieldedToken(pad(32, "damp:token"), disclose(amount), disclose(n), disclose(to));
+}
+export circuit deposit(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  last = disclose(coin);
+}
+export circuit setTreasury(coin: QualifiedShieldedCoinInfo): [] {
+  treasury = disclose(coin);
+}
+export circuit pay(to: Either<ZswapCoinPublicKey, ContractAddress>, value: Uint<128>): [] {
+  const r = sendShielded(treasury, disclose(to), disclose(value));
+  last = r.sent;
+  change = r.change;
+}
+export circuit payImm(coin: ShieldedCoinInfo, to: Either<ZswapCoinPublicKey, ContractAddress>, value: Uint<128>): [] {
+  const r = sendImmediateShielded(disclose(coin), disclose(to), disclose(value));
+  last = r.sent;
+  change = r.change;
+}
+export circuit burn(value: Uint<128>): [] {
+  const r = sendShielded(treasury, shieldedBurnAddress(), disclose(value));
+  last = r.sent;
+}
+export circuit merge(b: QualifiedShieldedCoinInfo): [] {
+  last = mergeCoin(treasury, disclose(b));
+}
+export circuit mergeImm(b: ShieldedCoinInfo): [] {
+  last = mergeCoinImmediate(treasury, disclose(b));
+}
+export circuit evolve(i: Uint<128>): [] {
+  nonce = evolveNonce(disclose(i), nonce);
+}
+export circuit whoami(): ZswapCoinPublicKey {
+  const k = disclose(ownPublicKey());
+  owner = k;
+  return k;
+}
+export circuit native(): [] {
+  color = nativeToken();
+}
+export circuit derive(ds: Bytes<32>): Bytes<32> {
+  const t = tokenType(ds, kernel.self());
+  color = t;
+  return t;
+}
+export circuit mintU(amount: Uint<64>, who: UserAddress): [] {
+  color = mintUnshieldedToken(pad(32, "damp:u"), disclose(amount), right<ContractAddress, UserAddress>(disclose(who)));
+}
+export circuit mintUTo(amount: Uint<64>, to: Either<ContractAddress, UserAddress>): [] {
+  color = mintUnshieldedToken(pad(32, "damp:u"), disclose(amount), disclose(to));
+}
+export circuit sendU(amount: Uint<128>, to: Either<ContractAddress, UserAddress>): [] {
+  sendUnshielded(color, disclose(amount), disclose(to));
+}
+export circuit recvU(amount: Uint<128>): [] {
+  receiveUnshielded(color, disclose(amount));
+}
+export circuit balU(): Uint<128> {
+  return unshieldedBalance(color);
+}
+export circuit cmpU(amount: Uint<128>): Vector<4, Boolean> {
+  return [unshieldedBalanceLt(color, disclose(amount)), unshieldedBalanceGte(color, disclose(amount)),
+          unshieldedBalanceGt(color, disclose(amount)), unshieldedBalanceLte(color, disclose(amount))];
+}
+
+// Holding coins: receive one and store it qualified with its Merkle-tree index,
+// then spend and merge the stored coins, storing the change.
+export circuit keep(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  held.writeCoin(disclose(coin), right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+export circuit keepOnly(coin: ShieldedCoinInfo, to: Either<ZswapCoinPublicKey, ContractAddress>): [] {
+  held.writeCoin(disclose(coin), disclose(to));
+}
+export circuit keepMap(k: Field, coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  heldMap.insertCoin(disclose(k), disclose(coin), right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+export circuit keepSet(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  heldSet.insertCoin(disclose(coin), right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+export circuit keepList(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  heldList.pushFrontCoin(disclose(coin), right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+export circuit spend(to: Either<ZswapCoinPublicKey, ContractAddress>, value: Uint<128>): [] {
+  const r = sendShielded(held, disclose(to), disclose(value));
+  last = r.sent;
+  if (r.change.is_some) {
+    held.writeCoin(r.change.value, right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+  }
+}
+export circuit mergeKept(k: Field): [] {
+  const m = mergeCoin(held, heldMap.lookup(disclose(k)));
+  held.writeCoin(m, right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+export circuit mergeHeld(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  const m = mergeCoinImmediate(held, disclose(coin));
+  held.writeCoin(m, right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}

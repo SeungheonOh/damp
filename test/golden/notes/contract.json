@@ -1,0 +1,47 @@
+{"name": "notes",
+ "ledger":
+ [{"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "total",
+   "index": 0}],
+ "format": "damp-contract/5",
+ "constructor": null,
+ "circuits":
+ [{"result": {"kind": "tuple", "elems": []},
+   "proof": true,
+   "outputs": [],
+   "name": "save",
+   "inputs": [0, 1, 2],
+   "body":
+   [{"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 2, "kind": "var"}},
+    {"shape": {"kind": "tuple", "elems": []},
+     "outs": [],
+     "name": "note",
+     "kind": "witness",
+     "guard": {"var": 2, "kind": "var"},
+     "args": [{"var": 0, "kind": "var"}]},
+    {"shape": {"kind": "tuple", "elems": []},
+     "outs": [],
+     "name": "note",
+     "kind": "witness",
+     "guard": {"value": "1", "kind": "const"},
+     "args": [{"var": 1, "kind": "var"}]},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"var": 0, "kind": "var"}], "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args":
+   [{"shape": {"kind": "field"}, "name": "a"},
+    {"shape": {"kind": "field"}, "name": "b"},
+    {"shape": {"kind": "bool"}, "name": "on"}]}]}

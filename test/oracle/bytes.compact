@@ -1,0 +1,20 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger owner: Bytes<32>;
+export ledger tag: Bytes<8>;
+export ledger wide: Bytes<64>;
+witness secret(): Bytes<32>;
+export circuit claim(who: Bytes<32>, t: Bytes<8>, on: Boolean): Bytes<32> {
+  const s = secret();
+  const h = disclose(persistentHash<Bytes<32>>(s));
+  assert(h == owner || disclose(who) == pad(32, "admin"), "not owner");
+  if (disclose(on)) { tag = disclose(t); }
+  owner = disclose(persistentHash<[Bytes<32>, Bytes<32>]>([who, h]));
+  return owner;
+}
+export circuit store(w: Bytes<64>, f: Field): Bytes<64> {
+  const d = persistentHash<[Field, Bytes<64>]>([f, w]);
+  assert(disclose(d) != owner, "collision");
+  wide = disclose(w);
+  return wide;
+}

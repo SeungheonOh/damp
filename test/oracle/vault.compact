@@ -1,0 +1,18 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger owner: Bytes<32>;
+export ledger limit: Uint<32>;
+export ledger spent: Counter;
+witness key(): Bytes<32>;
+constructor(o: Bytes<32>, l: Uint<32>) {
+  owner = disclose(o);
+  limit = disclose(l);
+}
+export circuit spend(amount: Uint<16>): [] {
+  assert(disclose(persistentHash<Bytes<32>>(key())) == owner, "not owner");
+  spent.increment(disclose(amount));
+  assert(spent.read() <= limit, "over limit");
+}
+export circuit digest(x: Field, y: Field): Field {
+  return transientHash<[Field, Field]>([x, y]);
+}

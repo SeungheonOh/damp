@@ -1,0 +1,108 @@
+{"name": "tuned",
+ "ledger":
+ [{"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "total",
+   "index": 0},
+  {"type": {"kind": "counter"}, "name": "runs", "index": 1},
+  {"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "log",
+   "index": 2}],
+ "format": "damp-contract/5",
+ "constructor": null,
+ "circuits":
+ [{"result": {"kind": "field"},
+   "proof": true,
+   "outputs": [{"var": 5, "kind": "var"}],
+   "name": "settle",
+   "inputs": [0, 1, 2, 3, 4],
+   "body":
+   [{"range": {"n": 16, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 0, "kind": "var"}},
+    {"range": {"n": 16, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 1, "kind": "var"}},
+    {"range": {"n": 16, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 2, "kind": "var"}},
+    {"range": {"n": 16, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 3, "kind": "var"}},
+    {"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 4, "kind": "var"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals":
+        [{"kind": "select",
+          "c": {"var": 4, "kind": "var"},
+          "b":
+          {"kind": "add",
+           "b": {"var": 3, "kind": "var"},
+           "a":
+           {"kind": "add",
+            "b":
+            {"kind": "mul",
+             "b": {"value": "2", "kind": "const"},
+             "a": {"var": 2, "kind": "var"}},
+            "a": {"var": 0, "kind": "var"}}},
+          "a":
+          {"kind": "add",
+           "b": {"var": 0, "kind": "var"},
+           "a":
+           {"kind": "add",
+            "b": {"var": 0, "kind": "var"},
+            "a":
+            {"kind": "add",
+             "b": {"var": 3, "kind": "var"},
+             "a":
+             {"kind": "add",
+              "b":
+              {"kind": "mul",
+               "b": {"value": "2", "kind": "const"},
+               "a": {"var": 2, "kind": "var"}},
+              "a": {"var": 0, "kind": "var"}}}}}}],
+        "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [],
+     "ops":
+     [{"pushPath": true,
+       "path":
+       [{"vals": [{"value": "1", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"kind": "addi", "immediate": {"value": "1", "kind": "const"}},
+      {"n": 1, "kind": "ins", "cached": true}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [5],
+     "ops":
+     [{"n": 0, "kind": "dup"},
+      {"pushPath": false,
+       "path":
+       [{"vals": [{"value": "0", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"result": [{"var": 5, "kind": "var"}],
+       "kind": "popeq",
+       "cached": false,
+       "align": [{"kind": "field"}]}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args":
+   [{"shape":
+     {"length": 4, "kind": "vector", "elem": {"max": "65535", "kind": "uint"}},
+     "name": "amounts"},
+    {"shape": {"kind": "bool"}, "name": "vip"}]}]}

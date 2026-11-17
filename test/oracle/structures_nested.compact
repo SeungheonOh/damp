@@ -1,0 +1,61 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger votes: Map<Field, Counter>;
+export ledger groups: Map<Uint<16>, Map<Field, Counter>>;
+export ledger members: Map<Field, Set<Field>>;
+export ledger queues: Map<Field, List<Field>>;
+export ledger trees: Map<Field, MerkleTree<4, Field>>;
+export ledger hists: Map<Field, HistoricMerkleTree<4, Field>>;
+export circuit vote(k: Field, n: Uint<16>): Uint<64> {
+  if (!votes.member(disclose(k))) { votes.insertDefault(disclose(k)); }
+  votes.lookup(disclose(k)).increment(disclose(n));
+  votes.lookup(disclose(k)).decrement(1);
+  return votes.lookup(disclose(k)).read();
+}
+export circuit group(g: Uint<16>, k: Field, limit: Uint<64>, reset: Boolean): Boolean {
+  if (!groups.member(disclose(g))) { groups.insertDefault(disclose(g)); }
+  if (!groups.lookup(disclose(g)).member(disclose(k))) { groups.lookup(disclose(g)).insertDefault(disclose(k)); }
+  groups.lookup(disclose(g)).lookup(disclose(k)).increment(3);
+  const below = groups.lookup(disclose(g)).lookup(disclose(k)).lessThan(disclose(limit));
+  if (disclose(reset)) {
+    groups.lookup(disclose(g)).lookup(disclose(k)).resetToDefault();
+    groups.lookup(disclose(g)).remove(disclose(k));
+  }
+  if (groups.lookup(disclose(g)).isEmpty()) { groups.lookup(disclose(g)).resetToDefault(); }
+  return below;
+}
+export circuit join(k: Field, x: Field, leave: Boolean): Uint<64> {
+  if (!members.member(disclose(k))) { members.insertDefault(disclose(k)); }
+  members.lookup(disclose(k)).insert(disclose(x));
+  if (disclose(leave)) { members.lookup(disclose(k)).remove(disclose(x)); }
+  const empty = members.lookup(disclose(k)).isEmpty();
+  if (empty) { members.lookup(disclose(k)).resetToDefault(); }
+  return members.lookup(disclose(k)).size();
+}
+export circuit enqueue(k: Field, x: Field): Maybe<Field> {
+  if (!queues.member(disclose(k))) { queues.insertDefault(disclose(k)); }
+  queues.lookup(disclose(k)).pushFront(disclose(x));
+  const h = queues.lookup(disclose(k)).head();
+  if (queues.lookup(disclose(k)).length() > 2) { queues.lookup(disclose(k)).popFront(); }
+  if (queues.lookup(disclose(k)).isEmpty()) { queues.lookup(disclose(k)).resetToDefault(); }
+  return h;
+}
+export circuit grow(k: Field, x: Field, i: Uint<64>, r: MerkleTreeDigest, wipe: Boolean): Boolean {
+  if (!trees.member(disclose(k))) { trees.insertDefault(disclose(k)); }
+  trees.lookup(disclose(k)).insert(disclose(x));
+  trees.lookup(disclose(k)).insertIndex(disclose(x) + 1, disclose(i));
+  const ok = trees.lookup(disclose(k)).checkRoot(disclose(r));
+  const full = trees.lookup(disclose(k)).isFull();
+  if (disclose(wipe)) { trees.lookup(disclose(k)).resetToDefault(); }
+  return ok || full;
+}
+export circuit hgrow(k: Field, x: Field, i: Uint<64>, r: MerkleTreeDigest, mode: Uint<8>): Boolean {
+  if (!hists.member(disclose(k))) { hists.insertDefault(disclose(k)); }
+  const ok = hists.lookup(disclose(k)).checkRoot(disclose(r));
+  hists.lookup(disclose(k)).insert(disclose(x));
+  hists.lookup(disclose(k)).insertIndex(disclose(x) + 1, disclose(i));
+  const full = hists.lookup(disclose(k)).isFull();
+  if (disclose(mode) == 1) { hists.lookup(disclose(k)).resetHistory(); }
+  if (disclose(mode) == 2) { hists.lookup(disclose(k)).resetToDefault(); }
+  return ok && !full;
+}

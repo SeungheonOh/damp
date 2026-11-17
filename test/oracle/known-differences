@@ -1,0 +1,13 @@
+# Circuits whose verifier key differs from compactc's for a documented reason.
+# test/oracle.sh rewrites compactc's ZKIR for each with test/zkir-normalize.py
+# (which undoes exactly those differences) and requires the key of the result
+# to equal Damp's. One `contract.circuit` per line; see docs/tokens.md.
+tokens.pay
+tokens.payImm
+tokens.keep
+tokens.keepMap
+tokens.keepSet
+tokens.keepList
+tokens.spend
+tokens.mergeKept
+tokens.mergeHeld

@@ -1,0 +1,13 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger counter: Counter;
+export ledger owner: Bytes<32>;
+witness secret(): Field;
+export circuit inc(x: Uint<8>, b: Boolean): [] {
+  const s = secret();
+  assert(disclose(persistentHash<Field>(s)) == owner, "bad");
+  if (disclose(b)) { counter.increment(disclose(x) as Uint<16>); }
+}
+export circuit arith(a: Field, c: Uint<0..10>): Field {
+  return a * a + c - transientHash<Field>(a);
+}

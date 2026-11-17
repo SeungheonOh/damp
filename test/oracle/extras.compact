@@ -1,0 +1,22 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+enum Phase { idle, started, closed }
+export ledger phase: Phase;
+export ledger seen: Set<Bytes<32>>;
+export ledger best: Maybe<Uint<16>>;
+export ledger commitment: Field;
+export ledger pc: Bytes<32>;
+witness nonce(): Bytes<32>;
+export circuit advance(p: Phase, id: Bytes<32>, bid: Maybe<Uint<16>>, r: Field): Phase {
+  assert(phase != Phase.closed, "closed");
+  assert(!seen.member(disclose(id)), "seen");
+  seen.insert(disclose(id));
+  if (disclose(bid.is_some) && disclose(bid.value) > 100) { best = disclose(bid); }
+  else { best = none<Uint<16>>(); }
+  commitment = disclose(transientCommit<Uint<16>>(bid.value, r));
+  pc = disclose(persistentCommit<Field>(r, nonce()));
+  phase = disclose(p) == Phase.idle ? Phase.started : disclose(p);
+  if (seen.size() > 3) { seen.remove(disclose(id)); }
+  assert(!seen.isEmpty() || best == some<Uint<16>>(7), "x");
+  return phase;
+}

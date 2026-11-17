@@ -1,0 +1,82 @@
+{"name": "step",
+ "ledger":
+ [{"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "total",
+   "index": 0}],
+ "format": "damp-contract/5",
+ "constructor": null,
+ "circuits":
+ [{"result": {"kind": "field"},
+   "proof": true,
+   "outputs": [{"var": 6, "kind": "var"}],
+   "name": "step",
+   "inputs": [0, 1, 2],
+   "body":
+   [{"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 1, "kind": "var"}},
+    {"range": {"n": 16, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 2, "kind": "var"}},
+    {"var": 3,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 1, "kind": "var"},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"shape": {"max": "9", "kind": "uint"},
+     "outs":
+     [{"var": 4, "range": {"width": 4, "kind": "below", "bound": "10"}}],
+     "name": "hint",
+     "kind": "witness",
+     "guard": {"var": 1, "kind": "var"},
+     "args": []},
+    {"var": 5,
+     "kind": "bind",
+     "hint": "h",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 1, "kind": "var"},
+      "b": {"value": "0", "kind": "const"},
+      "a": {"var": 4, "kind": "var"}}},
+    {"var": 6,
+     "kind": "bind",
+     "hint": "r",
+     "expr":
+     {"kind": "add",
+      "b":
+      {"kind": "neg", "a": {"xs": [{"var": 0, "kind": "var"}], "kind": "hash"}},
+      "a":
+      {"kind": "add",
+       "b": {"var": 5, "kind": "var"},
+       "a":
+       {"kind": "mul",
+        "b": {"var": 0, "kind": "var"},
+        "a": {"var": 0, "kind": "var"}}}}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"var": 6, "kind": "var"}], "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"msg": "n too big",
+     "kind": "assert",
+     "cond":
+     {"kind": "lt",
+      "bits": 16,
+      "b": {"value": "1000", "kind": "const"},
+      "a": {"var": 2, "kind": "var"}}}],
+   "args":
+   [{"shape": {"kind": "field"}, "name": "a"},
+    {"shape": {"kind": "bool"}, "name": "b"},
+    {"shape": {"max": "65535", "kind": "uint"}, "name": "n"}]}]}

@@ -1,0 +1,21 @@
+name = "damp"
+version = "0.1.0"
+defaultTargets = ["Damp", "Examples"]
+
+[[lean_lib]]
+name = "Damp"
+
+[[lean_lib]]
+name = "Examples"
+
+[[lean_exe]]
+name = "damp-examples"
+root = "Main"
+
+[[lean_exe]]
+name = "damp-semantics-test"
+root = "Test.Semantics"
+
+[[lean_exe]]
+name = "damp-executor-test"
+root = "Test.Executor"

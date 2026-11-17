@@ -1,0 +1,27 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+struct Point { x: Field, y: Uint<8> }
+export ledger balances: Map<Uint<16>, Field>;
+export ledger origin: Point;
+export ledger flag: Boolean;
+witness pick(): Point;
+export circuit move(p: Point, v: Vector<3, Uint<8>>, on: Boolean, deep: Boolean): Point {
+  const w = disclose(pick());
+  const s = v[0] + v[1] + v[2];
+  if (disclose(on)) {
+    if (disclose(deep)) { origin = disclose(p); }
+    else { flag = disclose(p.y <= v[1]); }
+  }
+  const q = Point { x: p.x + w.x + (s as Field), y: w.y };
+  origin = disclose(q);
+  return origin;
+}
+export circuit pay(k: Uint<16>, amt: Field, a: Uint<8>, b: Uint<8>): Field {
+  const has = balances.member(disclose(k));
+  const cur = has ? balances.lookup(disclose(k)) : (0 as Field);
+  balances.insert(disclose(k), disclose(cur + amt));
+  flag = disclose(a > b || a >= b && a != b);
+  assert(!balances.isEmpty(), "empty");
+  if (disclose(a) == 7) { balances.remove(disclose(k)); }
+  return balances.size() as Field;
+}

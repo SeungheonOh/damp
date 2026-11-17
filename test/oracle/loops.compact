@@ -1,0 +1,13 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger sum: Field;
+export ledger hits: Counter;
+export circuit tally(v: Vector<4, Field>, on: Vector<4, Boolean>, limit: Uint<8>): Field {
+  const a0 = on[0] ? (0 as Field) + v[0] : (0 as Field);
+  const a1 = on[1] ? a0 + v[1] : a0;
+  const a2 = on[2] ? a1 + v[2] : a1;
+  const acc = on[3] ? a2 + v[3] : a2;
+  if (disclose(limit) < 10) { hits.increment(1); } else { sum = disclose(acc); }
+  sum = disclose(acc * acc);
+  return sum;
+}

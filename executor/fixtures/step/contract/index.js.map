@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../",
+  "sources": ["ex.compact", "compiler/zkir-v3-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAAA;;;;;;;;;;;;;MAIA,AAAA,IAMC;;;;;cANmB,GAAQ;cAAE,GAAU;cAAE,GAAW;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;yCAAjC,GAAQ,+BAAE,GAAU,+BAAE,GAAW;;;;;;;;;4CAAjC,GAAQ;4CAAE,GAAU;4CAAE,GAAW;;;;OAMpD;;;;GACA;EAXD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;IAEA;;;;;;;;;yEAA2B;;;;;;;GAS1B;ECXD,AAAA,iBAAA;mEAAA;;;EDGA,AAAA,OAA4B;;0DAA5B,IAA4B;;;;;;;;;;;;;;GAAA;EAC5B,AAAA,aAMC,4BANmB,GAAQ,EAAE,GAAU,EAAE,GAAW;UAC7C,GAAiC,GAA7B,GAAC;UACL,GAAuC,iFAAnC,GAAC;8FAAG,GAAC;oEAAG,GAAC;gEAAwB,GAAC;IAC5C;;;;;;;2HAAiB,GAAC;;yEAAb;4BACE,GAAC;WACQ,GAAC;GAClB;;;;;;;;;;;;;;;;IARD;qCAAA;;;;;;;;;;;0GAA2B;KAAA;;;;;;;;;;;;;;;;;;"
+}

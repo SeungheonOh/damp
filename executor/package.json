@@ -1,0 +1,14 @@
+{
+  "name": "damp-executor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "0.21.0",
+    "@midnightntwrk/zkir-v3": "3.2.1"
+  },
+  "scripts": {
+    "oracle": "node harness/run-compactc-module.mjs",
+    "test": "node test/run.mjs"
+  }
+}

@@ -1,0 +1,232 @@
+{"name": "loops",
+ "ledger":
+ [{"type": {"shape": {"kind": "field"}, "kind": "cell"},
+   "name": "sum",
+   "index": 0},
+  {"type": {"kind": "counter"}, "name": "hits", "index": 1}],
+ "format": "damp-contract/5",
+ "constructor": null,
+ "circuits":
+ [{"result": {"kind": "field"},
+   "proof": true,
+   "outputs": [{"var": 16, "kind": "var"}],
+   "name": "tally",
+   "inputs": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+   "body":
+   [{"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 4, "kind": "var"}},
+    {"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 5, "kind": "var"}},
+    {"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 6, "kind": "var"}},
+    {"range": {"kind": "bool"},
+     "kind": "constrain",
+     "expr": {"var": 7, "kind": "var"}},
+    {"range": {"n": 8, "kind": "bits"},
+     "kind": "constrain",
+     "expr": {"var": 8, "kind": "var"}},
+    {"var": 9,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 4, "kind": "var"},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"var": 10,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 5, "kind": "var"},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"var": 11,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 6, "kind": "var"},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"var": 12,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 7, "kind": "var"},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"var": 13,
+     "kind": "bind",
+     "hint": "total",
+     "expr":
+     {"kind": "select",
+      "c": {"var": 7, "kind": "var"},
+      "b":
+      {"kind": "select",
+       "c": {"var": 6, "kind": "var"},
+       "b":
+       {"kind": "select",
+        "c": {"var": 5, "kind": "var"},
+        "b":
+        {"kind": "select",
+         "c": {"var": 4, "kind": "var"},
+         "b": {"value": "0", "kind": "const"},
+         "a": {"var": 0, "kind": "var"}},
+        "a":
+        {"kind": "add",
+         "b": {"var": 1, "kind": "var"},
+         "a":
+         {"kind": "select",
+          "c": {"var": 4, "kind": "var"},
+          "b": {"value": "0", "kind": "const"},
+          "a": {"var": 0, "kind": "var"}}}},
+       "a":
+       {"kind": "add",
+        "b": {"var": 2, "kind": "var"},
+        "a":
+        {"kind": "select",
+         "c": {"var": 5, "kind": "var"},
+         "b":
+         {"kind": "select",
+          "c": {"var": 4, "kind": "var"},
+          "b": {"value": "0", "kind": "const"},
+          "a": {"var": 0, "kind": "var"}},
+         "a":
+         {"kind": "add",
+          "b": {"var": 1, "kind": "var"},
+          "a":
+          {"kind": "select",
+           "c": {"var": 4, "kind": "var"},
+           "b": {"value": "0", "kind": "const"},
+           "a": {"var": 0, "kind": "var"}}}}}},
+      "a":
+      {"kind": "add",
+       "b": {"var": 3, "kind": "var"},
+       "a":
+       {"kind": "select",
+        "c": {"var": 6, "kind": "var"},
+        "b":
+        {"kind": "select",
+         "c": {"var": 5, "kind": "var"},
+         "b":
+         {"kind": "select",
+          "c": {"var": 4, "kind": "var"},
+          "b": {"value": "0", "kind": "const"},
+          "a": {"var": 0, "kind": "var"}},
+         "a":
+         {"kind": "add",
+          "b": {"var": 1, "kind": "var"},
+          "a":
+          {"kind": "select",
+           "c": {"var": 4, "kind": "var"},
+           "b": {"value": "0", "kind": "const"},
+           "a": {"var": 0, "kind": "var"}}}},
+        "a":
+        {"kind": "add",
+         "b": {"var": 2, "kind": "var"},
+         "a":
+         {"kind": "select",
+          "c": {"var": 5, "kind": "var"},
+          "b":
+          {"kind": "select",
+           "c": {"var": 4, "kind": "var"},
+           "b": {"value": "0", "kind": "const"},
+           "a": {"var": 0, "kind": "var"}},
+          "a":
+          {"kind": "add",
+           "b": {"var": 1, "kind": "var"},
+           "a":
+           {"kind": "select",
+            "c": {"var": 4, "kind": "var"},
+            "b": {"value": "0", "kind": "const"},
+            "a": {"var": 0, "kind": "var"}}}}}}}}},
+    {"var": 14,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "lt",
+      "bits": 8,
+      "b": {"value": "10", "kind": "const"},
+      "a": {"var": 8, "kind": "var"}}},
+    {"var": 15,
+     "kind": "bind",
+     "hint": "t",
+     "expr":
+     {"kind": "select",
+      "c":
+      {"kind": "lt",
+       "bits": 8,
+       "b": {"value": "10", "kind": "const"},
+       "a": {"var": 8, "kind": "var"}},
+      "b": {"value": "1", "kind": "const"},
+      "a": {"value": "0", "kind": "const"}}},
+    {"reads": [],
+     "ops":
+     [{"pushPath": true,
+       "path":
+       [{"vals": [{"value": "1", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"kind": "addi", "immediate": {"value": "1", "kind": "const"}},
+      {"n": 1, "kind": "ins", "cached": true}],
+     "kind": "ledger",
+     "guard": {"var": 14, "kind": "var"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals": [{"var": 13, "kind": "var"}], "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"var": 15, "kind": "var"}},
+    {"reads": [],
+     "ops":
+     [{"value":
+       {"vals": [{"value": "0", "kind": "const"}],
+        "align": [{"length": 1, "kind": "bytes"}]},
+       "storage": false,
+       "kind": "push"},
+      {"value":
+       {"vals":
+        [{"kind": "mul",
+          "b": {"var": 13, "kind": "var"},
+          "a": {"var": 13, "kind": "var"}}],
+        "align": [{"kind": "field"}]},
+       "storage": true,
+       "kind": "push"},
+      {"n": 1, "kind": "ins", "cached": false}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}},
+    {"reads": [16],
+     "ops":
+     [{"n": 0, "kind": "dup"},
+      {"pushPath": false,
+       "path":
+       [{"vals": [{"value": "0", "kind": "const"}],
+         "align": [{"length": 1, "kind": "bytes"}]}],
+       "kind": "idx",
+       "cached": false},
+      {"result": [{"var": 16, "kind": "var"}],
+       "kind": "popeq",
+       "cached": false,
+       "align": [{"kind": "field"}]}],
+     "kind": "ledger",
+     "guard": {"value": "1", "kind": "const"}}],
+   "args":
+   [{"shape": {"length": 4, "kind": "vector", "elem": {"kind": "field"}},
+     "name": "v"},
+    {"shape": {"length": 4, "kind": "vector", "elem": {"kind": "bool"}},
+     "name": "on"},
+    {"shape": {"max": "255", "kind": "uint"}, "name": "limit"}]}]}

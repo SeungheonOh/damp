@@ -1,0 +1,68 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger count: Counter;
+export ledger total: Field;
+export ledger book: Map<Uint<16>, Field>;
+export ledger tags: Set<Field>;
+export ledger queue: List<Field>;
+export ledger tree: MerkleTree<4, Field>;
+export ledger hist: HistoricMerkleTree<4, Bytes<32>>;
+export ledger owner: ContractAddress;
+export circuit tick(n: Uint<16>, limit: Uint<64>, reset: Boolean): Boolean {
+  count.increment(disclose(n));
+  count.decrement(1);
+  total = disclose(n) as Field;
+  const below = count.lessThan(disclose(limit));
+  if (disclose(reset)) { count.resetToDefault(); total.resetToDefault(); }
+  return below;
+}
+export circuit books(k: Uint<16>, clear: Boolean): Uint<64> {
+  book.insertDefault(disclose(k));
+  tags.insert(disclose(k) as Field);
+  if (disclose(clear)) { book.resetToDefault(); tags.resetToDefault(); }
+  return book.size();
+}
+export circuit enqueue(x: Field): Maybe<Field> {
+  queue.pushFront(disclose(x));
+  return queue.head();
+}
+export circuit dequeue(): Uint<64> {
+  const h = queue.head();
+  if (!queue.isEmpty()) { queue.popFront(); }
+  if (h.is_some && h.value == (0 as Field)) { queue.resetToDefault(); }
+  return queue.length();
+}
+export circuit plant(x: Field, y: Field, i: Uint<64>, h: Bytes<32>): Boolean {
+  tree.insert(disclose(x));
+  tree.insertIndex(disclose(y), disclose(i));
+  tree.insertHash(disclose(h));
+  tree.insertHashIndex(disclose(h), disclose(i));
+  tree.insertIndexDefault(disclose(i));
+  return tree.isFull();
+}
+export circuit check(r: MerkleTreeDigest, wipe: Boolean): Boolean {
+  const ok = tree.checkRoot(disclose(r));
+  if (disclose(wipe)) { tree.resetToDefault(); }
+  return ok;
+}
+export circuit record(x: Bytes<32>, y: Bytes<32>, h: Bytes<32>, i: Uint<64>, r: MerkleTreeDigest, mode: Uint<8>): Boolean {
+  hist.insert(disclose(x));
+  hist.insertHash(disclose(h));
+  hist.insertIndex(disclose(y), disclose(i));
+  hist.insertHashIndex(disclose(h), disclose(i));
+  hist.insertIndexDefault(disclose(i));
+  const ok = hist.checkRoot(disclose(r));
+  const full = hist.isFull();
+  if (disclose(mode) == 1) { hist.resetHistory(); }
+  if (disclose(mode) == 2) { hist.resetToDefault(); }
+  return ok && !full;
+}
+export circuit stamp(t: Uint<64>): Vector<4, Boolean> {
+  owner = kernel.self();
+  kernel.checkpoint();
+  const a = blockTimeLt(disclose(t));
+  const b = blockTimeGte(disclose(t));
+  const c = blockTimeGt(disclose(t));
+  const d = blockTimeLte(disclose(t));
+  return [a, b, c, d];
+}

@@ -1,0 +1,14 @@
+.lake/
+build/
+node_modules/
+*.out/
+
+# Generated key material and compiled circuits; rebuilt by the test scripts.
+*.prover
+*.verifier
+*.bzkir
+
+# Local-network runs
+deploy/artifacts/
+deploy/out/
+deploy/logs/

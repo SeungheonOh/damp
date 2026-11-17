@@ -1,0 +1,11 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+export ledger total: Field;
+witness hint(): Uint<0..10>;
+export circuit step(a: Field, b: Boolean, n: Uint<16>): Field {
+  const h = b ? hint() : 0 as Uint<0..10>;
+  const r = a * a + h - transientHash<Field>(a);
+  total = disclose(r);
+  assert(n < 1000, "n too big");
+  return disclose(r);
+}

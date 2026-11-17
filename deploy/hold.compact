@@ -1,0 +1,39 @@
+pragma language_version >= 0.16;
+import CompactStandardLibrary;
+
+// Coin and token operations of the standard library. The ledger of test/oracle/tokens.compact with only the circuits deploy/src/hold.mjs uses, so that compactc's own build can be deployed for comparison.
+
+export ledger treasury: QualifiedShieldedCoinInfo;
+export ledger last: ShieldedCoinInfo;
+export ledger change: Maybe<ShieldedCoinInfo>;
+export ledger color: Bytes<32>;
+export ledger nonce: Bytes<32>;
+export ledger owner: ZswapCoinPublicKey;
+export ledger held: QualifiedShieldedCoinInfo;
+export ledger heldMap: Map<Field, QualifiedShieldedCoinInfo>;
+export ledger heldSet: Set<QualifiedShieldedCoinInfo>;
+export ledger heldList: List<QualifiedShieldedCoinInfo>;
+
+export circuit mint(amount: Uint<64>, n: Bytes<32>, to: ZswapCoinPublicKey): [] {
+  last = mintShieldedToken(pad(32, "damp:token"), disclose(amount), disclose(n),
+    left<ZswapCoinPublicKey, ContractAddress>(disclose(to)));
+}
+
+export circuit keep(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  held.writeCoin(disclose(coin), right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
+
+export circuit spend(to: Either<ZswapCoinPublicKey, ContractAddress>, value: Uint<128>): [] {
+  const r = sendShielded(held, disclose(to), disclose(value));
+  last = r.sent;
+  if (r.change.is_some) {
+    held.writeCoin(r.change.value, right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+  }
+}
+
+export circuit mergeHeld(coin: ShieldedCoinInfo): [] {
+  receiveShielded(disclose(coin));
+  const m = mergeCoinImmediate(held, disclose(coin));
+  held.writeCoin(m, right<ZswapCoinPublicKey, ContractAddress>(kernel.self()));
+}
