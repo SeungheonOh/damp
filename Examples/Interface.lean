@@ -1,10 +1,10 @@
 import Damp
 
 /-!
-Where the promises of the typed interface (`Damp/Contract.lean`) need a
+Where the promises of the typed interface (`Damp/Lang/Contract.lean`) need a
 hypothesis, or fail outright: one concrete counterexample each, checked by the
 reference semantics. The positive statements are proved in
-`Damp/InterfaceCorrect.lean`.
+`Damp/Proofs/Interface.lean`.
 -/
 namespace Examples.Interface
 open Damp Damp.IR
@@ -29,7 +29,7 @@ check (`compactc` 0.36.1 emits `cond_select guard value 0` and a guarded
 `assert`). Damp used to emit an unguarded range check for `toUint`/`castTo`
 and return the raw difference from `sub`, so a branch that does not run could
 make the whole circuit unprovable. Every run below marked "not taken" returned
-`none` before the fix in `Damp/Contract.lean` (`guarded`). -/
+`none` before the fix in `Damp/Lang/Contract.lean` (`guarded`). -/
 
 /-- A checked conversion inside a branch that is not taken. -/
 def deadCast : Circuit := mkCircuit "deadCast" ["x", "b"] fun (x : Field) (b : Boolean) =>

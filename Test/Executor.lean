@@ -1,6 +1,6 @@
 /-
 Conformance of the JavaScript executor (`executor/src/executor.mjs`) to its
-definition, `Damp.Exec.run` (Damp/Executor.lean). See docs/executor.md and
+definition, `Damp.Exec.run` (Damp/Executor/Spec.lean). See docs/executor.md and
 test/executor.sh, which runs the three steps:
 
   lake exe damp-executor-test export <dir>
@@ -29,8 +29,8 @@ used. `Exec.run` itself is also run on the same scripts and must agree with the
 statement-by-statement replay. For the synthetic calls, the definition's
 outcome must also be the one the case was written to exercise.
 -/
-import Damp.Executor
-import Damp.Build
+import Damp.Executor.Spec
+import Damp.Compile.Build
 import Damp.Crypto.Prims
 import Examples.Step
 import Examples.Counter

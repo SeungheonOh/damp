@@ -18,28 +18,14 @@ ZKIR circuits Midnight executes.
 | Path | What |
 |---|---|
 | `Damp/Field.lean` | BLS12-381 scalar field |
-| `Damp/Zkir.lean` | ZKIR v3 data type, JSON printer, single-assignment check |
-| `Damp/Impact.lean` | Impact VM instructions and their public-input encoding |
-| `Damp/IR.lean` | the circuit IR |
-| `Damp/Contract.lean` | the interface contracts are written against: values, operators, statements |
-| `Damp/Ledger.lean` | ledger types: `Cell`, `Counter`, `Map`, `Set`, `LedgerList`, Merkle trees, kernel operations (coins included) |
-| `Damp/Tokens.lean` | Compact's coin and token library: minting, sending and receiving shielded and unshielded tokens |
-| `Damp/Calls.lean` | cross-contract calls: contract types, the entry-point hash, the call |
-| `Damp/Optimize.lean` | the optimizer and its soundness proof |
-| `Damp/Disclosure.lean` | the check that private data is disclosed deliberately |
-| `Damp/Syntax.lean` | notation: `circuit`, `witness`, `ledger`, `struct`, `enum`, `contract`, `const`, operators, `if` |
-| `Damp/Build.lean` | writing output, key generation, command-line entry point |
-| `Damp/Emit.lean` | IR to ZKIR |
-| `Damp/ZkirSemantics.lean` | Midnight's ZKIR evaluator, ported to Lean |
+| `Damp/Zkir/` | Midnight's circuit format: the data type and JSON (`Basic`, `Json`), the producer's obligations (`Checks`), and Midnight's evaluator ported to Lean (`Semantics`) |
 | `Damp/Crypto/` | Poseidon, SHA-256 and the persistent hash, as Midnight computes them |
-| `Damp/Semantics.lean` | what the IR means |
-| `Damp/EmitCorrect.lean`, `OptimizeCorrect.lean`, `PruneCorrect.lean`, `Correct.lean` | the compiler's correctness proofs |
-| `Damp/Executor.lean`, `ExecutorCorrect.lean`, `ExecutorComplete.lean` | what the executor must do; its calls are accepted; it fails only when it must |
-| `Damp/OptimizeExecutor.lean` | optimizing does not change what the executor does |
-| `Damp/LedgerAgreement.lean` | the public inputs are the instructions sent to the ledger |
-| `Damp/InterfaceCorrect.lean` | the typed interface means what it says |
-| `Damp/ZkirChecks.lean` | the obligations the ZKIR specification places on a producer |
-| `Damp/Export.lean` | contract data for the executor |
+| `Damp/IR/` | the circuit IR (`Basic`), what it means (`Semantics`), Impact VM instructions and their encoding (`Impact`), the disclosure check (`Disclosure`), the ledger-statement check (`LedgerCheck`) |
+| `Damp/Optimize/` | optimization passes, one per file (`Simplify`, `Bounds`, `Algebra`, `Asserts`), put in order by `Pipeline` |
+| `Damp/Compile/` | IR to ZKIR (`Emit`), contract data for the executor (`Export`), output, key generation and the command line (`Build`) |
+| `Damp/Executor/` | what the executor must do (`Spec`) |
+| `Damp/Lang/` | what contracts are written in: values, operators and statements (`Contract`), ledger types and kernel operations (`Ledger`), cross-contract calls (`Calls`), the token library (`Tokens`), notation (`Syntax`) |
+| `Damp/Proofs/` | every theorem: the emitter (`Emit`, `Prune`), the optimizer (`Optimize/`: one file per pass, `Sound` for what a sound pass is, `Pipeline` for the whole), the compiler end to end (`Compiler`), the executor (`Executor`, `ExecutorComplete`, `LedgerAgreement`), the typed interface (`Interface`), field lemmas (`Field`) |
 | `Examples/` | example contracts, diagnostics, evaluator checks, a first theorem |
 | `docs/bytes-lowering.md` | how Compact represents byte strings, with evidence |
 | `executor/src/executor.mjs` | generic JS executor |

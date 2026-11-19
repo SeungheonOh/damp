@@ -16,7 +16,9 @@ out="${DAMP_OUT:-build/oracle}"   # set DAMP_OUT to run alongside another test r
 rm -rf "$out"; mkdir -p "$out"
 
 lake build damp-examples >/dev/null
-lake exe damp-examples "$out/lean" >/dev/null
+# DAMP_FLAGS=--O2 builds with every optimization pass; a circuit that then
+# beats compactc has a different verifier key and is reported as FAIL here.
+lake exe damp-examples ${DAMP_FLAGS:-} "$out/lean" >/dev/null
 
 fail=0
 for src in test/oracle/*.compact; do

@@ -1,6 +1,6 @@
 # Ledger types and kernel operations
 
-What `Damp/Ledger.lean` supports beyond `Cell`, `Counter`, `Map` and `Set`
+What `Damp/Lang/Ledger.lean` supports beyond `Cell`, `Counter`, `Map` and `Set`
 basics, how each operation is compiled, and the compactc 0.36.1 output it was
 copied from. Every Impact sequence and encoding below was observed in
 `compactc.bin --skip-zk` output (the `.zkir` and the generated
@@ -20,7 +20,7 @@ map), `L` its length, `k` a key. `push v` is `push false`, `push! v` is
 `[bytes 8]`; `{1: n}` a one-byte cell, used for array slots and context
 slots as well as field indices.
 
-## Encodings added to `Damp/Impact.lean`
+## Encodings added to `Damp/IR/Impact.lean`
 
 | Instruction | Encoding | First seen in |
 |---|---|---|

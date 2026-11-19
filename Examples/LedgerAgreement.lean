@@ -11,7 +11,7 @@ import Examples.Structures
 import Examples.StructuresNested
 import Examples.Tuned
 
-/-! `Circuit.checkLedger` (`Damp/LedgerAgreement.lean`) on every example
+/-! `Circuit.checkLedger` (`Damp/Proofs/LedgerAgreement.lean`) on every example
 contract, and on statements made by hand to fail it. -/
 namespace Examples.LedgerAgreement
 open Damp IR Impact

@@ -8,7 +8,7 @@ import Examples.Tuned
 
 /-! The emitter-correctness theorem, run on examples.
 
-`Damp/EmitCorrect.lean` proves that the ZKIR emitted for a circuit evaluates,
+`Damp/Proofs/Emit.lean` proves that the ZKIR emitted for a circuit evaluates,
 under the ZKIR evaluator, to what the IR semantics says. These checks compute
 both sides for concrete circuits and inputs, accepted and rejected alike. They
 are no substitute for the proof; they are how a wrong statement would have

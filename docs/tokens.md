@@ -1,11 +1,11 @@
 # Coins and tokens
 
 How Damp supports what a contract needs to hold and move value: Compact's
-standard-library token types and functions (`Damp/Tokens.lean`), the kernel
-operations under them (`Damp/Ledger.lean`, namespace `Kernel`), the
+standard-library token types and functions (`Damp/Lang/Tokens.lean`), the kernel
+operations under them (`Damp/Lang/Ledger.lean`, namespace `Kernel`), the
 coin-storing ledger operations (`writeCoin`, `insertCoin`, `pushFrontCoin`,
-also in `Damp/Tokens.lean`), two new Impact instruction forms
-(`Damp/Impact.lean`), and the three built-in witnesses, which the executor
+also in `Damp/Lang/Tokens.lean`), two new Impact instruction forms
+(`Damp/IR/Impact.lean`), and the three built-in witnesses, which the executor
 implements itself (`executor/src/executor.mjs`).
 
 Every instruction encoding and sequence below was observed in compactc 0.36.1
@@ -47,9 +47,9 @@ keys followed by one stack key occurs in compactc 0.36.1 output, so only that
 form was added (`Impact.Op.idxStack`, `Impact.Op.concatCached`, their
 `Op.encode`/`Op.mapM` cases, `Export.op` → `{"kind": "idxStack", "path"}` /
 `{"kind": "concatCached", "n"}`, and `mapOp`/`encodeOp`/`runtimeOp` in the
-executor). The case analyses over `Op` in `Damp/LedgerAgreement.lean`
+executor). The case analyses over `Op` in `Damp/Proofs/LedgerAgreement.lean`
 (`Op.encode_mapM`, `Op.blank_mapM`, `Op.mapM_congr`),
-`Damp/OptimizeExecutor.lean` (`Op.mapM_map`) and `Damp/OptimizeCorrect.lean`
+`Damp/Proofs/Optimize/SimplifyExecutor.lean` (`Op.mapM_map`) and `Damp/Proofs/Optimize/Simplify.lean`
 (`Op.encode_map`) got an `idxStack` case each, mirroring their `idx` case;
 `concatCached` is closed by the generic operand-free cases.
 
@@ -108,10 +108,10 @@ Evidence (from `tokens.compact`):
 
 ## Types
 
-In `Damp/Ledger.lean`, beside `ContractAddress` (the kernel's signatures need
+In `Damp/Lang/Ledger.lean`, beside `ContractAddress` (the kernel's signatures need
 them): `Uint128`, `UserAddress {bytes}`, `Either α β` (`isLeft`, `left`,
 `right`; JS `{is_left, left, right}`, struct name `Either`) and
-`TokenType = Either (Bytes 32) (Bytes 32)`. In `Damp/Tokens.lean`, declared with
+`TokenType = Either (Bytes 32) (Bytes 32)`. In `Damp/Lang/Tokens.lean`, declared with
 `struct` as a user would: `ZswapCoinPublicKey {bytes}`,
 `ShieldedCoinInfo {nonce, color, value : Uint128}`,
 `QualifiedShieldedCoinInfo {…, mt_index : Uint64}`,
@@ -190,7 +190,7 @@ in context slot 1 (the commitment indices of the transaction's Zswap outputs:
 with the index found, giving the qualified coin, which is stored. The
 `mt_index` is therefore determined by the ledger when the transaction runs,
 not by the circuit: there is no `popeq`, the circuit only commits to the
-instructions. In Damp (`Damp/Tokens.lean`): `Cell.writeCoin`,
+instructions. In Damp (`Damp/Lang/Tokens.lean`): `Cell.writeCoin`,
 `Map.insertCoin`, `Set.insertCoin`, `LedgerList.pushFrontCoin`, all built on
 `CoinStore.qualify depth coin recipient`
 = `dup depth; push {32: coinCommitment coin recipient}; idxStack [{1:1}]; push coin; swap 0; concatCached 91`.
@@ -226,7 +226,7 @@ ledger oracle runs the same `idx`. When the commitment is absent the runtime
 refuses the `idx` (`expected a cell, received null`), which is the ledger
 oracle returning `none` in `Exec.step`: the call fails at that statement, as
 compactc's fails at its pre-check (call `keepOnly`, both fail). The message
-differs; nothing else does, and `Damp/Executor.lean` needed no change.
+differs; nothing else does, and `Damp/Executor/Spec.lean` needed no change.
 
 Disclosure: the coin and recipient are ledger operands, so a private coin
 needs `disclose`, as in compactc (the oracle contract discloses them as
@@ -246,7 +246,7 @@ circuit, `ownPublicKey` is a pair of `private_input`s with `constrain_bits`
 8/248; the other two produce no instruction at all.
 
 In Damp they are ordinary `askWitness` calls with reserved names
-(`Damp/Tokens.lean`), so to the definition of the executor (`Exec.step`,
+(`Damp/Lang/Tokens.lean`), so to the definition of the executor (`Exec.step`,
 unchanged) they are witnesses like any other. The executor answers them
 itself (`builtinWitness` in `executor.mjs`): it rebuilds the JS arguments from
 their field elements with the fixed shapes (requiring them to convert back to

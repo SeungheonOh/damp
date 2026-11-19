@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Differential test of Damp/ZkirSemantics.lean (with Damp/Crypto) against
+# Differential test of Damp/Zkir/Semantics.lean (with Damp/Crypto) against
 # Midnight's real ZKIR evaluator. See docs/zkir-semantics.md.
 #
 # 1. Builds the example contracts and their circuits (test/oracle.sh) into

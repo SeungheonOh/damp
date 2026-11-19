@@ -11,8 +11,12 @@ import Examples.StructuresNested
 import Examples.Tokens
 import Examples.Tuned
 import Examples.Calls
+import Examples.CallsPlain
 import Examples.Diagnostics
 import Examples.Optimizer
+import Examples.OptBounds
+import Examples.OptAlgebra
+import Examples.OptAsserts
 import Examples.EmitAgrees
 import Examples.Semantics
 import Examples.LedgerAgreement

@@ -5,10 +5,10 @@ types allow, including nested calls (A calls B, B calls C) and, beyond Compact,
 calls to a contract whose address is chosen at run time and cast to a contract
 type. The pieces:
 
-- `Damp/Calls.lean`: `Interface`, `ContractType`, `entryPoint`, `contractCall`;
-  `Kernel.claimContractCall` in `Damp/Ledger.lean`;
-- `interface T where …` in `Damp/Syntax.lean`; `contract` records the
-  contract types in `Contract.interfaces` (`Damp/Export.lean`), written to
+- `Damp/Lang/Calls.lean`: `Interface`, `ContractType`, `entryPoint`, `contractCall`;
+  `Kernel.claimContractCall` in `Damp/Lang/Ledger.lean`;
+- `interface T where …` in `Damp/Lang/Syntax.lean`; `contract` records the
+  contract types in `Contract.interfaces` (`Damp/Compile/Export.lean`), written to
   `contract.json` as `interfaces` (only when there are some);
 - the executor's call witness (`callWitness` in `executor/src/executor.mjs`),
   `contractModule`, `circuitSignatures`, `declarationOf`; `package.mjs` writes
@@ -99,10 +99,10 @@ The runtime's hand-written copy of the claim (`kernelClaimContractCall` in
 `compact-runtime/dist/contract.js`) has the same nine instructions. All are
 existing `Impact.Op`s (`size` and `concatCached` were there already), so the
 claim is `Kernel.claimContractCall address entryPoint comm` in
-`Damp/Ledger.lean`, an ordinary ledger statement that passes
+`Damp/Lang/Ledger.lean`, an ordinary ledger statement that passes
 `IR.Circuit.checkLedger`.
 
-Damp (`contractCall`, `Damp/Calls.lean`):
+Damp (`contractCall`, `Damp/Lang/Calls.lean`):
 
 | compactc | Damp IR |
 |---|---|
@@ -207,7 +207,7 @@ with `commCommData {commComm, commCommRand}`, goes onto
 
 ### Damp's executor
 
-To the definition (`Damp/Executor.lean`, unchanged) the call is a witness:
+To the definition (`Damp/Executor/Spec.lean`, unchanged) the call is a witness:
 `Exec.step` asks `O.witness "call:Adder.addTo" args` and gets the result's
 field elements and the opening. The executor answers it (`callWitness`):
 
@@ -352,12 +352,12 @@ does not match, nothing deployed, and the `picker` cases above.
 
 ## What the theorems say about a call
 
-`Exec.run_accepted` / `run_accepted_by_zkir` (`Damp/ExecutorCorrect.lean`):
+`Exec.run_accepted` / `run_accepted_by_zkir` (`Damp/Proofs/Executor.lean`):
 if the executor completes the caller's call, the caller's ZKIR accepts its
 inputs with the private transcript the executor recorded, which includes the
 callee's results and the opening, and yields the recorded public inputs, which
 include the claim `(address, entryPoint, transient_hash [opening, args,
-results])`. `run_groups_fromLedger` (`Damp/LedgerAgreement.lean`): those public
+results])`. `run_groups_fromLedger` (`Damp/Proofs/LedgerAgreement.lean`): those public
 inputs are the instructions sent to the ledger, the claim included.
 `run_none`: the executor fails only where the definition must, the call
 witness's refusal (a failed callee) being an oracle refusal. These hold for every
@@ -369,7 +369,7 @@ callee's call in the same transaction carries its own proof, whose public
 inputs include its communication commitment, which the callee's ZKIR (with
 `do_communications_commitment`) requires to be `transientCommit(callee inputs
 ++ callee outputs, opening)` (`IrSource.preprocess`, TC2, in
-`Damp/ZkirSemantics.lean`); and the ledger's effects check requires every
+`Damp/Zkir/Semantics.lean`); and the ledger's effects check requires every
 claimed `(address, entry-point hash, commitment)` to be a call of the same
 segment, after the caller (`call_sequencing_check`). Equal commitments mean,
 under Poseidon's collision resistance, that the caller's arguments and results

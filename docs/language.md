@@ -123,7 +123,7 @@ and the block-time checks. `docs/ledger-types.md` has the full list.
 
 ## Coins and tokens
 
-`Damp/Tokens.lean` (part of `import Damp`) has Compact's token library under
+`Damp/Lang/Tokens.lean` (part of `import Damp`) has Compact's token library under
 the same names: `mintShieldedToken`, `receiveShielded`, `sendShielded`,
 `sendImmediateShielded`, `mergeCoin`, `mergeCoinImmediate`, `evolveNonce`,
 `tokenType`, `nativeToken`, `shieldedBurnAddress`, `mintUnshieldedToken`,
@@ -232,6 +232,7 @@ def main (args : List String) : IO UInt32 := Damp.cli [contract] args
 | `--keys` | also generate prover and verifier keys with Midnight's `zkir-v3` |
 | `--zkir PROGRAM` | the `zkir` tool to use |
 | `--no-opt` | emit circuits as written |
+| `--O2` | every optimization pass; a circuit may come out smaller than compactc's, with a different verifier key |
 
 Each contract is written as `zkir/<circuit>.zkir` plus `contract.json`, which
 the executor loads with `makeContract`.
@@ -240,7 +241,7 @@ the executor loads with `makeContract`.
 
 A circuit is a Lean value, `f.circuit : IR.Circuit`, and `IR.Circuit.run`
 gives it meaning: inputs, private transcript and public reads in; outputs and
-public inputs out, or `none` if the run is rejected. `Damp/Correct.lean`
+public inputs out, or `none` if the run is rejected. `Damp/Proofs/Compiler.lean`
 proves that the ZKIR the compiler ships evaluates, under a Lean port of
 Midnight's evaluator, to that same meaning. So a theorem about
 `f.circuit.run` is a theorem about what the shipped circuit accepts.

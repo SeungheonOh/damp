@@ -1,4 +1,4 @@
-// Conformance of the executor to its definition (Damp/Executor.lean): the JS
+// Conformance of the executor to its definition (Damp/Executor/Spec.lean): the JS
 // half of test/executor.sh.
 //
 // Runs, with the executor's trace hook on,

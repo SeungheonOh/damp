@@ -1,4 +1,4 @@
-// Test vectors for the differential test of Damp/ZkirSemantics.lean against
+// Test vectors for the differential test of Damp/Zkir/Semantics.lean against
 // Midnight's real ZKIR evaluator (see docs/zkir-semantics.md, test/semantics.sh).
 //
 // 1. Runs real calls of every example contract through the generic executor
@@ -8,7 +8,7 @@
 //    the private transcript, the public transcript's outputs (ledger reads),
 //    the public transcript's inputs (the runtime's field encoding of the
 //    on-chain instructions that ran), and the communications commitment with
-//    its opening. Damp's own encoder (Damp/Impact.lean) is not involved.
+//    its opening. Damp's own encoder (Damp/IR/Impact.lean) is not involved.
 // 2. Derives tampered preimages from each one, and dishonest claims for calls
 //    that fail in JS (their arguments substituted into a neighbouring call's
 //    proof data).

@@ -1,12 +1,12 @@
 /-
-Differential test of `Damp/ZkirSemantics.lean` against Midnight's real ZKIR
+Differential test of `Damp/Zkir/Semantics.lean` against Midnight's real ZKIR
 evaluator. See docs/zkir-semantics.md and test/semantics.sh.
 
   lake exe damp-semantics-test <vectors.json> [--emitted] <file.zkir>... [--other <file.zkir>...]
 
 1. Cryptography: `Damp.Crypto` against values computed by the runtime (and by
    Node for SHA-256).
-2. Every `.zkir` given: parsed by `Damp/ZkirJson.lean` and printed back by
+2. Every `.zkir` given: parsed by `Damp/Zkir/Json.lean` and printed back by
    `IrSource.toJson`; the result must be the same JSON. Those after
    `--emitted` must also pass `IrSource.checkSingleAssignment`.
 3. Every vector: the Lean evaluator with `Damp.Crypto.prims`, compared with
@@ -16,8 +16,8 @@ evaluator. See docs/zkir-semantics.md and test/semantics.sh.
    names the first thing that failed, in the order the Rust checks it, so the
    kind of rejection can be compared too.
 -/
-import Damp.ZkirSemantics
-import Damp.ZkirJson
+import Damp.Zkir.Semantics
+import Damp.Zkir.Json
 import Damp.Crypto.Prims
 
 open Lean (Json)

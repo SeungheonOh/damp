@@ -4,8 +4,8 @@ The JavaScript executor (`executor/src/executor.mjs`) runs a call on the
 user's machine: it evaluates the circuit IR from `contract.json`, asks the
 witnesses, runs the ledger instructions through `@midnight-ntwrk/compact-runtime`
 and records the proof data. What it must do is **defined** in Lean by
-`Damp.Exec.run` (`Damp/Executor.lean`), on top of `Expr.eval`, `Range.holds`
-and `ledgerGroups` from `Damp/Semantics.lean`; `Damp/ExecutorCorrect.lean`
+`Damp.Exec.run` (`Damp/Executor/Spec.lean`), on top of `Expr.eval`, `Range.holds`
+and `ledgerGroups` from `Damp/IR/Semantics.lean`; `Damp/Proofs/Executor.lean`
 proves that every call this definition completes is accepted by the circuit.
 
 That proof covers the JavaScript only as far as the JavaScript does what the
@@ -35,7 +35,7 @@ a comment quoting the clause it mirrors.
 | `Range.holds`: `zero`, `bool`, `bits n` (`fitsBits`), `below bound width` (`x` and `Fr.ofInt bound` fit `width`, `x < bound`) | `rangeHolds` |
 | `bindInputs (fun _ => 0)`: counts must match | `bindInputs` |
 | `Exec.assign`: per variable, range check then bind; counts must match | `assign` |
-| `Op.mapM`, `Op.encode`, `atomCode` (Damp/Impact.lean) | `mapOp`, `encodeOp`, `atomCode` |
+| `Op.mapM`, `Op.encode`, `atomCode` (Damp/IR/Impact.lean) | `mapOp`, `encodeOp`, `atomCode` |
 | `Exec.blank`, `Exec.request` | `blank`, `request` |
 | `ledgerGroups` | `ledgerGroups` |
 | `Exec.step` `.bind`, `.assert`, `.constrain` | `step` `'bind'`, `'assert'`, `'constrain'` |
@@ -62,7 +62,7 @@ results to field elements, field-valued instructions to runtime ops
 ### Built-in witnesses
 
 `ownPublicKey`, `createZswapInput` and `createZswapOutput` (Compact's, used by
-the token functions of `Damp/Tokens.lean`) are witnesses to the definition
+the token functions of `Damp/Lang/Tokens.lean`) are witnesses to the definition
 like any other: `Exec.step` asks `O.witness` and records what it answers. The
 executor answers them itself instead of calling a user function
 (`builtinWitness`): the argument field elements are rebuilt into the JS
@@ -282,7 +282,7 @@ alignment case, input and output failures.
 
 ## Remarks on the Lean definition
 
-Nothing in `Damp/Executor.lean` had to be worked around; the JS now does what
+Nothing in `Damp/Executor/Spec.lean` had to be worked around; the JS now does what
 it says in every case tested. Three points worth knowing:
 
 1. **A witness with nothing to read** is asked only when its guard is

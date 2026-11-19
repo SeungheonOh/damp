@@ -1,7 +1,7 @@
 import Damp
 
 /-! The Lean counterpart of `test/oracle/tokens.compact`: every coin and token
-function of the standard library (`Damp/Tokens.lean`), with the recipients
+function of the standard library (`Damp/Lang/Tokens.lean`), with the recipients
 chosen so that both the constant and the run-time cases of each are compiled. -/
 namespace Examples.Tokens
 open Damp

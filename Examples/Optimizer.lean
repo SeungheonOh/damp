@@ -4,7 +4,7 @@ import Examples.Step
 
 /-! Checks on the optimizer, run by the build.
 
-Both layers are proved correct in `Damp/OptimizeCorrect.lean` (`Expr.simp_eval`,
+Both layers are proved correct in `Damp/Proofs/Optimize/Simplify.lean` (`Expr.simp_eval`,
 `Circuit.optimize_correct`). These checks pin down which rewrites fire, and run
 the reference semantics before and after optimization on real and hand-made
 circuits, including ones the optimizer used to get wrong when evaluation was
@@ -187,7 +187,7 @@ private def rebind := mk 1 [.bind 1 "a" x, .bind 2 "b" (.add y (.const 1)),
 
 /-! ### What the executor does, before and after
 
-The executor (`Damp/Executor.lean`) sends a ledger statement's instructions to
+The executor (`Damp/Executor/Spec.lean`) sends a ledger statement's instructions to
 the ledger with their operands evaluated before the reads are bound. Here the
 read variable `0` was bound to 5 earlier, a binding the optimized circuit does
 not emit, so the instruction `addi 0` used to be sent as `addi 0` instead of

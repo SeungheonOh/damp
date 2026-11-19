@@ -1,6 +1,6 @@
-# Damp/ZkirSemantics.lean against the real ZKIR evaluator
+# Damp/Zkir/Semantics.lean against the real ZKIR evaluator
 
-`Damp/ZkirSemantics.lean` is a Lean port of `IrSource::preprocess` from
+`Damp/Zkir/Semantics.lean` is a Lean port of `IrSource::preprocess` from
 midnight-zkir 3.2.1 (`zkir/src/ir_vm.rs`): the function the proof server runs
 to decide whether a call satisfies a circuit. Damp's correctness theorems are
 stated against it. This document describes how it was made executable with
@@ -20,12 +20,12 @@ semantics: all 3018 checks passed
 
 ## 1. Discrepancies found, and the fixes
 
-The test found three places where `Damp/ZkirSemantics.lean` disagreed with
+The test found three places where `Damp/Zkir/Semantics.lean` disagreed with
 the real evaluator, and one in the new JSON reader. **None of them affects a
 circuit Damp emits**: every vector built from the example contracts agreed
 before the fixes. All three are in circuits outside Damp's current output, and
 were found with synthetic circuits (`synthetic edge` vectors). Each changed
-line in `ZkirSemantics.lean` carries a comment starting
+line in `Damp/Zkir/Semantics.lean` carries a comment starting
 `-- checked against the real evaluator:`.
 
 1. **`output` arity and types were not checked (Lean accepted, Midnight
@@ -63,7 +63,7 @@ emitted circuits only see an extra `resolve` step (`resolve_of_native`). Fix 1
 adds the decidable side condition `src.outputsDeclared = true` to anything
 proved about `IrSource.run`.
 
-In the new reader (`Damp/ZkirJson.lean`), an immediate with more than 32 bytes
+In the new reader (`Damp/Zkir/Json.lean`), an immediate with more than 32 bytes
 (`0x05` followed by 32 zero bytes) was accepted; the Rust loader rejects it,
 because `Fr::from_le_bytes` takes at most 32 bytes. Fixed before release.
 
@@ -144,7 +144,7 @@ tag `zkir-3.2.1`. Every function is then checked against the JS runtime.
   each with zero, all-0xff/`p-1` and random values), and through the real
   evaluator on the same 60 plus 14 non-fitting or surplus cases.
 
-## 4. The JSON reader (`Damp/ZkirJson.lean`)
+## 4. The JSON reader (`Damp/Zkir/Json.lean`)
 
 `IrSource.parse` reads the `.zkir` JSON Damp and compactc write. Operands follow
 the Rust loader: `%name` is a register (`%hint.id`; other names are rejected,
@@ -194,7 +194,7 @@ real `jsonIrToBinary`.
 7. Writes `build/semantics/vectors.json`.
 
 `lake exe damp-semantics-test` (`Test/Semantics.lean`) then, per vector, parses
-the circuit with `ZkirJson` and runs `IrSource.preprocess` with
+the circuit with `Damp/Zkir/Json.lean` and runs `IrSource.preprocess` with
 `Damp.Crypto.prims`. A vector passes when:
 
 - the real checker accepts ⇒ Lean accepts, with the same outputs (where
@@ -217,7 +217,7 @@ the circuit with `ZkirJson` and runs `IrSource.preprocess` with
 The public transcript inputs come from the runtime: the Rust `Op` field
 encoding inside onchain-runtime-v4's `proofDataIntoSerializedPreimage`, read
 back by parsing its output bytes. Nothing in the vector generation imports or
-reimplements `Damp/Impact.lean`; the only thing on the JS side that knows the
+reimplements `Damp/IR/Impact.lean`; the only thing on the JS side that knows the
 preimage format is the 80-line codec, which must round-trip the runtime's bytes
 exactly. What is *not* independent of Damp: the transcript *operations* are
 recorded by Damp's executor interpreting Damp's `contract.json`. To close that,

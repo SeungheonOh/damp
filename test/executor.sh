@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Conformance of the JavaScript executor (executor/src/executor.mjs) to its
-# definition, `Damp.Exec.run` in Damp/Executor.lean. See docs/executor.md.
+# definition, `Damp.Exec.run` in Damp/Executor/Spec.lean. See docs/executor.md.
 #
 # 1. `damp-executor-test export` (Test/Executor.lean) writes contract.json for
 #    every example contract (optimized, as the build writes it) and for a

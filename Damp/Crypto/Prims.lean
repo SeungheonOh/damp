@@ -1,6 +1,6 @@
 /-
 `persistent_hash` as ZKIR's reference evaluator computes it, and the concrete
-`Zkir.Prims` that `Damp/ZkirSemantics.lean` takes as a parameter.
+`Zkir.Prims` that `Damp/Zkir/Semantics.lean` takes as a parameter.
 
 `persistent_hash alignment inputs` in `IrSource::preprocess`
 (midnight-zkir 3.2.1, `zkir/src/ir_vm.rs`) is
@@ -31,7 +31,7 @@ Sources for the two middle steps (`midnight-transient-crypto` 3.0.1,
 circuits run through `zkir-v3`'s `check`) and against the runtime's
 `persistentHash`.
 -/
-import Damp.ZkirSemantics
+import Damp.Zkir.Semantics
 import Damp.Crypto.Sha256
 import Damp.Crypto.Poseidon
 

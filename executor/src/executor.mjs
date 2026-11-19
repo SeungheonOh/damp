@@ -5,8 +5,8 @@
 // from. It calls witnesses, runs ledger operations through the Compact runtime
 // and records the proof data the prover checks against the circuit.
 //
-// What it does is DEFINED by `Exec.run` in Damp/Executor.lean (with
-// `Expr.eval` and `Range.holds` from Damp/Semantics.lean); the section "the
+// What it does is DEFINED by `Exec.run` in Damp/Executor/Spec.lean (with
+// `Expr.eval` and `Range.holds` from Damp/IR/Semantics.lean); the section "the
 // definition" below mirrors it clause by clause, and test/executor.sh checks
 // the two against each other. See docs/executor.md.
 //
@@ -15,7 +15,7 @@
 
 import * as rt from '@midnight-ntwrk/compact-runtime';
 
-/** The contract.json format this executor reads (Damp/Export.lean writes it). */
+/** The contract.json format this executor reads (Damp/Compile/Export.lean writes it). */
 export const FORMAT = 'damp-contract/5';
 
 export const MODULUS = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001n;
@@ -174,12 +174,12 @@ const asDescriptor = (aligned) => ({ alignment: () => aligned.alignment, toValue
 // From here to "ledger view", the code mirrors the Lean definition of what the
 // executor does, clause by clause:
 //
-//   Damp/Semantics.lean   asBool, Expr.eval, Expr.evalList, Range.holds,
+//   Damp/IR/Semantics.lean   asBool, Expr.eval, Expr.evalList, Range.holds,
 //                         ledgerGroups, bindInputs
-//   Damp/Executor.lean    Exec.assign, Exec.blank, Exec.request, Exec.step,
+//   Damp/Executor/Spec.lean    Exec.assign, Exec.blank, Exec.request, Exec.step,
 //                         Exec.steps, Exec.run
 //   Damp/Crypto/Prims.lean  persistentHash (the alignment parse)
-//   Damp/Impact.lean      Op.mapM, Op.encode
+//   Damp/IR/Impact.lean      Op.mapM, Op.encode
 //
 // A Lean `none` is a thrown `Failure`: the call fails. Evaluation order is the
 // Lean order (left to right through each `do` block), so the first failure is
@@ -385,7 +385,7 @@ function bindInputs(vars, inputs) {
   return env;
 }
 
-// ---------------------------------------------------------------- ledger instructions (Damp/Impact.lean)
+// ---------------------------------------------------------------- ledger instructions (Damp/IR/Impact.lean)
 
 /** `Aligned.mapM`, `StateLit.mapM`, `Op.mapM`: apply `f` to every operand, in order. */
 const mapAligned = (v, f) => ({ align: v.align, vals: v.vals.map(f) });
@@ -709,7 +709,7 @@ function oracles(spec, witnesses, context, ppd) {
 // and extend the call's Zswap local state (`context.callContext.
 // currentZswapLocalState`), exactly as compactc's generated module calls them.
 // To the definition (`Exec.step`) they are witnesses like any other. Their
-// argument shapes are fixed by the standard library (Damp/Tokens.lean), so the
+// argument shapes are fixed by the standard library (Damp/Lang/Tokens.lean), so the
 // field elements of their arguments are turned back into the JS values the
 // runtime expects here.
 
@@ -785,7 +785,7 @@ function builtinWitness(s, argVals, ev, context, ppd) {
 // Compact's `contract I { … }`) is, in the IR, a witness named `call:I.c`
 // whose arguments are the callee's address (2 field elements) and the call's
 // arguments, and whose answer is the callee's results followed by the random
-// opening of the communication commitment (Damp/Calls.lean). To the definition
+// opening of the communication commitment (Damp/Lang/Calls.lean). To the definition
 // it is a witness like any other. The executor answers it by running the
 // callee through the runtime's `crossContractCall`, exactly what compactc's
 // module does at the call site: the runtime resolves the callee's module
