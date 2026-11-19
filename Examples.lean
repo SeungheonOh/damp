@@ -17,7 +17,15 @@ import Examples.Optimizer
 import Examples.OptBounds
 import Examples.OptAlgebra
 import Examples.OptAsserts
+import Examples.OptBounds2
+import Examples.OptForward
+import Examples.OptFoldHashes
+import Examples.OptInlineAll
+import Examples.OptSmall
 import Examples.EmitAgrees
 import Examples.Semantics
 import Examples.LedgerAgreement
 import Examples.Interface
+import Examples.InterfaceMore
+import Examples.ShortCircuit
+import Examples.LedgerProofs

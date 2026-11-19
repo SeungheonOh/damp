@@ -8,37 +8,68 @@ observe, nor what the executor does with it. Soundness composes, so the
 pipeline is sound (`Circuit.optimize_correct`, `Exec.optimize_correct`,
 `Exec.optimize_asks_same` in `Damp/Proofs/Optimize/Pipeline.lean`).
 
-Two levels:
+Three levels:
 
 * `Circuit.optimize`, what the build applies by default. On a circuit written
   to mirror a Compact program it produces what compactc produces, so verifier
   keys can be compared with compactc's.
-* `Circuit.optimizeFull` (`--O2`), every pass. It also uses what `assert`s
-  establish, which compactc does not, so a circuit may come out smaller than
-  compactc's and then has a different verifier key.
+* `Circuit.optimizeFull` (`--O2`), every sound pass. It also uses what
+  `assert`s establish (`asserts`), and substitutes bindings into later
+  statements (`forwardOpt`, kept only when the emitted circuit gets smaller),
+  which compactc does not, so a circuit may come out smaller than compactc's
+  and then has a different verifier key.
+* `Circuit.optimizeMax` (`--O3`), `--O2` after computing hashes of constants
+  at compile time (`foldHashes`) with `Damp.Crypto.prims`, the Lean
+  implementations of Midnight's Poseidon and SHA-256. Every other level is
+  sound whatever the hash functions are (`Pass.Sound`); this one only when
+  they are those implementations (`Pass.SoundFor Crypto.prims`), which
+  `test/semantics.sh` checks against Midnight's runtime on samples but which
+  are not proved equal to it.
 
-`simplify` runs again after a pass that leaves constants behind for it to fold.
+`bounds2` is the value-range pass with relational facts (`a < b` from an
+assertion lets it drop the range check on `b - a`); it does everything
+`bounds` does. `simplify` runs again after a pass that leaves constants behind
+for it to fold.
 -/
 import Damp.Optimize.Pass
 import Damp.Optimize.Simplify
 import Damp.Optimize.Bounds
 import Damp.Optimize.Algebra
 import Damp.Optimize.Asserts
+import Damp.Optimize.Bounds2
+import Damp.Optimize.Forward
+import Damp.Optimize.FoldHashes
+import Damp.Optimize.InlineAll
+import Damp.Optimize.AssertEq
+import Damp.Optimize.Commute
+import Damp.Crypto.Prims
 
 namespace Damp.IR
 
 /-- The passes applied by default, first to last. -/
 def defaultPasses : List Pass :=
-  [Circuit.simplify, Circuit.bounds, Circuit.simplify, Circuit.algebra]
+  [Circuit.simplify, Circuit.foldDivmod, Circuit.bounds2, Circuit.simplify, Circuit.algebra, Circuit.commuteOpt]
 
 /-- Every pass, first to last. -/
 def fullPasses : List Pass :=
-  [Circuit.simplify, Circuit.asserts, Circuit.simplify, Circuit.bounds, Circuit.simplify, Circuit.algebra]
+  [Circuit.simplify, Circuit.foldDivmod, Circuit.assertEq, Circuit.asserts, Circuit.simplify, Circuit.bounds2,
+   Circuit.simplify, Circuit.algebra, Circuit.forwardOpt, Circuit.forwardAllOpt, Circuit.commuteOpt]
+
+/-- `--O3`: fold hashes of constants with `p`, then every pass. -/
+def maxPassesWith (p : Zkir.Prims) : List Pass :=
+  Circuit.simplify :: Circuit.foldHashes p :: fullPasses
 
 /-- Optimize a circuit. -/
 def Circuit.optimize (c : Circuit) : Circuit := runPasses defaultPasses c
 
 /-- Optimize a circuit with every pass. -/
 def Circuit.optimizeFull (c : Circuit) : Circuit := runPasses fullPasses c
+
+/-- Optimize a circuit with every pass, hashes of constants computed with `p`. -/
+def Circuit.optimizeMaxWith (p : Zkir.Prims) (c : Circuit) : Circuit := runPasses (maxPassesWith p) c
+
+/-- Optimize a circuit with every pass, hashes of constants computed with
+    Damp's implementations of Midnight's hash functions (`--O3`). -/
+def Circuit.optimizeMax (c : Circuit) : Circuit := c.optimizeMaxWith Crypto.prims
 
 end Damp.IR

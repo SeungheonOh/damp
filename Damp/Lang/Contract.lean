@@ -91,7 +91,7 @@ def Uint.tooLarge (bound : Nat) : String :=
 
 /-- `e`, unless the bound is past Compact's limit: then an `invalid` expression,
     which the emitter rejects. Every way of making a `Uint` goes through this,
-    except `Field.unsafeToUint`. -/
+    `Field.unsafeToUint` included. -/
 def Uint.capped (bound : Nat) (e : Expr) : Expr :=
   if bound ≤ Uint.maxBound then e else .invalid (Uint.tooLarge bound)
 
@@ -180,7 +180,10 @@ instance {n : Nat} [Value α] : Value (Vector α n) where
 /-! ### Field -/
 
 namespace Field
-instance : OfNat Field n := ⟨⟨.const n⟩⟩
+/-- A literal, as its canonical representative in `[0, p)`, `p` the field
+    modulus: `p + 1` is `1`, as the field semantics says. Every immediate the
+    emitter writes from a literal is then one Midnight's loader accepts. -/
+instance : OfNat Field n := ⟨⟨.const (n % Fr.modulus : Nat)⟩⟩
 /-- Addition, dropping a literal zero as Compact does. -/
 def add (a b : Field) : Field :=
   match a.expr, b.expr with
@@ -192,18 +195,20 @@ instance : Mul Field := ⟨fun a b => ⟨.mul a.expr b.expr⟩⟩
 instance : Neg Field := ⟨fun a => ⟨.neg a.expr⟩⟩
 instance : Sub Field := ⟨fun a b => ⟨.add a.expr (.neg b.expr)⟩⟩
 
-/-- A number known while the circuit is built, as a field element. -/
-def ofNat (n : Nat) : Field := ⟨.const n⟩
+/-- A number known while the circuit is built, as a field element (reduced
+    modulo the field size, like a literal). -/
+def ofNat (n : Nat) : Field := ⟨.const (n % Fr.modulus : Nat)⟩
 
 /-- The bytes of a short string as a field element, first byte least
     significant: Compact's `"text" as Field`. At most 31 bytes. -/
 def ofString (str : String) : Field :=
-  ⟨.const (str.toUTF8.toList.foldr (fun b acc => acc * 256 + b.toNat) 0 : Nat)⟩
+  ⟨.const (str.toUTF8.toList.foldr (fun b acc => acc * 256 + b.toNat) 0 % Fr.modulus : Nat)⟩
 
 def eq (a b : Field) : Boolean := ⟨.eq a.expr b.expr⟩
 
-/-- Reinterpret as a `Uint` with no range check. The caller is responsible for the bound. -/
-def unsafeToUint (a : Field) (max : Nat) : Uint max := ⟨a.expr⟩
+/-- Reinterpret as a `Uint` with no range check. The caller is responsible for the
+    value fitting the bound; the bound itself is capped like every other `Uint`'s. -/
+def unsafeToUint (a : Field) (max : Nat) : Uint max := ⟨Uint.capped max a.expr⟩
 end Field
 
 /-! ### Boolean -/
@@ -444,6 +449,24 @@ def cond [Value α] (c : Boolean) (t e : CircuitM α) : CircuitM α := condCore 
 /-- `cond`, reporting branches that end with the same effect. This is what a
     plain `if` on a circuit `Boolean` means. -/
 def condChecked [Value α] (c : Boolean) (t e : CircuitM α) : CircuitM α := condCore true c t e
+
+/-- `a && b` evaluated the way Compact evaluates it: `b`'s effects (witness calls,
+    ledger operations, checks) take place only where `a` holds; the result is
+    `select a b false`. This is what `a &&. b` means when `b` contains a `(← …)`. -/
+def Boolean.andThen (a : Boolean) (b : CircuitM Boolean) : CircuitM Boolean := do
+  let av ← nameGuard a.expr
+  let g ← nameGuard (guardAnd (← currentGuard) av)
+  let r ← underGuard g b
+  return ⟨.sel av r.expr (.const 0)⟩
+
+/-- `a || b` evaluated the way Compact evaluates it: `b`'s effects take place only
+    where `a` does not hold; the result is `select a true b`. This is what `a ||. b`
+    means when `b` contains a `(← …)`. -/
+def Boolean.orElse (a : Boolean) (b : CircuitM Boolean) : CircuitM Boolean := do
+  let av ← nameGuard a.expr
+  let g ← nameGuard (guardAnd (← currentGuard) (Boolean.not ⟨av⟩).expr)
+  let r ← underGuard g b
+  return ⟨.sel av (.const 1) r.expr⟩
 
 /-- Fails the transaction unless `c` holds whenever this point is reached. -/
 def require (c : Boolean) (msg : String := "assertion failed") : CircuitM Unit := do

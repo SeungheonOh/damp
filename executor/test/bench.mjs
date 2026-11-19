@@ -1,0 +1,346 @@
+// Behavioural check of the benchmark ports (Bench/*.lean) against the Compact programs they port
+// (bench/compact/*.compact). For every program, the same calls are made through
+//   (a) compactc's generated module,
+//   (b) Damp's contract.json at the default level (executor/src/executor.mjs), and
+//   (c) Damp's contract.json at --O2, and (d) at --O3,
+// each starting from the ledger state its own previous call left. For every call it requires that
+// all four succeed or all fail, and, when they succeed, that
+//   1. the result and the proof data (inputs, outputs, public transcript, private transcript) are
+//      identical,
+//   2. the ledger state afterwards (its encoding) is identical, and so is the Zswap local state,
+//   3. Midnight's ZKIR checker accepts the proof data against the circuit Damp emitted (at that
+//      level).
+// The initial ledger states must be equal too.
+//
+// Usage: node test/bench.mjs <bench build dir>     (default ../build/bench; see test/bench.sh)
+//
+// Not exercised: composable_outer (it calls another contract: it needs the simulated chain of
+// test/world.mjs); the circuits listed in `skipped` below. See docs/benchmarks.md.
+
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as rt from '@midnight-ntwrk/compact-runtime';
+import { makeContract } from '../src/executor.mjs';
+import { checkProofData } from '../harness/check.mjs';
+import { toJson, proofDataOf } from '../harness/json.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(process.argv[2] ?? path.join(here, '..', '..', 'build', 'bench'));
+const COIN_PK = '3c'.repeat(32);
+
+let failures = 0, checks = 0;
+const report = (ok, label, detail = '') => {
+  checks++;
+  if (!ok) failures++;
+  if (!ok || process.env.BENCH_VERBOSE) console.log(`${ok ? 'ok   ' : 'FAIL '} ${label}${detail ? '  ' + detail : ''}`);
+};
+
+// ------------------------------------------------------------------------------- values
+const bytes = (n, first, last) => { const b = new Uint8Array(n); b[0] = first; b[n - 1] = last; return b; };
+const zeros = new Uint8Array(32);
+const range = (n, f = (i) => BigInt(i + 1)) => Array.from({ length: n }, (_, i) => f(i));
+const pk = { bytes: bytes(32, 0xaa, 0xbb) };
+const user = { bytes: bytes(32, 0x75, 0x73) };
+const other = { bytes: bytes(32, 5, 6) };
+const coin = (n, color, value) => ({ nonce: bytes(32, n, n + 1), color, value });
+const qcoin = (n, color, value, mt_index) => ({ ...coin(n, color, value), mt_index });
+const red = bytes(32, 0x52, 0x44);
+const hashBytes32 = (b) => rt.persistentHash(new rt.CompactTypeBytes(32), b);
+
+// What the witnesses return is decided by the call being made, through `ctx`; both implementations
+// read the same object, so they are asked the same.
+const ctx = {};
+const witnesses = {
+  // tiny
+  secretKey: ({ privateState }) => [privateState, ctx.sk ?? bytes(32, 21, 22)],
+  'private$secret_key': ({ privateState }) => [privateState, ctx.sk ?? bytes(32, 21, 22)],
+  // threading
+  num: ({ privateState }, n) => [privateState, n * 2n + 1n],
+  // coracle
+  local_secret_key: ({ privateState }) => [privateState, ctx.sk],
+  local_board: ({ privateState }) => [privateState, ctx.board],
+  local_set_board: ({ privateState }) => [privateState, []],
+  fresh_nonce: ({ privateState }) => [privateState, 77n],
+  // election_core (every call below fails before it matters; they must still be answered)
+  private_secret_key: ({ privateState }) => [privateState, ctx.sk ?? bytes(32, 21, 22)],
+  private_state: ({ privateState }) => [privateState, 0],
+  private_state_advance: ({ privateState }) => [privateState, []],
+  private_vote_record: ({ privateState }) => [privateState, []],
+  private_vote: ({ privateState }) => [privateState, 0],
+  context_eligible_voters_root: ({ privateState }) => [privateState, { field: 0n }],
+  context_committed_votes_root: ({ privateState }) => [privateState, { field: 0n }],
+  // zerocash_core
+  private_zk_secret_key: ({ privateState }) => [privateState, ctx.zsk],
+  private_zk_public_key: ({ privateState }) => [privateState, ctx.zpk],
+  private_add_coin: ({ privateState }) => [privateState, []],
+  private_remove_coin: ({ privateState }) => [privateState, []],
+  context_path_root: ({ privateState }) => [privateState, ctx.root],
+  context_new_coin_info: ({ privateState }) => [privateState, ctx.coinInfo],
+  // types
+  t17_witness: ({ privateState }, b) => [privateState, 5n],
+};
+
+// ------------------------------------------------------------------------------- the calls
+// [program, circuit, args (or a function of the loaded program `c` that may set `ctx`), succeeds?]
+const toSelfR = { is_left: false, left: pk, right: { bytes: zeros } };
+const U = (v) => v;
+const zsk = { bytes: bytes(32, 0x5a, 0x5b) };
+const zcoin = { nonce: { bytes: bytes(32, 1, 2) }, opening: { bytes: bytes(32, 3, 4) } };
+const zcoin2 = { nonce: { bytes: bytes(32, 9, 8) }, opening: { bytes: bytes(32, 7, 6) } };
+const zpk = { bytes: hashBytes32(zsk.bytes) };   // what derive_zk_public_key gives
+const board = (n, p) => ({ nonce: n, contents: { position: p } });
+const as = (sk, b) => (c) => { ctx.sk = sk; ctx.board = b; return c.args ?? []; };
+const skA = bytes(32, 0xa1, 0xa2), skB = bytes(32, 0xb1, 0xb2);
+const withCtx = (f, args) => (c) => { f(c); return args(c); };
+const native = zeros;
+const wager = (n, v) => coin(n, red, v);
+
+const calls = [
+  ['counter', 'increment', [], true],
+  ['counter', 'increment', [], true],
+
+  ['tiny', 'get', [], true],
+  ['tiny', 'set', [9n], false],
+  ['tiny', 'clear', [], true],
+  ['tiny', 'get', [], true],
+  ['tiny', 'set', [9n], true],
+  ['tiny', 'get', [], true],
+  ['tiny', 'clear', [], true],
+  ['tiny', 'public_key', [bytes(32, 1, 2)], true],
+
+  ['test01', 'get', [], true],
+  ['test01', 'set', [9n, 3n], false],
+  ['test01', 'clear', [], true],
+  ['test01', 'set', [20n, 3n], true],
+  ['test01', 'set', [20n, 4n], false],
+  ['test01', 'set', [9n, 0n], true],
+  ['test01', 'get', [], true],
+  ['test01', 'clear', [], true],
+
+  ['threading', 'fib', [1n], true],
+  ['threading', 'fib', [2n], true],
+  ['threading', 'fib', [3n], true],
+  ['threading', 'fib', [5n], false],
+  ['threading', 'fib', [1n], true],
+  ['threading', 'fib2', [false], true],
+  ['threading', 'fib2', [false], true],
+  ['threading', 'fib2', [true], true],
+
+  ['gas_cost', 'testGasCost', [], true],
+  ['gas_cost', 'testGasCost', [], true],
+
+  ['block_time', 'testBlockTimeLt', [0n], true],
+  ['block_time', 'testBlockTimeLt', [100n], true],
+  ['block_time', 'testBlockTimeGte', [0n], true],
+  ['block_time', 'testBlockTimeGt', [5n], true],
+  ['block_time', 'testBlockTimeLte', [5n], true],
+
+  ['unshielded_tokens', 'mintUnshieldedToSelfTest', [bytes(32, 1, 1), 100n], true],
+  ['unshielded_tokens', 'mintUnshieldedToUserTest', [bytes(32, 2, 2), user, 7n], true],
+  ['unshielded_tokens', 'mintUnshieldedToContractTest', [bytes(32, 3, 3), other, 8n], true],
+  ['unshielded_tokens', 'getUnshieldedBalanceTest', [bytes(32, 1, 1)], true],
+  ['unshielded_tokens', 'getUnshieldedBalanceGtTest', [bytes(32, 1, 1), 0n], true],
+  ['unshielded_tokens', 'getUnshieldedBalanceLtTest', [bytes(32, 1, 1), 5n], true],
+  ['unshielded_tokens', 'receiveUnshieldedTest', [bytes(32, 1, 1), 12n], true],
+  ['unshielded_tokens', 'mintShieldedToSelfTest', [bytes(32, 1, 1), 50n, bytes(32, 2, 2)], true],
+  ['unshielded_tokens', 'mintShieldedToUserTest', [bytes(32, 1, 1), 51n, bytes(32, 2, 3), pk], true],
+  ['unshielded_tokens', 'mintShieldedToContractTest', [bytes(32, 1, 1), 52n, bytes(32, 2, 4), other], true],
+  ['unshielded_tokens', 'receiveShieldedTest', [coin(6, red, 77n)], true],
+  ['unshielded_tokens', 'sendShieldedToUserTest', [qcoin(7, red, 100n, 3n), pk, 30n], true],
+  ['unshielded_tokens', 'sendShieldedToSelfTest', [qcoin(7, red, 100n, 3n), 100n], true],
+  ['unshielded_tokens', 'sendShieldedToContractTest', [qcoin(7, red, 100n, 3n), other, 40n], true],
+  ['unshielded_tokens', 'sendShieldedToUserTest', [qcoin(7, red, 100n, 3n), pk, 101n], false],
+  ['unshielded_tokens', 'sendImmediateShieldedToUserTest', [coin(9, red, 20n), pk, 20n], true],
+  ['unshielded_tokens', 'sendImmediateShieldedToSelfTest', [coin(9, red, 20n), 5n], true],
+  ['unshielded_tokens', 'sendImmediateShieldedToContractTest', [coin(9, red, 20n), other, 5n], true],
+
+  // coracle: two players (skA is red, skB is blue) play until blue cannot answer, then both withdraw.
+  ['coracle', 'start', (c) => { ctx.sk = skA; ctx.board = board(77n, 5n); return [5n, wager(1, 10n), coin(2, native, 100000n)]; }, true],
+  ['coracle', 'start', (c) => { ctx.sk = skB; ctx.board = board(77n, 6n); return [6n, wager(3, 10n), coin(4, native, 100000n)]; }, true],
+  ['coracle', 'guess', (c) => { ctx.sk = skA; ctx.board = board(77n, 5n); return [3n]; }, false],
+  ['coracle', 'guess', (c) => { ctx.sk = skB; ctx.board = board(77n, 6n); return [4n]; }, true],
+  ['coracle', 'guess', (c) => { ctx.sk = skA; ctx.board = board(77n, 5n); return [6n]; }, true],
+  ['coracle', 'guess', (c) => { ctx.sk = skB; ctx.board = board(77n, 6n); return [2n]; }, false],
+  ['coracle', 'concede', (c) => { ctx.sk = skB; ctx.board = board(77n, 6n); return []; }, true],
+  ['coracle', 'withdraw', (c) => { ctx.sk = skA; ctx.board = board(77n, 5n); return []; }, true],
+  ['coracle', 'is_red', [skA, bytes(32, 1, 1)], true],
+  ['coracle', 'is_player_alive', [board(1n, 3n), 4n], true],
+
+  // election_core has no constructor, so `authority` is never set: every call is refused.
+  ['election_core', 'add_voter', [bytes(32, 8, 8)], false],
+  ['election_core', 'set_topic', [11n], false],
+  ['election_core', 'advance', [], false],
+  ['election_core', 'vote_commit', [0], false],
+  ['election_core', 'vote_reveal', [], false],
+
+  ['zerocash_core', 'zerocash_mint', (c) => { ctx.zpk = zpk; ctx.coinInfo = zcoin; return []; }, true],
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.root = c.rootOf('commitments'); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, true],
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.root = c.rootOf('commitments'); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, false],
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.root = { field: 12345n }; return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin2]; }, false],
+
+  ...['test_circuit_returned_vector', 'test_circuit_returned_tuple', 'test_nested_circuit_matrix', 'test_circuit_calls_in_loop',
+      'test_dynamic_vector_processing', 'test_complex_nested_patterns', 'test_concatenated_circuit_results',
+      'test_conditional_circuit_calls', 'test_recursive_style_processing', 'test_vector_slicing_with_circuits', 'test']
+    .map((n) => ['pm_19287', n, [], true]),
+
+  ['pm_20028', 'test1', [], true],
+  ['pm_20028', 'test2', [], true],
+  ['pm_20028', 'test4', [5n, 6n], true],
+  ['pm_20028', 'test4', [(1n << 248n) - 1n, 6n], true],
+  ['pm_20028', 'test5', [], true],
+  ['pm_20028', 'test6', [], true],
+  ['pm_20028', 'test8', [], true],
+  ['pm_20028', 'test9', [], true],
+  ['pm_20028', 'test_cast_comparison', [], true],
+
+  ['types', 'test10a', [3n], true],
+  ['types', 'test10', [3n, range(10)], true],
+  ['types', 'test16', [range(10, (i) => BigInt(i))], true],
+
+  ['assert_misc', 'ellen', [{ a: [4n], b: 5n, c: true }], true],
+  ['assert_misc', 'myswitch', [1n, 2n, true], true],
+  ['assert_misc', 'myswitch', [3n, 4n, false], true],
+  ['assert_misc', 'myswitch', [3n, 3n, false], false],
+  ['assert_misc', 'myswitch', [70000n, 1n, true], false],
+  ['assert_misc', 'abel', [], true],
+  ['assert_misc', 'abel', [], true],
+
+  ['adt_counter', 'test_all', [], true],
+  ['adt_counter', 'test_big_increment', [], true],
+  ['adt_list_struct', 'test', [], true],
+  ['adt_map_list', 'test', [], true],
+  // The first assertion of each of these demands a root the test cannot know, the second its opposite:
+  // the circuit is refused whatever the argument.
+  ['adt_merkle', 'test', [{ field: 0n }], false],
+  ['adt_merkle', 'test_historic', [{ field: 1n }, { field: 2n }], false],
+
+  ['composable_inner', 'add', [3n], true],
+  ['composable_inner', 'add', [4n], true],
+
+  ['vectors', 'test1b', [[1n], [2n]], true],
+  ['vectors', 'test2', [[1n, 2n], [3n, 4n]], true],
+  ['vectors', 'test4', [], true],
+  ['vectors', 'slice_to_ledger', [range(8)], true],
+];
+
+const constructorArgs = { tiny: [5n], test01: [5n], coracle: [], threading: [], gas_cost: [], pm_19287: [] };
+// Circuits of these programs are not called above, and why.
+const skipped = {
+  composable_outer: 'calls another contract; needs the simulated chain of test/world.mjs',
+  election_core: 'every call is refused (no constructor sets the authority); only the refusals are compared',
+  adt_merkle: 'both circuits are contradictory by construction; only the refusals are compared',
+};
+
+// ------------------------------------------------------------------------------- running them
+const attempt = async (f) => { try { return { value: await f() }; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; } };
+const encodeState = (s) => toJson((s instanceof rt.ChargedState ? s.state : s.data.state).encode(), 0);
+const stateAfter = (run) => run.context.callContext.currentQueryContext.state;
+const LEVELS = ['compactc', 'default', 'O2', 'O3'];
+const DAMP = ['default', 'O2', 'O3'];
+const dirOf = { default: 'opt', O2: 'o2', O3: 'o3' };
+
+const loaded = new Map();
+async function load(name) {
+  if (loaded.has(name)) return loaded.get(name);
+  const mod = await import(path.join(root, 'compact', name, 'contract', 'index.js'));
+  const impl = {};
+  const ctorArgs = constructorArgs[name] ?? [];
+  const cctx = () => rt.createConstructorContext({}, COIN_PK);
+  impl.compactc = { contract: new mod.Contract(witnesses), dir: path.join(root, 'compact', name) };
+  for (const level of DAMP) {
+    const dir = path.join(root, dirOf[level], name);
+    const spec = JSON.parse(await fs.readFile(path.join(dir, 'contract.json'), 'utf-8'));
+    impl[level] = { contract: makeContract(spec, witnesses), spec, dir };
+  }
+  for (const level of LEVELS) {
+    try {
+      impl[level].init = await impl[level].contract.initialState(cctx(), ...ctorArgs);
+    } catch (e) { impl[level].initError = String(e); }
+  }
+  const enc = (l) => impl[l].init ? toJson(impl[l].init.currentContractState.data.state.encode(), 0) : `error: ${impl[l].initError}`;
+  report(DAMP.every((l) => enc('compactc') === enc(l)), `${name}: initial ledger state is compactc's, at every level`);
+  const entry = { name, mod, impl };
+  entry.rootOf = (field) => mod.ledger(impl.compactc.state ?? impl.compactc.init.currentContractState.data)[field].root();
+  loaded.set(name, entry);
+  return entry;
+}
+
+const circuitContext = (circuitId, impl) =>
+  rt.createCircuitContext({
+    circuitId,
+    contractAddress: rt.dummyContractAddress(),
+    coinPublicKeyOrZswapState: impl.init.currentZswapLocalState.coinPublicKey,
+    contractState: impl.state ?? impl.init.currentContractState,
+    privateState: impl.init.currentPrivateState,
+    time: 0,
+  });
+
+// Where Damp's circuit is not compactc's (docs/benchmarks.md lists them) its public transcript may
+// legitimately differ (a ledger read made unconditionally instead of under a guard, say); then the
+// proof data is only required to be accepted by the ZKIR checker, not to equal compactc's.
+const same = JSON.parse(await fs.readFile(path.join(root, 'results.json'), 'utf-8')).circuits;
+// bench/report.py compares the default and --O2 circuits with compactc's; --O3 differs from --O2
+// only where a hash of constants was folded, so where --O3's circuit is not --O2's it is not
+// compactc's either.
+const o3SameAsO2 = async (name, circuit) => {
+  try {
+    const f = (d) => fs.readFile(path.join(root, d, name, 'zkir', `${circuit}.zkir`), 'utf-8');
+    return (await f('o2')) === (await f('o3'));
+  } catch { return true; }
+};
+const mustEqual = async (name, circuit, level) => {
+  if (level === 'O3' && !(await o3SameAsO2(name, circuit))) return false;
+  return (same[`${name}.${circuit}`]?.[level === 'default' ? 'damp_default_vs_compactc' : 'damp_o2_vs_compactc'] ?? 'identical') !== 'differs';
+};
+
+const exercised = new Map();
+const differing = new Set();
+for (const [name, circuit, argsOf, shouldSucceed] of calls) {
+  const c = await load(name);
+  exercised.set(name, (exercised.get(name) ?? new Set()).add(circuit));
+  const args = typeof argsOf === 'function' ? argsOf(c) : argsOf;
+  const label = `${name}.${circuit}(${args.map((a) => toJson(a, 0)).join(', ')})`.replaceAll('"', '').slice(0, 110);
+  const runs = {};
+  const isPure = !c.impl.default.spec.circuits.find((x) => x.name === circuit)?.proof;
+  if (isPure) {
+    // No ledger access: compactc exposes it as a pure function, and there is no proof data.
+    const theirs = await attempt(() => c.mod.pureCircuits[circuit](...args));
+    for (const level of DAMP) {
+      const mine = await attempt(() => c.impl[level].contract.circuits[circuit](circuitContext(circuit, c.impl[level]), ...args));
+      report(!!mine.error === !!theirs.error && (mine.error || toJson(mine.value.result, 0) === toJson(theirs.value, 0)),
+        `${label}: ${level} result equals compactc's (no proof needed)`, mine.error ?? theirs.error ?? '');
+    }
+    continue;
+  }
+  for (const level of LEVELS) runs[level] = await attempt(() => c.impl[level].contract.circuits[circuit](circuitContext(circuit, c.impl[level]), ...args));
+  const errs = LEVELS.filter((l) => runs[l].error);
+  if (!shouldSucceed) {
+    report(errs.length === LEVELS.length, `${label}: all refuse`, errs.length === LEVELS.length ? '' : `refused by [${errs}] only: ${runs.default.error ?? runs.compactc.error ?? ''}`);
+    continue;
+  }
+  if (errs.length > 0) { report(false, `${label}: runs`, errs.map((l) => `${l}: ${runs[l].error}`).join(' | ')); continue; }
+  for (const level of LEVELS) c.impl[level].state = stateAfter(runs[level].value);
+  const pd = (l) => { const t = runs[l].value.context.callProofDataTrace; return t.length ? toJson(proofDataOf(t.at(-1)), 0) : 'none'; };
+  const res = (l) => toJson(runs[l].value.result, 0);
+  const zsw = (l) => toJson(runs[l].value.context.callContext.currentZswapLocalState, 0);
+  for (const level of DAMP) {
+    report(res(level) === res('compactc'), `${label}: ${level} result equals compactc's`);
+    if (await mustEqual(name, circuit, level)) report(pd(level) === pd('compactc'), `${label}: ${level} proof data equals compactc's`);
+    else differing.add(`${name}.${circuit}`);
+    report(encodeState(c.impl[level].state) === encodeState(c.impl.compactc.state), `${label}: ${level} ledger state equals compactc's`);
+    report(zsw(level) === zsw('compactc'), `${label}: ${level} Zswap local state equals compactc's`);
+    const trace = runs[level].value.context.callProofDataTrace;
+    if (trace.length) {
+      const checked = await checkProofData({ compiledDir: c.impl[level].dir, circuitId: circuit, proofData: proofDataOf(trace.at(-1)) });
+      report(checked.ok, `${label}: ${level} ZKIR check accepts`, checked.ok ? '' : `${checked.stage}: ${checked.error}`);
+    }
+  }
+}
+
+console.log(`\n${calls.length} calls on ${exercised.size} programs`);
+console.log(`exercised: ${[...exercised].map(([n, cs]) => `${n} (${cs.size})`).join(', ')}`);
+console.log(`circuits whose public transcript was allowed to differ (their ZKIR is not compactc's): ${[...differing].join(', ') || 'none'}`);
+console.log(`not exercised: ${Object.entries(skipped).map(([n, why]) => `${n} (${why})`).join('; ')}`);
+console.log(failures === 0 ? `bench: ${checks} checks passed` : `bench: ${failures} of ${checks} checks FAILED`);
+process.exit(failures === 0 ? 0 : 1);

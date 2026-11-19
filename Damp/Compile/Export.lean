@@ -200,17 +200,41 @@ def contract (c : Contract) : Json :=
 
 end Export
 
-/-- Write `zkir/<circuit>.zkir` for each circuit and `contract.json` for the executor. -/
-def Contract.write (c : Contract) (dir : System.FilePath) : IO Unit := do
-  IO.ofExcept c.check
-  IO.FS.createDirAll (dir / "zkir")
-  for circ in c.circuits ++ c.constructor.toList do
+/-- Every circuit of a contract, the constructor last. -/
+def Contract.allCircuits (c : Contract) : List Circuit := c.circuits ++ c.constructor.toList
+
+/-- What `Contract.write` computes before writing anything: `Contract.check`,
+    then `Emit.circuit` on every circuit, failing on the first error. Returns
+    each circuit with its emitted ZKIR. -/
+def Contract.emitAll (c : Contract) : Except String (List (Circuit × Zkir.IrSource)) := do
+  c.check
+  (c.circuits ++ c.constructor.toList).mapM fun circ =>
     match Emit.circuit circ with
-    | .ok src =>
-        -- Checked either way; written only where a proof is needed.
-        if circ.needsProof && circ.name != "constructor" then
-          IO.FS.writeFile (dir / "zkir" / s!"{circ.name}.zkir") (src.toJson.pretty ++ "\n")
-    | .error e => throw (IO.userError s!"{c.name}.{circ.name}: {e}")
+    | .ok src => pure (circ, src)
+    | .error e => throw s!"{c.name}.{circ.name}: {e}"
+
+/-- The `.zkir` files written for emitted circuits: file name and contents, for
+    each circuit that needs a proof other than the constructor (every circuit
+    is emitted and checked either way). -/
+def zkirFiles (srcs : List (Circuit × Zkir.IrSource)) : List (String × String) :=
+  srcs.filterMap fun (circ, src) =>
+    if circ.needsProof && circ.name != "constructor" then
+      some (s!"{circ.name}.zkir", src.toJson.pretty ++ "\n")
+    else none
+
+/-- Write the files for a contract and its emitted circuits:
+    `zkir/<circuit>.zkir` (`zkirFiles`) and `contract.json` for the executor. -/
+def Contract.writeFiles (c : Contract) (dir : System.FilePath) (srcs : List (Circuit × Zkir.IrSource)) :
+    IO Unit := do
+  IO.FS.createDirAll (dir / "zkir")
+  for (name, text) in zkirFiles srcs do
+    IO.FS.writeFile (dir / "zkir" / name) text
   IO.FS.writeFile (dir / "contract.json") ((Export.contract c).pretty ++ "\n")
+
+/-- Write `zkir/<circuit>.zkir` for each circuit and `contract.json` for the
+    executor: `Contract.emitAll`, then `Contract.writeFiles`. -/
+def Contract.write (c : Contract) (dir : System.FilePath) : IO Unit := do
+  let srcs ← IO.ofExcept c.emitAll
+  c.writeFiles dir srcs
 
 end Damp

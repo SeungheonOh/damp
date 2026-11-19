@@ -345,24 +345,64 @@ carries that side condition.
 |---|---|
 | `Simplify` | constant folding; `x+0`, `x·1`, `−−x`; `x·0` and `x == x` for an `x` that cannot fail; a comparison of constants that fit its width; a conditional with a constant condition whose dropped branch cannot fail; constant and copy propagation; drops asserts and range checks known to hold or implied by an earlier check on the same expression; drops a witness call or ledger operation whose guard is exactly 0 when nothing dropped could fail |
 | `Bounds` | carries an upper bound for each variable (from range checks, bindings, witness ranges, asserted comparisons) through sums, products, conditionals and `divmod`; drops a range check the bound implies; replaces a `divmod` of a value already below the divisor; folds a comparison the bounds decide |
+| `Bounds2` | `Bounds` plus relational facts: an asserted `¬(a < b)` under a guard (Compact's `a - b` on `Uint`s) records `b ≤ a`, so `a − b` is bounded by the bound of `a` and the range check of a later cast of the difference is dropped (`Examples/OptBounds2.lean`). The facts are forgotten when a variable they mention is rebound |
+| `Forward` | substitutes earlier bindings `v := e` into later statements, so that `Algebra` and `Simplify` see whole computations (`(a − b) + b` across two statements). Every statement stays in place; ledger operands are rewritten only with bindings that mention no ledger-read variable. Used as `forwardOpt`: `Forward`, `Algebra`, `Simplify`, kept only when the emitted circuit is strictly smaller (`Pass.choose`), since inlining can also lose sharing |
 | `Algebra` | reads a tree of additions, negations and constant multiples as a linear combination and rebuilds it when that is strictly smaller (`(x+3)+4`, `x+x+x`, `(x−y)+y`); moves constants across an equality; collapses a conditional nested under its own condition. Never used when it would break sharing and grow the circuit |
 | `Asserts` | uses what an `assert` established: the condition is 1, a conjunction's parts are 1, a negation's operand is 0, an asserted `e == k` makes `e` the constant; duplicate and implied asserts are dropped; an expression already evaluated counts as unable to fail |
-| emitter | shares equal expressions; drops unused bindings |
+| `FoldHashes` | `foldDivmod`: a `divmod` of a constant with `bits ≤ 248` becomes the constant it evaluates to (above 248 bits it fails, and stays). `foldHashes p`: also `hash`/`phash` of constants, computed with the hash functions `p` (a `phash` becomes the half, top byte or low 31 bytes, that `Expr.eval` takes; one whose inputs do not fit the alignment fails, and stays) |
+| `AssertEq` | `assert (e == 1)` becomes `assert e`, for any `e`: an `assert` passes exactly when its condition is 1, and `e == 1` is 1 exactly when `e` is. No boolean knowledge needed (the usual `e` is a `Boolean` read from the ledger, which is not range checked). Only `assert`: in a `select` or a guard the rewrite is not exact for an `e` that is not 0 or 1 |
+| `Commute` | puts the operands of `add`, `mul`, `eq` in a canonical order (by a structural hash invariant under the swap) so the emitter shares `x != y` and `y != x`; kept only when the emitted circuit is strictly smaller (`commuteOpt`) |
+| `InlineAll` | `forwardAllOpt`: `Forward` with every binding eligible, `Algebra`, `Simplify`, kept only when strictly smaller. Its point is dead code: a witness call's arguments are evaluated by the executor, not by the circuit, but the emitter's pruning counts them as uses, so a value computed only for a witness argument (a hash, typically) was emitted. Once it is substituted into the argument, nothing the emitter compiles reads its binding |
+| emitter | shares equal expressions; drops unused bindings (`Emit.pruneDeadBinds`: one backward liveness pass, which is already a fixpoint, since a dropped binding adds nothing to the live set; it counts the variables of witness arguments as live, though they are not emitted) |
 
-Two levels. The default (`Circuit.optimize`: `Simplify`, `Bounds`,
-`Simplify`, `Algebra`) leaves every circuit written to mirror a Compact
-program exactly as compactc produces it, so verifier keys stay comparable.
-`--O2` (`Circuit.optimizeFull`) adds `Asserts`, which knows things compactc
-does not use: `counter.arith` goes from 32 to 29 instructions (146 to 137
-rows) and no longer has compactc's verifier key. `--no-opt` turns everything
-off.
+Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
 
-Every pass is proved sound (`Pass.Sound`, `Damp/Proofs/Optimize/Sound.lean`):
-for every circuit, with no hypothesis on it, the pass changes neither what a
-run produces that anyone can observe nor what the executor does, whatever its
-oracles answer. Soundness composes, so both pipelines are sound
-(`Circuit.optimize_sound`, `Circuit.optimizeFull_sound`), and each pass keeps
-the ledger-statement check passing. An earlier version of the optimizer was
+- default, `Circuit.optimize`: `Simplify`, `foldDivmod`, `Bounds2`,
+  `Simplify`, `Algebra`, `commuteOpt`. Sound (`Pass.Sound`: for every
+  circuit, whatever the hash functions). It leaves every example circuit
+  written to mirror a Compact program exactly as compactc produces it, so
+  verifier keys stay comparable (`test/golden.sh`, `test/oracle.sh`).
+  `commuteOpt` changes a circuit only when it shares a commutative duplicate,
+  which compactc does not (in the benchmark: `assert_misc.myswitch`, already
+  different from compactc's).
+- `--O2`, `Circuit.optimizeFull`: `Simplify`, `foldDivmod`, `assertEq`,
+  `Asserts`, `Simplify`, `Bounds2`, `Simplify`, `Algebra`, `forwardOpt`,
+  `forwardAllOpt`, `commuteOpt`. Sound, as the default. `assertEq`, `Asserts`,
+  `forwardOpt` and `forwardAllOpt` do what compactc does not, so a circuit may
+  come out smaller and then has a different verifier key: `counter.arith` is
+  32 instructions and 146 rows with `--no-opt`, the same at the default level
+  (compactc's verifier key), and 26 instructions and 134 rows at `--O2`; it is
+  the only example circuit that `--O2` changes (`test/opt.sh`).
+- `--O3`, `Circuit.optimizeMax`: `Simplify`, `foldHashes Crypto.prims`, then
+  `--O2`. Hashes of constants are computed at compile time with
+  `Damp.Crypto.prims`, the Lean implementations of Midnight's Poseidon and
+  SHA-256 persistent hash. Sound only *relative to those implementations*
+  (`Pass.SoundFor Crypto.prims`, `Damp/Proofs/Optimize/SoundFor.lean`): the
+  theorems say what a run with `Crypto.prims` does. That `Crypto.prims` is
+  what Midnight's runtime and proof system compute is tested
+  (`test/semantics.sh`, on samples, against the real runtime and `zkir-v3`),
+  not proved; if they differed on a folded input, the `--O3` circuit would
+  carry a wrong constant. In the benchmark it changes only `adt_merkle`
+  (Merkle leaves of literals: 30 instructions, 30 322 rows).
+
+`--no-opt` turns everything off.
+
+Every pass but `foldHashes` is proved sound (`Pass.Sound`,
+`Damp/Proofs/Optimize/Sound.lean`): for every circuit, with no hypothesis on
+it, and for every choice of hash functions `p : Prims` (the IR semantics is
+parameterized by them), the pass changes neither what a run produces that
+anyone can observe nor what the executor does, whatever its oracles answer.
+Soundness composes, so the default and `--O2` pipelines are sound
+(`Circuit.optimize_sound`, `Circuit.optimizeFull_sound`); a choice between two
+sound passes is sound whatever decides it (`Pass.Sound.choose`).
+`foldHashes p` bakes in the values of `p`, so it is proved
+`Pass.SoundFor p (Circuit.foldHashes p)` for every `p`: the same two
+equalities at that one `p`. A sound pass is sound for every `p`
+(`Pass.Sound.soundFor`), and passes sound for `p` compose
+(`runPasses_soundFor`), so `--O3` is `Pass.SoundFor Crypto.prims`
+(`Circuit.optimizeMax_soundFor`). Each pass also keeps the ledger-statement
+check passing (`Circuit.optimize_checkLedger`,
+`Circuit.optimizeFull_checkLedger`, `Circuit.optimizeMax_checkLedger`). An earlier version of the optimizer was
 "proved" against a semantics that was total and wrong; under the real one
 several of its rules were unsound and have been restricted as above.
 
@@ -373,7 +413,10 @@ produces. The `tuned` example goes from 33 to 22 instructions and from 170 to
 the example contracts; they pay off on code the static types and Compact-style
 writing miss (`Examples/OptBounds.lean`: `require (x <. 10); x.castTo 9` from
 6 to 4 instructions; `Examples/OptAlgebra.lean`: 20 to 15). Instruction count
-is a weak proxy for cost: hashes and range checks dominate.
+is a weak proxy for cost: hashes and range checks dominate. `Bounds2` pays
+off on the Compact idiom `(a - b) as Field as Uint<16>` (16 to 15
+instructions); `forwardOpt` on `const d = a - b; const e = d + b`
+(`Examples/OptForward.lean`: 12 to 9).
 
 ### 2.7 Disclosure check
 
@@ -490,7 +533,49 @@ and the executor interprets `c.optimize`. All statements are in Lean, with no
 | `pruned_run` | dropping unused bindings keeps every accepted run, with the same outcome |
 | `circuitCore_correct` | the emitted ZKIR, under the ZKIR evaluator, gives exactly what the IR semantics gives, for every input and transcript: same outcome or both reject |
 | `compile_exact` | the shipped ZKIR means exactly the shipped circuit (optimized, unused bindings dropped) |
-| `compile_complete` | every run the contract's circuit accepts is accepted by the shipped ZKIR with the same observable outcome |
+| `compile_complete` | every run the contract's circuit accepts is accepted by the shipped ZKIR with the same observable outcome; `compile_complete_full` the same at `--O2`, `compile_complete_max` at `--O3` for runs with `Damp.Crypto.prims` |
+| `IrSource.ofJson_toJson` | the JSON tree printed for a ZKIR value reads back, with Damp's reader (which follows the rules of Midnight's Rust loader), as that value, provided every immediate is below the field modulus in absolute value (`Damp/Proofs/ZkirJson.lean`); `IrSource.ofJson_toJson_of_emitted`: so does everything `Emit.circuit` returns, since it checks that condition |
+
+**The build** (`Damp/Proofs/Build.lean`). `Contract.build` does nothing but
+run the pure function `Contract.buildCore` and write the files it returns
+(`zkir/<name>.zkir` from each emitted `IrSource`, `contract.json` from the
+shipped contract), then optionally run the key generator. `build_correct`:
+if `c.buildCore level = .ok (shipped, srcs)`, then `shipped` is `c`
+under the selected optimization (`level : OptLevel`: `--no-opt`, default,
+`--O2` or `--O3`), it passes `Contract.check`, `srcs` has one entry per
+circuit of `c` in order, and for each circuit `circ` the entry is `(s, src)`
+with `s` the optimized circuit and `ShippedOK level.SoundAt circ s src`,
+which bundles the following. The two items that relate runs of `s` to runs of
+`circ` (the third and fourth) hold for the hash functions `level.SoundAt`
+admits: all of them at every level but `--O3`, and `Damp.Crypto.prims` at
+`--O3`; the others hold for all.
+
+- `circ` passed the disclosure check;
+- `src` means exactly `s` with unused bindings dropped (`compile_exact`);
+- every run `circ` accepts, `src` accepts with the same observable outcome
+  (`compile_complete`);
+- the executor on `s` does what it does on `circ` (`Exec.optimize_correct`);
+- what the executor records on `s`, `src` accepts (`run_accepted_by_emitted`);
+- `s` passes the ledger check, so every active public input the executor
+  records encodes an instruction the ledger ran (`run_groups_fromLedger`);
+- `src` meets the producer obligations and every immediate is one the loader
+  accepts (`checkProducer`);
+- `IrSource.ofJson src.toJson = .ok src`.
+
+The ledger check the build makes on the shipped circuits never fails on a
+circuit that passes it before optimization, at any level
+(`buildPass_checkLedger`, from `Circuit.optimize_checkLedger`,
+`Circuit.optimizeFull_checkLedger` and `Circuit.optimizeMax_checkLedger`).
+
+**Disclosure** (`Damp/Proofs/Disclosure.lean`). `groups_noninterference`: for
+a circuit that passes the disclosure check, two runs that both succeed, read
+the same values from the ledger (the same `pub` transcript), and agree on the
+value of every `disclose`d expression that could reach the public inputs,
+produce the same public inputs, whatever their arguments and private
+transcripts. It is termination-insensitive: it compares two successful runs
+only, so a private value can still decide *whether* a run succeeds (an
+`assert` on private data is outside it). `groups_noninterference_noDisclose`
+is the case with no `disclose` on the way to the public inputs.
 
 **The executor** (the Lean definition `Exec.run`):
 
@@ -500,21 +585,43 @@ and the executor interprets `c.optimize`. All statements are in Lean, with no
 | `Exec.run_accepted_by_zkir` | and therefore one the shipped ZKIR accepts |
 | `Exec.run_none` | a call fails only if the inputs are not the circuit's, an oracle gave no usable answer, or the circuit rejects every transcript beginning with exactly what the executor recorded and was answered |
 | `Exec.optimize_correct` | on the optimized circuit the executor completes exactly when it would on the original and leaves the same outputs, transcripts, active public inputs, private state and ledger state |
-| `Circuit.bounds_sound`, `Circuit.algebra_sound`, `Circuit.asserts_sound`, `Circuit.simplify_sound` | each pass is sound by itself, for every circuit; `Circuit.optimize_sound` and `Circuit.optimizeFull_sound` follow by composition, and `compile_complete_full` is the end-to-end statement at `--O2` |
+| `Circuit.bounds_sound`, `Circuit.algebra_sound`, `Circuit.asserts_sound`, `Circuit.simplify_sound`, `Circuit.foldDivmod_sound`, `Circuit.assertEq_sound`, `Circuit.commuteOpt_sound`, `Circuit.forwardAllOpt_sound`, ... | each pass is sound by itself, for every circuit; `Circuit.optimize_sound` and `Circuit.optimizeFull_sound` follow by composition, and `compile_complete_full` is the end-to-end statement at `--O2` |
+| `Circuit.foldHashes_soundFor`, `Circuit.optimizeMax_soundFor`, `Exec.optimizeMax_correct` | folding hashes with `p` is sound for runs with `p`; so `--O3` changes nothing observable, in `Circuit.run` or in the executor, for runs with `Damp.Crypto.prims` |
 | `Exec.optimize_asks_same` | and asks the witnesses and the ledger the same questions in the same order |
 | `Exec.step_ledger_agrees`, `Exec.run_groups_fromLedger` | the public inputs a call records are the field encoding of the instructions it sent to the ledger, with the ledger's answers filled in |
 
-**The interface** (`Damp/Proofs/Interface.lean`): a `Uint m` holds a number at
-most `m` and a `Boolean` holds 0 or 1; `+` and `*` give the exact result with
-no wrap-around; all comparison forms compare the numbers; `sub` fails exactly
-when it would go negative; `castTo` and `toUint` succeed exactly when the value
-fits; `require` succeeds exactly when its condition holds or its guard does
-not; range checks make inputs and witness results inhabit their types.
+**The interface** (`Damp/Proofs/Interface.lean`, `Damp/Proofs/Interface/`): a
+`Uint m` holds a number at most `m` and a `Boolean` holds 0 or 1; `+` and `*`
+give the exact result with no wrap-around; all comparison forms compare the
+numbers, and under `Uint.Means` cannot fail; `sub` fails exactly when it
+would go negative; `castTo` and `toUint` succeed exactly when the value fits;
+`require` succeeds exactly when its condition holds or its guard does not;
+range checks make inputs and witness results inhabit their types.
+`mkCircuit_run` gives the meaning of a circuit's arguments at every position
+and of every shape. A small program logic, `Runs` (`Runs.require`,
+`Runs.cond`, `Runs.sub`, `Runs.castTo`), states what a block of surface code
+does when run; `Bytes.eq_bytes` makes `Bytes` equality compare the byte
+strings, and `select_is` gives the meaning of a conditional on any value
+type. `charge_run` and `settle_run` in `Examples/InterfaceMore.lean` use these
+to state what two whole contract circuits do.
+
+**The ledger** (`Damp/Ledger/`, `Damp/Proofs/Ledger/`): a Lean model of
+Midnight's on-chain VM on the fragment Damp emits, differentially tested
+against the real runtime (`test/vm.sh`). The ledger operations of `Cell`,
+`Counter`, `Map` and `Set` are proved against it; the theorem list, and what
+the model abstracts, are in [docs/ledger-model.md](docs/ledger-model.md):
+gas, and the typed decoding of some effect slots, are not modelled; nested
+paths, lists, Merkle trees and kernel operations have no theorems yet;
+the `Counter` theorems assume the amount fits 32 bits; write-then-read is
+proved for single-limb alignments only.
 
 **Checked on every emitted circuit**, not proved of the emitter: the three
 producer obligations of the ZKIR specification (single assignment, value
-typing, bit bounds; `Damp/Zkir/Checks.lean`), and that each ledger statement is
-well formed in the sense the ledger theorems need.
+typing, bit bounds; `Damp/Zkir/Checks.lean`), that every immediate is below
+the field modulus in absolute value (Midnight's loader refuses others; the
+surface language reduces `Field` literals modulo the field size, so only a
+circuit written directly in the IR can fail it), and that each ledger
+statement is well formed in the sense the ledger theorems need.
 
 Proving these found five mistakes that testing had not:
 
@@ -535,6 +642,11 @@ What the proofs do not give:
 - **The converse of `pruned_run`.** An unused binding whose expression would
   fail fails `Circuit.run`, which evaluates every statement, but constrains
   nothing in the emitted circuit. The exact statement is `compile_exact`.
+- **`--O3` beyond Damp's hash functions.** `--O3` is proved sound for runs
+  with `Damp.Crypto.prims`, the Lean implementations of Poseidon and of the
+  SHA-256 persistent hash. That they compute what Midnight's runtime and
+  proof system compute is tested (`test/semantics.sh`), not proved; the other
+  levels do not depend on it.
 - **Anything below the ZKIR evaluator.** That the evaluator agrees with the
   constraint system is upstream's theorem (in Agda, for ZKIR 3.0); the chips,
   the proof system and the cryptography are trusted. The Lean evaluator's
@@ -545,17 +657,29 @@ What the proofs do not give:
 - **Values read from the ledger.** They are not range-checked in the circuit,
   as in Compact: a `Uint 255` read from a cell is only as good as what was
   written. `Field.unsafeToUint` is unchecked by design.
-- **That the optimizer preserves ledger well-formedness.** It is checked on
-  the optimized circuit at build time, so a violation is a build error.
-- **Parts of the interface:** `Bytes` beyond limb equality, `Maybe`, the
-  ledger operations themselves, and per-position lemmas for circuit arguments
-  after the first.
+- **The text layer of the files.** `IrSource.ofJson_toJson` is about the JSON
+  tree; Lean core's printer and parser of JSON text (`Json.pretty`,
+  `Json.parse`) are not covered, nor is the agreement of Damp's reader with
+  Midnight's Rust loader, which is tested (`test/semantics.sh`), not proved.
+- **Parts of the interface:** no `Runs` rules for witness calls and ledger
+  operations; no lemmas for enums or for projecting a vector element; the
+  length of a builder result's `toExprs` is taken as a hypothesis.
+- **The ledger model's gaps**, listed above and in
+  [docs/ledger-model.md](docs/ledger-model.md).
 - **Instructions the Lean evaluator does not model**: elliptic-curve
   operations, `inv`, non-native inputs. Damp does not emit them.
 
 One known difference from compactc that the interface fix introduced: a
 checked cast inside a branch uses different instructions from compactc's (same
 meaning, different verifier key). No example covers that case.
+
+Known weaknesses of the surface language, found while proving it and not yet
+fixed:
+
+- a `Uint m` obtained from `Field.unsafeToUint` or from a ledger read with a
+  bound `m ≥ 2^248` makes `lt` fail on valid values;
+- `==.` on `Maybe` compares the payload of absent values too;
+- a raw `Bytes n` built with too few limbs compares only a prefix.
 
 ## 5. Next steps
 

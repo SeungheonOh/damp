@@ -21,11 +21,12 @@ ZKIR circuits Midnight executes.
 | `Damp/Zkir/` | Midnight's circuit format: the data type and JSON (`Basic`, `Json`), the producer's obligations (`Checks`), and Midnight's evaluator ported to Lean (`Semantics`) |
 | `Damp/Crypto/` | Poseidon, SHA-256 and the persistent hash, as Midnight computes them |
 | `Damp/IR/` | the circuit IR (`Basic`), what it means (`Semantics`), Impact VM instructions and their encoding (`Impact`), the disclosure check (`Disclosure`), the ledger-statement check (`LedgerCheck`) |
-| `Damp/Optimize/` | optimization passes, one per file (`Simplify`, `Bounds`, `Algebra`, `Asserts`), put in order by `Pipeline` |
-| `Damp/Compile/` | IR to ZKIR (`Emit`), contract data for the executor (`Export`), output, key generation and the command line (`Build`) |
+| `Damp/Optimize/` | optimization passes, one per file (`Simplify`, `Bounds`, `Bounds2`, `Algebra`, `Asserts`, `Forward`, `InlineAll`, `AssertEq`, `Commute`, `FoldHashes`; `Choose` keeps the better of two results), put in order by `Pipeline` at three levels: default, `--O2`, `--O3` |
+| `Damp/Compile/` | IR to ZKIR (`Emit`), contract data for the executor (`Export`), the build as a pure function (`Contract.buildCore`), output, key generation and the command line (`Build`) |
 | `Damp/Executor/` | what the executor must do (`Spec`) |
+| `Damp/Ledger/` | a Lean model of Midnight's on-chain (Impact) VM, differentially tested against the real runtime (`Vm`, `Query`, `Merkle`) |
 | `Damp/Lang/` | what contracts are written in: values, operators and statements (`Contract`), ledger types and kernel operations (`Ledger`), cross-contract calls (`Calls`), the token library (`Tokens`), notation (`Syntax`) |
-| `Damp/Proofs/` | every theorem: the emitter (`Emit`, `Prune`), the optimizer (`Optimize/`: one file per pass, `Sound` for what a sound pass is, `Pipeline` for the whole), the compiler end to end (`Compiler`), the executor (`Executor`, `ExecutorComplete`, `LedgerAgreement`), the typed interface (`Interface`), field lemmas (`Field`) |
+| `Damp/Proofs/` | every theorem: the emitter (`Emit`, `Prune`), the optimizer (`Optimize/`: one file per pass, `Sound` for what a sound pass is, `Pipeline` for the whole), the compiler end to end (`Compiler`), the executor (`Executor`, `ExecutorComplete`, `LedgerAgreement`), the typed interface (`Interface`, `Interface/`), what a successful build guarantees (`Build`), the optimizer keeping ledger statements well formed (`Optimize/LedgerCheck`), the ZKIR JSON reading back (`ZkirJson`), noninterference of the disclosure check (`Disclosure`), the ledger operations against the VM model (`Ledger/`), field lemmas (`Field`) |
 | `Examples/` | example contracts, diagnostics, evaluator checks, a first theorem |
 | `docs/bytes-lowering.md` | how Compact represents byte strings, with evidence |
 | `executor/src/executor.mjs` | generic JS executor |
@@ -103,6 +104,7 @@ lake build
 | `./test/all.sh` | verifier keys equal compactc's; executor equals compactc's module; ZKIR checker accepts | compactc, Node |
 | `./test/semantics.sh` | the Lean ZKIR evaluator agrees with Midnight's real checker | compactc, Node |
 | `./test/executor.sh` | the JavaScript executor does what its Lean definition says | compactc, Node |
+| `./test/vm.sh` | the Lean model of the ledger VM agrees with Midnight's runtime | Node |
 | `./test/opt.sh` | optimized and unoptimized circuits agree; prints sizes | compactc's `zkir-v3`, Node |
 | `deploy/scripts/all.sh` | deploys and calls contracts on a fresh local network | Docker, Node |
 

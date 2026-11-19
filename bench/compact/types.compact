@@ -1,0 +1,52 @@
+// This file is part of Compact.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// bench: the circuits of Compact's examples/types/examples.compact that touch the ledger and that
+// Damp can express: maps keyed and valued by aliased types (test10, test10a) and a loop over a
+// vector inserting into a map (test16). The other circuits of that file never touch the ledger, so
+// compactc emits no ZKIR for them and they are not benchmarked. Text is unchanged.
+import CompactStandardLibrary;
+
+new type f10 = Field;
+new type map_f10_f10 = Map<f10, f10>;
+export ledger t10_map_map: Map<f10, map_f10_f10>;
+
+new type vector_10_f10 = Vector<10, f10>;
+export ledger t10_map: Map<f10, vector_10_f10>;
+
+export circuit test10a(vara: f10): Boolean {
+  t10_map_map.insert(disclose(vara), disclose(default<map_f10_f10>));
+  return t10_map_map.member(disclose(vara));
+}
+
+export circuit test10(vara: f10, varb: vector_10_f10): Boolean {
+  t10_map.insert(disclose(vara), disclose(varb));
+  return t10_map.member(disclose(vara));
+}
+
+
+new type t16_not_a_field = Field;
+new type t16_vector_of_fields = Vector<10, Field>;
+export ledger t16_sum_of_fields: Map<Field, t16_not_a_field>;
+
+export circuit test16(vara: t16_vector_of_fields): t16_not_a_field {
+  for (const a of disclose(vara)) {
+    const sum = (() => ((a as Field) + (a as Field) + (1 as Field)))();
+    t16_sum_of_fields.insert(a, sum as Field as t16_not_a_field);
+  }
+
+  return t16_sum_of_fields.lookup(0 as Field);
+}
+

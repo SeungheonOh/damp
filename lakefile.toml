@@ -19,3 +19,14 @@ root = "Test.Semantics"
 [[lean_exe]]
 name = "damp-executor-test"
 root = "Test.Executor"
+
+[[lean_lib]]
+name = "Bench"
+
+[[lean_exe]]
+name = "damp-bench"
+root = "BenchMain"
+
+[[lean_exe]]
+name = "damp-vm-test"
+root = "Test.Vm"

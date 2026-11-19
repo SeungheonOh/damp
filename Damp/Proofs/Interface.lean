@@ -22,7 +22,7 @@ Hypotheses on the bounds are the exact ones each promise needs:
 
 Every one of these holds for bounds at most `Uint.maxBound = 2 ^ 248 - 1`,
 Compact's own limit, and no other bound survives: every way of making a `Uint`
-except `Field.unsafeToUint` passes through `Uint.capped`, so past the limit it
+(`Field.unsafeToUint` included) passes through `Uint.capped`, so past the limit it
 has no value (`*_too_large`), and the statement builders also record an error
 (`*_error`), so such a circuit is never emitted. The literal, `ofNat`, numeral,
 `widen` and `select` lemmas therefore assume the bound is within the limit.
@@ -152,7 +152,7 @@ theorem Bool.not_decide_lt (x y : Nat) : (!decide (y < x)) = decide (x ≤ y) :=
 
 /-! ## The 248-bit cap
 
-Every way of making a `Uint` except `Field.unsafeToUint` passes its expression
+Every way of making a `Uint`, `Field.unsafeToUint` included, passes its expression
 through `Uint.capped`, which is the expression itself within Compact's limit
 and an `invalid` expression (no value; rejected by the emitter) past it. -/
 
@@ -219,10 +219,14 @@ theorem Uint.numeral_past_cap {m n : Nat} (hm : ¬ m ≤ Uint.maxBound) :
   · rfl
 
 /-- A `Field` numeral means its number reduced into the field. -/
-theorem Field.numeral_is (n : Nat) : Field.Is p env (OfNat.ofNat n : Field) (Fr.ofNat n) := rfl
+theorem Field.numeral_is (n : Nat) : Field.Is p env (OfNat.ofNat n : Field) (Fr.ofNat n) := by
+  show some (Fr.ofInt ((n % Fr.modulus : Nat) : Int)) = some (Fr.ofNat n)
+  rw [Fr.ofInt_natCast, Fr.ofNat_mod]
 
 /-- `Field.ofNat n` means `n` reduced into the field. -/
-theorem Field.ofNat_is (n : Nat) : Field.Is p env (Field.ofNat n) (Fr.ofNat n) := rfl
+theorem Field.ofNat_is (n : Nat) : Field.Is p env (Field.ofNat n) (Fr.ofNat n) := by
+  show some (Fr.ofInt ((n % Fr.modulus : Nat) : Int)) = some (Fr.ofNat n)
+  rw [Fr.ofInt_natCast, Fr.ofNat_mod]
 
 /-! ## `Uint` arithmetic -/
 
@@ -283,12 +287,18 @@ theorem Uint.widen_too_large {m k : Nat} (a : Uint m) (h : m ≤ k) (hk : ¬ k �
 theorem Uint.toField_is {m n : Nat} {a : Uint m} (ha : Uint.Is p env a n) :
     Field.Is p env a.toField (Fr.ofNat n) := ha.2
 
-/-- `unsafeToUint` is a `Uint m` holding the value only when the caller's bound is right. -/
-theorem Field.unsafeToUint_is {a : Field} {v : Fr} (m : Nat) (h : v.val ≤ m) (ha : Field.Is p env a v) :
-    Uint.Is p env (a.unsafeToUint m) v.val := by
+/-- `unsafeToUint` is a `Uint m` holding the value only when the caller's bound is right
+    (and, like every `Uint`'s, within Compact's limit). -/
+theorem Field.unsafeToUint_is {a : Field} {v : Fr} (m : Nat) (hm : m ≤ Uint.maxBound) (h : v.val ≤ m)
+    (ha : Field.Is p env a v) : Uint.Is p env (a.unsafeToUint m) v.val := by
   refine ⟨h, ?_⟩
-  show a.expr.eval p env = _
-  rw [ha, Fr.ofNat_val]
+  show (Uint.capped m a.expr).eval p env = _
+  rw [Uint.capped_eval hm, ha, Fr.ofNat_val]
+
+/-- Past Compact's limit `unsafeToUint` has no value, like every other `Uint`. -/
+theorem Field.unsafeToUint_too_large {a : Field} {m : Nat} (h : ¬ m ≤ Uint.maxBound) :
+    (a.unsafeToUint m).expr.eval p env = none :=
+  Uint.capped_eval_of_gt h a.expr
 
 /-! ## `Uint` comparisons -/
 

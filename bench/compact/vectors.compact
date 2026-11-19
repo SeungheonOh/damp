@@ -1,0 +1,51 @@
+// This file is part of Compact.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//  	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// bench: ledger-touching circuits from Compact's examples/vectors/spread_part_one.compact
+// (test1b, test2, test4) with their ledger fields, without the statements that compute values
+// nothing uses (no effect on the circuit), plus `slice_to_ledger`, added here (modelled on
+// slice_part_one.compact's test2/test8) to cover `slice` with a constant offset.
+import CompactStandardLibrary;
+
+export ledger var1: Vector<2, Field>;
+export ledger var1a: Vector<3, Field>;
+
+export circuit test1b(vector1: Vector<1, Field>, vector2: Vector<1, Field>): [] {
+  var1 = [...disclose(vector1), ...disclose(vector2)];
+  var1a = [...disclose(vector1), ...disclose(vector2), ...[1 as Field]];
+}
+
+export ledger var2: Map<Field, Vector<10, Uint<32>>>;
+
+export circuit test2(vector1: Vector<2, Uint<8>>, vector2: Vector<2, Uint<16>>): [] {
+  const a = [1, 2, 3, 4, 5, ...disclose(vector1), ...disclose(vector2), 0];
+  var2.insert(1 as Field, a);
+
+  for (const i of [...var2.lookup(1 as Field)]) {
+    const a = i;
+  }
+}
+
+export ledger var4: Map<Field, Field>;
+
+export circuit test4(): [] {
+  for(const i of 0..100) {
+    var4.insert(i as Field, i as Field);
+  }
+}
+
+export circuit slice_to_ledger(vector: Vector<8, Field>): [] {
+  var1 = disclose(slice<2>(vector, 3));
+}

@@ -8,6 +8,11 @@ circuit Damp emits is checked against all three:
 * O1, single assignment: `IrSource.checkSingleAssignment` in `Damp/Zkir/Basic.lean`;
 * O2, value typing: every operand has the type its instruction expects;
 * O3, bit bounds: the widths given to range checks and comparisons are legal.
+
+A fourth check is about the file rather than the spec: every immediate is one
+Midnight's loader accepts (`IrSource.checkImmediates`), so the file written
+reads back as the circuit the theorems are about (`IrSource.ofJson_toJson` in
+`Damp/Proofs/ZkirJson.lean`).
 -/
 import Damp.Zkir.Basic
 
@@ -85,10 +90,54 @@ def IrSource.checkTyped (s : IrSource) : Except String Unit := do
     | .output vs => nat "output" vs
     | _ => throw "an instruction Damp does not emit"
 
-/-- All three producer obligations. -/
+/-- An operand the loader accepts: a register, or an immediate whose absolute
+    value is below the field modulus (the loader reads an immediate as at most
+    32 little-endian bytes and refuses a value that is not a field element). -/
+def Operand.okB : Operand → Bool
+  | .var _ => true
+  | .imm v => decide (v.natAbs < Fr.modulus)
+
+/-- Every immediate of the circuit is one the loader accepts, decided. -/
+def IrSource.okB (s : IrSource) : Bool := s.instructions.all fun i => i.uses.all Operand.okB
+
+/-- Every immediate is one the loader accepts. The evaluator reads an
+    immediate `c` as `Fr.ofInt c`, but the loader refuses `|c| ≥ p`, so such a
+    circuit could not be loaded at all. -/
+def IrSource.checkImmediates (s : IrSource) : Except String Unit :=
+  if s.okB then pure ()
+  else
+    let bad := (s.instructions.toList.flatMap Instr.uses).find? (! ·.okB)
+    let shown := match bad with
+      | some (.imm v) => toString v
+      | _ => "?"
+    throw s!"the constant {shown} is not below the field modulus in absolute value;       a Field literal must be reduced modulo the field size"
+
+/-- The three producer obligations, and immediates the loader accepts. -/
 def IrSource.checkProducer (s : IrSource) : Except String Unit := do
   s.checkSingleAssignment
   s.checkTyped
   s.checkBitBounds
+  s.checkImmediates
+
+theorem IrSource.okB_of_checkImmediates {s : IrSource} (h : s.checkImmediates = .ok ()) : s.okB = true := by
+  unfold IrSource.checkImmediates at h
+  split at h
+  · assumption
+  · simp [throw, throwThe, MonadExceptOf.throw] at h
+
+/-- What `checkProducer` accepts has every immediate in range. -/
+theorem IrSource.okB_of_checkProducer {s : IrSource} (h : s.checkProducer = .ok ()) : s.okB = true := by
+  apply IrSource.okB_of_checkImmediates
+  unfold IrSource.checkProducer at h
+  simp only [bind, Except.bind] at h
+  split at h
+  · cases h
+  · split at h
+    · cases h
+    · split at h
+      · cases h
+      · cases h' : s.checkImmediates with
+        | error e => rw [h'] at h; cases h
+        | ok u => cases u; rfl
 
 end Damp.Zkir

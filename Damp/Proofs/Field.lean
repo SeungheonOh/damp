@@ -27,6 +27,9 @@ theorem ofNat_inj {a b : Nat} (ha : a < modulus) (hb : b < modulus) : ofNat a = 
 /-- A nonnegative integer literal is the field element of that number. -/
 theorem ofInt_natCast (n : Nat) : ofInt (n : Int) = ofNat n := rfl
 
+/-- Reducing a number modulo the field order first does not change its field element. -/
+theorem ofNat_mod (n : Nat) : ofNat (n % modulus) = ofNat n := ext (by simp [val_ofNat])
+
 /-- Field addition of two numbers is the field image of their sum. -/
 theorem ofNat_add (a b : Nat) : ofNat a + ofNat b = ofNat (a + b) := by
   apply ext

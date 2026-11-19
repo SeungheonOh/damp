@@ -1,0 +1,134 @@
+// This file is part of Compact.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// bench: derived from Compact's examples/election.compact. Changes, all because Damp has
+// neither `Opaque` types nor `MerkleTreePath`/`merkleTreePathRoot`:
+//   - `topic` is a Maybe<Field> (was Maybe<Opaque<"string">>), set_topic takes a Field;
+//   - the two `context$..$path_of` witnesses, which returned Maybe<MerkleTreePath<..>>, are
+//     witnesses returning the path's root (a MerkleTreeDigest); the `path.is_some`,
+//     `merkleTreePathRoot(path.value)` and `leaf` checks become `checkRoot(that root)`;
+//   - add_voter's "added twice" assertion (it needed `path_of(pk).is_some`) is dropped;
+//   - names with `$` are written with `_` (Lean identifiers).
+export {vote_commit, vote_reveal, advance, set_topic, add_voter}
+
+import CompactStandardLibrary;
+
+enum PublicState { setup, commit, reveal, final, }
+enum PrivateState { initial, committed, revealed, }
+enum PermissibleVotes { yes, no, }
+
+ledger authority: Bytes<32>;
+ledger state: PublicState;
+ledger topic: Maybe<Field>;
+ledger tally_yes: Counter;
+ledger tally_no: Counter;
+ledger committed_votes: MerkleTree<10, Bytes<32>>;
+ledger eligible_voters: MerkleTree<10, Bytes<32>>;
+ledger committed: Set<Bytes<32>>;
+ledger revealed: Set<Bytes<32>>;
+
+witness private_secret_key(): Bytes<32>;
+witness private_state(): PrivateState;
+witness private_state_advance(): [];
+witness private_vote_record(ballot: PermissibleVotes): [];
+witness private_vote(): PermissibleVotes;
+witness context_eligible_voters_root(pk: Bytes<32>): MerkleTreeDigest;
+witness context_committed_votes_root(cm: Bytes<32>): MerkleTreeDigest;
+
+circuit ballot_repr(ballot: PermissibleVotes): Bytes<32> {
+  return ballot == PermissibleVotes.yes ? pad(32, "yes") : pad(32, "no");
+}
+
+circuit vote_commit(ballot: PermissibleVotes): [] {
+  assert(state.read() == PublicState.commit && private_state() == PrivateState.initial, "In illegal state for committing");
+  private_vote_record(ballot);
+  const sk = private_secret_key();
+  const com_nul = commitment_nullifier(sk);
+  assert(!committed.member(com_nul), "Unexpected attempt to double use of nullifier");
+  const pk = public_key(sk);
+  assert(eligible_voters.checkRoot(disclose(context_eligible_voters_root(pk))),
+         "Attempted to vote without authorization - need to add-voter");
+  const cm = commit_with_sk(ballot_repr(ballot), sk);
+  committed_votes.insert(cm);
+  committed.insert(com_nul);
+  private_state_advance();
+}
+
+circuit vote_reveal(): [] {
+  assert(state.read() == PublicState.reveal && private_state() == PrivateState.committed, "In illegal state for revealing");
+  const sk = private_secret_key();
+  const rev_nul = reveal_nullifier(sk);
+  assert(!revealed.member(rev_nul), "Attempted to double vote");
+  const vote = private_vote();
+  const cm = commit_with_sk(ballot_repr(vote), sk);
+  assert(committed_votes.checkRoot(disclose(context_committed_votes_root(cm))), "Attempted to reveal incorrectly");
+  if(disclose(vote) == PermissibleVotes.yes) {
+    tally_yes.increment(1);
+  } else {
+    tally_no.increment(1);
+  }
+  revealed.insert(rev_nul);
+  private_state_advance();
+}
+
+circuit advance(): [] {
+  const sk = private_secret_key();
+  const apk = public_key(sk);
+  assert(apk == authority.read(), "Attempted to advance state without authorization");
+  assert(topic.read().is_some, "Attempted to start election without a topic");
+  state.write(successor(state.read()));
+}
+
+circuit successor(state: PublicState): PublicState {
+  if(state == PublicState.setup) {
+    return PublicState.commit;
+  } else if(state == PublicState.commit) {
+    return PublicState.reveal;
+  } else {
+    return PublicState.final;
+  }
+}
+
+circuit set_topic(t: Field): [] {
+  const sk = private_secret_key();
+  const apk = public_key(sk);
+  assert(apk == authority.read(), "Attempted to set topic without authorization");
+  assert(state.read() == PublicState.setup, "Attempted to set topic after setup phase");
+  topic.write(Maybe<Field>{ is_some: true, value: disclose(t) });
+}
+
+circuit add_voter(pk: Bytes<32>): [] {
+  const sk = private_secret_key();
+  const apk = public_key(sk);
+  assert(apk == authority.read(), "Attempted to add a voter without authorization");
+  assert(state.read() == PublicState.setup, "Attempted to add a voter after setup phase");
+  eligible_voters.insert(disclose(pk));
+}
+
+circuit commitment_nullifier(sk: Bytes<32>): Bytes<32> {
+  return disclose(persistentHash<Vector<2, Bytes<32>>>([pad(32, "lares:election:cm-nul:"), sk]));
+}
+
+circuit reveal_nullifier(sk: Bytes<32>): Bytes<32> {
+  return disclose(persistentHash<Vector<2, Bytes<32>>>([pad(32, "lares:election:rv-nul:"), sk]));
+}
+
+circuit public_key(sk: Bytes<32>): Bytes<32> {
+  return disclose(persistentHash<Vector<2, Bytes<32>>>([pad(32, "lares:election:pk:"), sk]));
+}
+
+circuit commit_with_sk(ballot: Bytes<32>, sk: Bytes<32>): Bytes<32> {
+  return disclose(persistentHash<Vector<2, Bytes<32>>>([ballot, sk]));
+}

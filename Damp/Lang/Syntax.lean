@@ -2,9 +2,12 @@
 Notation for writing contracts.
 
 Everything here is a macro that expands to the plain functions of
-`Damp/Lang/Contract.lean` and `Damp/Lang/Ledger.lean`; nothing inspects or rewrites the
-user's terms. A contract written with this notation is still an ordinary Lean
-value, and can equally be written without it.
+`Damp/Lang/Contract.lean` and `Damp/Lang/Ledger.lean`. The one rewrite of the
+user's terms is syntactic and local: a `(← …)` in the lazy operand of `&&.`, `||.`,
+`select` or a conditional is moved into a `do` block of its own, so that it runs
+under that operand's guard ("Short-circuit evaluation" below). A contract written
+with this notation is still an ordinary Lean value, and can equally be written
+without it.
 
     struct Point where
       x : Field
@@ -41,9 +44,19 @@ infix:50 " <=. " => cmpLe
 infix:50 " >=. " => cmpGe
 infix:50 " ==. " => cmpEq
 infix:50 " !=. " => cmpNe
-infixl:35 " &&. " => Boolean.and
-infixl:30 " ||. " => Boolean.or
 prefix:max "!." => Boolean.not
+
+/-- `a &&. b`: the conjunction of two circuit `Boolean`s. As in Compact, `b` is
+    evaluated only where `a` holds: a `(← …)` in `b` runs under that guard (see
+    "Short-circuit evaluation" below). -/
+syntax:35 (name := andOp) term:35 " &&. " term:36 : term
+/-- `a ||. b`: the disjunction of two circuit `Boolean`s. As in Compact, `b` is
+    evaluated only where `a` does not hold. -/
+syntax:30 (name := orOp) term:30 " ||. " term:31 : term
+
+macro_rules
+  | `($a &&. $b) => `(Boolean.and $a $b)
+  | `($a ||. $b) => `(Boolean.or $a $b)
 
 /-! ## Conditionals -/
 
@@ -59,10 +72,12 @@ macro_rules
 
 With `open Damp`, Lean's own `if c then t else e` also works when `c` is a
 circuit `Boolean`: as an expression, and as the last statement of a `do` block
-or loop body, where it may assign `let mut` variables. This is the one place an
-elaborator is involved, and it only chooses between two expansions by looking
-at the type of the condition: `Damp.cond c t e` for a circuit `Boolean`, Lean's
-usual `ite c t e` otherwise. It does not rewrite the branches.
+or loop body, where it may assign `let mut` variables. An elaborator chooses
+between expansions by looking at types: Lean's usual `ite c t e` unless the
+condition is a circuit `Boolean`; then `Damp.condChecked c t e` when the `if`
+is a `CircuitM` computation, and `Damp.select c t e` when it is known to be a
+value (its expected type, or else the type of `t`, is known and is not
+`CircuitM _`), as in a plain `def`. It does not rewrite the branches.
 
 `do` notation moves the statements that follow an `if` into both of its
 branches. That is harmless when only one branch runs, but here both are built,
@@ -76,24 +91,189 @@ statements after it. -/
 syntax (name := ifDispatch) "if_dispatch% " term:max ppSpace term:max ppSpace term:max : term
 
 open Lean.Elab Lean.Elab.Term Lean.Meta in
+/-- Whether `c` elaborates to a circuit `Boolean`. Leaves no trace. -/
+private def isCircuitCondition (c : Term) : TermElabM Bool := do
+  let saved ← saveState
+  let isCircuit ←
+    try
+      let ce ← withoutErrToSorry (elabTerm c none)
+      synthesizeSyntheticMVarsNoPostponing
+      let ty ← whnfR (← instantiateMVars (← inferType ce))
+      pure (ty.isConstOf ``Damp.Boolean)
+    catch _ => pure false
+  saved.restore
+  return isCircuit
+
+open Lean.Elab Lean.Elab.Term Lean.Meta in
+/-- Whether a type is known not to be a `CircuitM` computation: it is not a
+    metavariable (or an application of one) and does not unify with `CircuitM ?β`. -/
+private def knownNotCircuitM (ty : Expr) : TermElabM Bool := do
+  let ty ← whnfR (← instantiateMVars ty)
+  if ty.getAppFn.isMVar then return false
+  withNewMCtxDepth do
+    let β ← mkFreshTypeMVar
+    return !(← isDefEq ty (mkApp (mkConst ``Damp.CircuitM) β))
+
+open Lean.Elab Lean.Elab.Term Lean.Meta in
+/-- Whether an `if` on a circuit `Boolean` is a value-level conditional (`select`)
+    rather than a `CircuitM` one: its expected type, or failing that the type of its
+    `then` branch, is known and is not `CircuitM _`. Leaves no trace. -/
+private def isValueConditional (t : Term) (expectedType? : Option Expr) : TermElabM Bool := do
+  if let some ty := expectedType? then
+    if !(← instantiateMVars ty).getAppFn.isMVar then return ← knownNotCircuitM ty
+  let saved ← saveState
+  let r ←
+    try
+      let te ← withoutErrToSorry (elabTerm t none)
+      synthesizeSyntheticMVarsNoPostponing
+      knownNotCircuitM (← inferType te)
+    catch _ => pure false
+  saved.restore
+  return r
+
+open Lean.Elab Lean.Elab.Term Lean.Meta in
 @[term_elab ifDispatch] def elabIfDispatch : TermElab := fun stx expectedType? => do
   match stx with
   | `(if_dispatch% $c $t $e) =>
-    let saved ← saveState
-    let isCircuit ←
-      try
-        let ce ← withoutErrToSorry (elabTerm c none)
-        synthesizeSyntheticMVarsNoPostponing
-        let ty ← whnfR (← instantiateMVars (← inferType ce))
-        pure (ty.isConstOf ``Damp.Boolean)
-      catch _ => pure false
-    saved.restore
-    if isCircuit then elabTerm (← `(Damp.condChecked $c $t $e)) expectedType?
+    if ← isCircuitCondition c then
+      if ← isValueConditional t expectedType? then
+        elabTerm (← `(Damp.select $c $t $e)) expectedType?
+      else elabTerm (← `(Damp.condChecked $c $t $e)) expectedType?
     else elabTerm (← `(ite $c $t $e)) expectedType?
   | _ => throwUnsupportedSyntax
 
 scoped macro_rules
   | `(if $c then $t else $e) => `(if_dispatch% ($c) ($t) ($e))
+
+/-- `if_value% c t e`, `t e : CircuitM α`: a value-level conditional whose branches
+    perform actions. `Damp.cond c t e` when `c` is a circuit `Boolean` (both branches
+    are built, each one's effects guarded), `ite c t e` otherwise. Unlike a plain `if`
+    in statement position nothing follows the conditional inside its branches, so
+    there is no duplicate-effect check. -/
+syntax (name := ifValue) "if_value% " term:max ppSpace term:max ppSpace term:max : term
+
+open Lean.Elab Lean.Elab.Term Lean.Meta in
+@[term_elab ifValue] def elabIfValue : TermElab := fun stx expectedType? => do
+  match stx with
+  | `(if_value% $c $t $e) =>
+    if ← isCircuitCondition c then elabTerm (← `(Damp.cond $c $t $e)) expectedType?
+    else elabTerm (← `(ite $c $t $e)) expectedType?
+  | _ => throwUnsupportedSyntax
+
+/-! ## Short-circuit evaluation
+
+In Compact `a && b`, `a || b` and `c ? x : y` evaluate their second operand (the
+branch not taken) only when it is reached: a witness call, ledger operation or
+assertion there happens only then, and compactc emits it under that guard. Lean's
+`do` notation would instead lift every `(← …)` in an expression to a statement
+before it, unconditionally. So, before that happens, each statement of a `do`
+block is rewritten:
+
+* `a &&. b`, where `b` contains a `(← …)`, becomes
+  `(← Boolean.andThen a (do pure b))`: `b` is built under the guard `a`, and the
+  result is `select a b false`, which is what compactc emits;
+* `a ||. b` likewise becomes `(← Boolean.orElse a (do pure b))`: `b` under `!a`,
+  result `select a true b`;
+* `select c x y` (Damp's `select`), where `x` or `y` contains a `(← …)`, becomes
+  `(← cond c (do pure x) (do pure y))`;
+* with `open Damp`, a value-level `if c then x else y` likewise becomes
+  `(← if_value% c (do pure x) (do pure y))` (`cond` on a circuit `Boolean`, Lean's
+  `ite` on a `Bool` or `Prop`); without the rewrite Lean rejects a `(← …)` in a
+  branch of an `if`-expression;
+* `if% c then t else e`, where a branch that is not a `do` block contains a `(← …)`,
+  gets `do` around its branches, so the action runs inside the branch, under its
+  guard.
+
+The left operand and the condition are evaluated as before, in place. An operand
+without `(← …)` is untouched, so `a &&. b` on values is still `Boolean.and a b`:
+a value has no effects to guard. The rewrite looks only at syntax; it does not
+descend into a nested `do` block (which gets its own), and it never changes a
+statement that has none of these forms. -/
+
+namespace ShortCircuit
+
+/-- Syntax that `do` notation does not lift a `(← …)` out of. -/
+private def delimiter (k : SyntaxNodeKind) : Bool :=
+  k == ``Parser.Term.do || k == ``Parser.Term.doSeqIndent || k == ``Parser.Term.doSeqBracketed ||
+  k == ``Parser.Term.termReturn || k == ``Parser.Term.termUnless || k == ``Parser.Term.termTry ||
+  k == ``Parser.Term.termFor
+
+/-- Whether `stx` contains a `(← …)` that belongs to the `do` block around it. -/
+partial def hasAction : Syntax → Bool
+  | .node _ k args =>
+    if delimiter k then false
+    else if k == ``Parser.Term.nestedAction then true
+    else args.any hasAction
+  | _ => false
+
+private def isDampSelect (f : Ident) : MacroM Bool := do
+  let cands ← Macro.resolveGlobalName f.getId
+  return cands.any fun (n, fields) => n == ``Damp.select && fields.isEmpty
+
+/-- Rewrite the short-circuit forms in `stx` (see above); the flag records whether
+    anything changed. `plainIf`: also Lean's `if … then … else …`. -/
+partial def rewrite (plainIf : Bool) (stx : Syntax) : StateT Bool MacroM Syntax := do
+  match stx with
+  | .node info k args =>
+    if delimiter k then return stx
+    let go (s : Syntax) : StateT Bool MacroM Term := return ⟨← rewrite plainIf s⟩
+    if (k == ``andOp || k == ``orOp) && args.size == 3 && hasAction args[2]! then
+      let a ← go args[0]!
+      let b : Term := ⟨args[2]!⟩
+      set true
+      return ← if k == ``andOp then `((← Damp.Boolean.andThen $a (do pure $b)))
+        else `((← Damp.Boolean.orElse $a (do pure $b)))
+    if k == ``circuitIf then
+      match stx with
+      | `(if% $c then $t else $e) =>
+        if hasAction t || hasAction e then
+          let c ← go c
+          set true
+          return ← `(if% $c then (do $t:term) else (do $e:term))
+      | `(if% $c then $t) =>
+        if hasAction t then
+          let c ← go c
+          set true
+          return ← `(if% $c then (do $t:term))
+      | _ => pure ()
+    if plainIf && k == ``termIfThenElse then
+      if let `(if $c then $t else $e) := stx then
+        if hasAction t || hasAction e then
+          let c ← go c
+          set true
+          return ← `((← if_value% ($c) (do pure $t) (do pure $e)))
+    if k == ``Parser.Term.app then
+      if let `($f:ident $c $x $y) := stx then
+        if (hasAction x || hasAction y) && (← isDampSelect f) then
+          let c ← go c
+          set true
+          return ← `((← Damp.cond $c (do pure $x) (do pure $y)))
+    return .node info k (← args.mapM (rewrite plainIf))
+  | _ => return stx
+
+private def expand (plainIf : Bool) : Macro := fun stx => do
+  let (stx', changed) ← (rewrite plainIf stx).run false
+  if changed then return stx' else Macro.throwUnsupported
+
+/-- `&&.`, `||.`, `select` and `if%`: Damp's own forms, rewritten wherever Damp is imported. -/
+@[macro Lean.Parser.Term.doExpr, macro Lean.Parser.Term.doLet, macro Lean.Parser.Term.doLetElse,
+  macro Lean.Parser.Term.doLetArrow, macro Lean.Parser.Term.doReassign, macro Lean.Parser.Term.doReassignArrow,
+  macro Lean.Parser.Term.doIf, macro Lean.Parser.Term.doUnless, macro Lean.Parser.Term.doFor,
+  macro Lean.Parser.Term.doMatch, macro Lean.Parser.Term.doReturn, macro Lean.Parser.Term.doHave,
+  macro Lean.Parser.Term.doAssert, macro Lean.Parser.Term.doDbgTrace]
+def expandOps : Macro := expand false
+
+/-- The same, and Lean's value-level `if`: only with `open Damp`, like the circuit `if`. -/
+def expandAll : Macro := expand true
+
+end ShortCircuit
+
+attribute [scoped macro Lean.Parser.Term.doExpr, scoped macro Lean.Parser.Term.doLet,
+  scoped macro Lean.Parser.Term.doLetElse, scoped macro Lean.Parser.Term.doLetArrow,
+  scoped macro Lean.Parser.Term.doReassign, scoped macro Lean.Parser.Term.doReassignArrow,
+  scoped macro Lean.Parser.Term.doIf, scoped macro Lean.Parser.Term.doUnless, scoped macro Lean.Parser.Term.doFor,
+  scoped macro Lean.Parser.Term.doMatch, scoped macro Lean.Parser.Term.doReturn, scoped macro Lean.Parser.Term.doHave,
+  scoped macro Lean.Parser.Term.doAssert, scoped macro Lean.Parser.Term.doDbgTrace] ShortCircuit.expandAll
 
 /-! ## Declarations -/
 
@@ -187,6 +367,35 @@ them.
 -/
 syntax (name := ledgerDecl) "ledger" (ppLine withPosition(ident " : " term))+ : command
 
+/-- The shapes of the values a ledger field of this kind holds. -/
+def LedgerKind.shapes : LedgerKind → List IR.Shape
+  | .cell s | .set s | .list s | .merkleTree _ s | .historicMerkleTree _ s => [s]
+  | .counter => []
+  | .map k v => [k, v]
+  | .mapOf k v => k :: v.shapes
+
+/-- Why a ledger field of this kind cannot be declared: a `Uint` past Compact's limit. -/
+def LedgerKind.problem (k : LedgerKind) : Option String :=
+  (k.shapes.flatMap IR.Shape.tys).findSome? fun
+    | .uint m => if m ≤ Uint.maxBound then none else some (Uint.tooLarge m)
+    | _ => none
+
+open Lean.Elab Lean.Elab.Command Lean.Meta in
+private unsafe def checkLedgerFieldUnsafe (n : Ident) : CommandElabM Unit := do
+  let problem ← liftTermElabM do
+    let ty := mkApp (mkConst ``Option [Level.zero]) (mkConst ``String)
+    let e ← Term.elabTermAndSynthesize
+      (← `(Damp.LedgerKind.problem (Damp.LedgerType.decl $n "").kind)) (some ty)
+    evalExpr (Option String) ty e
+  if let some msg := problem then logErrorAt n m!"ledger field cannot be declared: {msg}"
+
+open Lean.Elab.Command in
+@[implemented_by checkLedgerFieldUnsafe]
+private opaque checkLedgerField (n : Ident) : CommandElabM Unit
+
+/-- `check_ledger% f` reports why the ledger field `f` cannot be declared, if it cannot. -/
+elab "check_ledger% " n:ident : command => checkLedgerField n
+
 macro_rules
   | `(ledger $[$names:ident : $tys:term]*) => do
       let mut cmds : Array (TSyntax `command) := #[]
@@ -194,6 +403,7 @@ macro_rules
       for i in [0:names.size] do
         let n : Ident := names[i]!
         cmds := cmds.push (← `(def $n : $(tys[i]!) := Damp.LedgerType.ofIndex $(quote i)))
+        cmds := cmds.push (← `(check_ledger% $n))
         decls := decls.push (← `(Damp.LedgerType.decl $n $(strLit n)))
       let fields := mkIdent `ledgerFields
       cmds := cmds.push (← `(def $fields : List Damp.LedgerField := [$decls,*]))
@@ -265,6 +475,58 @@ macro_rules
   | `(doElem| const $x:ident : $t := $e) => `(doElem| let $x:ident : $t ← Damp.val $e $(strLit x))
   | `(doElem| const $x:ident ← $e) => `(doElem| let $x:ident ← Damp.valM $e $(strLit x))
   | `(doElem| const $x:ident : $t ← $e) => `(doElem| let $x:ident : $t ← Damp.valM $e $(strLit x))
+
+/-! `const (a, b) := e`, `const ⟨x, y⟩ ← m`: the same for a tuple or structure,
+taken apart by a pattern of names (nested tuples and `⟨…⟩`, `_` for a part not
+named). The whole value is computed once, here, as `const p := e` would, and each
+name is bound to its part. -/
+
+/-- A pattern `const` accepts: names and `_` inside tuples and `⟨…⟩`. -/
+private partial def constPatternNames (p : Term) : MacroM (Array Ident) := do
+  match p with
+  | `($x:ident) => return #[x]
+  | `(_) => return #[]
+  | `(($p:term)) => constPatternNames p
+  | `(($p:term, $ps:term,*)) => do
+      let mut names ← constPatternNames p
+      for q in ps.getElems do names := names ++ (← constPatternNames q)
+      return names
+  | `(⟨$ps:term,*⟩) => do
+      let mut names := #[]
+      for q in ps.getElems do names := names ++ (← constPatternNames q)
+      return names
+  | _ => Macro.throwErrorAt p "`const` takes a name, or a tuple `(a, b)` or `⟨a, b⟩` of names"
+
+private def constHint (p : Term) : MacroM StrLit := do
+  return Syntax.mkStrLit ("_".intercalate ((← constPatternNames p).map (·.getId.toString)).toList)
+
+/-- Compute a tuple or structure once, here, and name its parts. -/
+syntax (name := constPatBind) "const " (Parser.Term.tuple <|> Parser.Term.anonymousCtor)
+  (" : " term)? " := " term : doElem
+/-- Run an action, compute its result once, here, and name its parts. -/
+syntax (name := constPatBindM) "const " (Parser.Term.tuple <|> Parser.Term.anonymousCtor)
+  (" : " term)? " ← " term : doElem
+
+/-- `const p (: t)? := e` / `← e`: the pattern, the optional type and the value are
+    arguments 1, 2 and 4 of either form. -/
+private def expandConstPat (monadic : Bool) : Macro := fun stx => do
+  let p : Term := ⟨stx[1]⟩
+  let e : Term := ⟨stx[4]⟩
+  let ty? : Option Term := if stx[2].getNumArgs == 2 then some ⟨stx[2][1]⟩ else none
+  let hint ← constHint p
+  if monadic then
+    let e ← match ty? with
+      | some t => `(($e : Damp.CircuitM $t))
+      | none => pure e
+    `(doElem| let $p:term ← Damp.valM $e $hint)
+  else
+    let e ← match ty? with
+      | some t => `(($e : $t))
+      | none => pure e
+    `(doElem| let $p:term ← Damp.val $e $hint)
+
+@[macro constPatBind] private def expandConstPatBind : Macro := expandConstPat false
+@[macro constPatBindM] private def expandConstPatBindM : Macro := expandConstPat true
 
 /--
 `constructor (a : A) … := body` declares what runs once when the contract is

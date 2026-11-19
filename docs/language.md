@@ -59,10 +59,15 @@ is a Lean function, and a configuration value is a Lean constant.
 - `a.widen` forgets precision for free; `a.castTo k` narrows with a check.
 - `a.toField` leaves the `Uint` rules; `f.toUint max` returns with a check and
   `f.unsafeToUint max` without one.
-- No `Uint` may exceed 2^248 − 1.
+- No `Uint` may exceed 2^248 − 1. A bound past it is reported when the circuit
+  is checked, wherever the `Uint` comes from (`f.unsafeToUint max` included),
+  and a ledger field whose type holds one is reported at the `ledger`
+  declaration.
 
 A numeral is accepted wherever a `Uint` or `Field` is expected. One that does
-not fit its `Uint` is reported when the circuit is checked.
+not fit its `Uint` is reported when the circuit is checked. A `Field` numeral
+(and `Field.ofNat`, `Field.ofString`) is reduced modulo the field size: with
+`p` the modulus, `p + 1` is the field element `1`.
 
 ## Operators
 
@@ -72,7 +77,50 @@ because Lean's own produce `Prop` or `Bool`:
 `<.` `<=.` `>.` `>=.` `==.` `!=.` `&&.` `||.` `!.`
 
 `==.` and `!=.` work on every circuit type. Ordering works on `Uint`.
-`select c a b` picks between two values.
+`select c a b` picks between two values; so does `if c then a else b` on a
+circuit `Boolean` (with `open Damp`), also in a plain `def`.
+
+`==.` compares element by element, as compactc does: on a `Maybe` it compares
+the flags and the payloads, so two absent values with different payloads are
+different (`Maybe.none` always has the zero payload, so this only shows with a
+`Maybe` built by hand or by a witness).
+
+A comparison of a `Uint` with a literal past 2^248 − 1 (`x <. 2^250`) is
+rejected when the circuit is checked, even where its answer is known: the
+literal is itself a `Uint`, and no `Uint` may exceed the limit.
+
+### Short-circuit evaluation
+
+As in Compact, `a &&. b` and `a ||. b` evaluate `b` only when it is reached,
+and a conditional evaluates only the branch taken: a witness call, ledger
+operation or `require` in the part not reached does not happen, and the circuit
+runs it under that guard, as compactc does.
+
+```lean
+-- Compact: assert(state == State.commit && private_state() == Private.initial, "x");
+require ((← state.read) ==. State.commit &&. (← private_state) ==. Private.initial) "x"
+```
+
+`private_state` is called only when the state is `commit`. Precisely, inside a
+`do` block (a circuit body, or any `do`), before Lean lifts the `(← …)`s of a
+statement out of it:
+
+| Written | Built as |
+|---|---|
+| `a &&. b`, `b` contains `(← …)` | `b` under the guard `a`; the result is `select a b false` (`Boolean.andThen`) |
+| `a ||. b`, `b` contains `(← …)` | `b` under `!a`; the result is `select a true b` (`Boolean.orElse`) |
+| `if c then x else y` (expression, `open Damp`), `x` or `y` contains `(← …)` | `x` under `c`, `y` under `!c`, results selected (`cond`); on a Lean `Bool` or `Prop`, only the branch taken runs |
+| `select c x y`, `x` or `y` contains `(← …)` | the same as the `if` |
+| `if% c then t else e`, a branch that is not a `do` block contains `(← …)` | the action runs inside its branch, under its guard |
+| any of these without `(← …)` in the lazy part | unchanged: the operands are values, which have no effects (`a &&. b` is `Boolean.and a b`) |
+
+The left operand and the condition are evaluated first, unconditionally. The
+rewrite is syntactic: it sees a `(← …)` written in the operand. A value
+computed earlier and passed in is just a value, so `const v ← w` followed by
+`a &&. v ==. 0` calls `w` unconditionally, as the order of the statements says;
+likewise any function's arguments, `Boolean.and a (← w)` included, are
+evaluated before the call. `Boolean.andThen a (do …)`, `Boolean.orElse` and
+`cond` can be called directly.
 
 ## Statements
 
@@ -80,10 +128,11 @@ because Lean's own produce `Prop` or `Bool`:
 |---|---|
 | `const x := e` | compute `e` once, here, and call it `x` |
 | `const x ← action` | the same for the result of an action |
+| `const (a, b) := e`, `const ⟨a, b⟩ ← action` | the same for a tuple or structure, naming its parts (nested tuples and `⟨…⟩` of names and `_`) |
 | `let x := e` | only a Lean name: `e` is computed where it is first used |
 | `require c "message"` | fail the transaction unless `c` holds |
 | `if% c then a else b` | both branches are built; effects are guarded by `c` |
-| `if c then a else b` | the same when `c` is a circuit `Boolean`, as an expression or as the last statement of a block; may assign `let mut` variables |
+| `if c then a else b` | the same when `c` is a circuit `Boolean`, as the last statement of a block; may assign `let mut` variables. As an expression whose type is a value (not `CircuitM _`) it is `select c a b`, lazy in its branches' actions (see "Short-circuit evaluation") |
 | `for i in [0:n] do …` | a Lean loop, unrolled |
 
 A circuit `if` always builds both branches. Use `if%` when statements follow

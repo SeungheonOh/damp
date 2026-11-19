@@ -91,8 +91,8 @@ qualifies, and since the cap of (d) no other bound can be made except with
 
 /-! ### (c) `Field.unsafeToUint` is unchecked by design
 
-It is the one way to make a `Uint` that skips both the range check and the
-248-bit cap; the caller is responsible (`Field.unsafeToUint_is`). -/
+It is the one way to make a `Uint` that skips the range check; the caller is
+responsible (`Field.unsafeToUint_is`). The 248-bit cap still applies. -/
 
 #guard ev ((Field.ofNat 1000).unsafeToUint 255).expr = some 1000
 #guard ev (((Field.ofNat 1000).unsafeToUint 255).lt (Uint.lit 3)).expr = none

@@ -56,15 +56,15 @@ theorem compile_exact (p : Prims) (c : Circuit) (src : Zkir.IrSource)
     src.run p inputs priv pub = c.shipped.run p inputs priv pub :=
   Emit.circuitCore_correct p _ src (Emit.circuit_eq_core _ src h) inputs priv pub
 
-/-- Nothing is lost by a sound pass followed by emission: every run the
-    contract's circuit accepts is accepted by the ZKIR emitted for the
-    rewritten circuit, with the same outputs and the same public inputs for the
-    on-chain instructions that ran. -/
-theorem compile_complete_of {f : Pass} (hf : Pass.Sound f) (p : Prims) (c : Circuit) (src : Zkir.IrSource)
+/-- Nothing is lost by a pass sound for the hash functions `p` followed by
+    emission: every run with `p` the contract's circuit accepts is accepted by
+    the ZKIR emitted for the rewritten circuit, with the same outputs and the
+    same public inputs for the on-chain instructions that ran. -/
+theorem compile_complete_ofFor {f : Pass} {p : Prims} (hf : Pass.SoundFor p f) (c : Circuit) (src : Zkir.IrSource)
     (h : Emit.circuit (f c) = .ok src) (inputs priv pub : List Fr) (o : Outcome)
     (hrun : c.run p inputs priv pub = some o) :
     ∃ o', src.run p inputs priv pub = some o' ∧ o'.observable = o.observable := by
-  have hopt := hf.run p c inputs priv pub
+  have hopt := hf.run c inputs priv pub
   rw [hrun] at hopt
   cases hrun' : (f c).run p inputs priv pub with
   | none => simp [hrun'] at hopt
@@ -73,6 +73,14 @@ theorem compile_complete_of {f : Pass} (hf : Pass.Sound f) (p : Prims) (c : Circ
       refine ⟨o', ?_, hopt⟩
       rw [Emit.circuitCore_correct p _ src (Emit.circuit_eq_core _ src h) inputs priv pub]
       exact Emit.pruned_run p (f c) inputs priv pub o' hrun'
+
+/-- Nothing is lost by a sound pass followed by emission, whatever the hash
+    functions. -/
+theorem compile_complete_of {f : Pass} (hf : Pass.Sound f) (p : Prims) (c : Circuit) (src : Zkir.IrSource)
+    (h : Emit.circuit (f c) = .ok src) (inputs priv pub : List Fr) (o : Outcome)
+    (hrun : c.run p inputs priv pub = some o) :
+    ∃ o', src.run p inputs priv pub = some o' ∧ o'.observable = o.observable :=
+  compile_complete_ofFor (hf.soundFor p) c src h inputs priv pub o hrun
 
 /-- **Nothing is lost.** Every run the contract's circuit accepts is accepted
     by the emitted ZKIR, with the same outputs and the same public inputs for
@@ -89,5 +97,14 @@ theorem compile_complete_full (p : Prims) (c : Circuit) (src : Zkir.IrSource)
     (hrun : c.run p inputs priv pub = some o) :
     ∃ o', src.run p inputs priv pub = some o' ∧ o'.observable = o.observable :=
   compile_complete_of Circuit.optimizeFull_sound p c src h inputs priv pub o hrun
+
+/-- The same with `--O3`, for runs with Damp's implementations of Midnight's
+    hash functions (`Damp.Crypto.prims`), the ones `--O3` folds constant hashes
+    with. -/
+theorem compile_complete_max (c : Circuit) (src : Zkir.IrSource)
+    (h : Emit.circuit c.optimizeMax = .ok src) (inputs priv pub : List Fr) (o : Outcome)
+    (hrun : c.run Crypto.prims inputs priv pub = some o) :
+    ∃ o', src.run Crypto.prims inputs priv pub = some o' ∧ o'.observable = o.observable :=
+  compile_complete_ofFor Circuit.optimizeMax_soundFor c src h inputs priv pub o hrun
 
 end Damp

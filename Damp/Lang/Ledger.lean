@@ -50,27 +50,27 @@ private def slot (i : Nat) : Aligned Expr := fieldKey i
 /-- A `Uint<64>` operand, as compactc writes counters, lengths and indices. -/
 private def u64 (e : Expr) : Aligned Expr := { align := [.bytes 8], vals := [e] }
 
-private def alignOf (α : Type) [Value α] : List Zkir.AlignAtom := (Value.tys α).map Ty.align
+def alignOf (α : Type) [Value α] : List Zkir.AlignAtom := (Value.tys α).map Ty.align
 
-private def alignedOf [Value α] (x : α) : Aligned Expr :=
+def alignedOf [Value α] (x : α) : Aligned Expr :=
   { align := alignOf α, vals := Value.toExprs x }
 
-private def ledgerOp (reads : List Var) (ops : List (Op Expr)) : CircuitM Unit := do
+def ledgerOp (reads : List Var) (ops : List (Op Expr)) : CircuitM Unit := do
   emit (.ledger (← currentGuard) reads ops)
 
 /-- Run `ops`, whose `popeq` reads a value of type `α`. -/
-private def ledgerRead (α : Type) [Value α] (mkOps : List Expr → List (Op Expr)) : CircuitM α := do
+def ledgerRead (α : Type) [Value α] (mkOps : List Expr → List (Op Expr)) : CircuitM α := do
   let vs ← (List.range (Value.width α)).mapM fun _ => freshVar
   let es := vs.map Expr.var
   ledgerOp vs (mkOps es)
   return Value.ofExprs es
 
 /-- `ins cached n`, left out when `n = 0` (compactc's `suppress-zero`). -/
-private def insCached (n : Nat) : List (Op Expr) := if n = 0 then [] else [.ins true n]
+def insCached (n : Nat) : List (Op Expr) := if n = 0 then [] else [.ins true n]
 
 /-- Replace the value at `path` by `init`: every `resetToDefault`. `extra` runs
     with the new value on top of the stack, before it is stored. -/
-private def resetOps (path : LedgerPath) (init : StateLit Expr) (extra : List (Op Expr) := []) :
+def resetOps (path : LedgerPath) (init : StateLit Expr) (extra : List (Op Expr) := []) :
     List (Op Expr) :=
   let parent := path.dropLast
   (if parent.isEmpty then [] else [.idx false true parent]) ++

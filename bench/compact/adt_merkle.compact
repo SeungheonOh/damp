@@ -1,0 +1,96 @@
+// This file is part of Compact.
+// Copyright (C) 2025 Midnight Foundation
+// SPDX-License-Identifier: Apache-2.0
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// 	http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//PM-14807
+// bench: Compact's examples/adt/tests/merkletree_field.compact and historicmerkletree_field.compact
+// as one program (circuits `test` and `test_historic`, with their ledger fields renamed apart).
+// Changes: Damp has no MerkleTreePath, so the `path` ledger fields and `merkleTreePathRoot` are
+// gone and the digests they produced are circuit arguments (disclosed where the ledger is
+// checked against them); `0..4` loops are written `0..4` as before.
+import CompactStandardLibrary;
+
+ledger merkleTree: MerkleTree<4, Field>;
+ledger merkleTreeSmall: MerkleTree<2, Field>;
+ledger partialTree: MerkleTree<4, Field>;
+
+export circuit test(digest: MerkleTreeDigest): [] {
+  assert(merkleTree.checkRoot(disclose(digest)) == true, "valid root");
+  assert(merkleTree.checkRoot(disclose(digest)) == false, "invalid root");
+
+  const hash = pad(32, "hash");
+  merkleTree.insertHash(hash);
+
+  const hashIndex = 2;
+  merkleTree.insertHashIndex(hash, hashIndex);
+
+  const index = 1;
+  merkleTree.insertIndex(7 as Field, index);
+
+  const defaultIndex = 3;
+  merkleTree.insertIndexDefault(defaultIndex);
+
+  for (const i of 0..4) {
+    merkleTreeSmall.insert(i as Field);
+  }
+  assert(merkleTreeSmall.isFull() == true, "tree is full");
+
+  assert(partialTree.isFull() == false, "tree is not full");
+
+  partialTree.insert(42 as Field);
+  partialTree.resetToDefault();
+  assert(partialTree.isFull() == false, "tree is not full");
+
+  partialTree.insert(100 as Field);
+}
+
+ledger historicMerkleTree: HistoricMerkleTree<4, Field>;
+ledger historicMerkleTreeSmall: HistoricMerkleTree<2, Field>;
+ledger historicPartialTree: HistoricMerkleTree<4, Field>;
+
+export circuit test_historic(digest: MerkleTreeDigest, digest2: MerkleTreeDigest): [] {
+  historicMerkleTree.insert(42 as Field);
+  assert(historicMerkleTree.checkRoot(disclose(digest)) == true, "");
+
+  assert(historicMerkleTree.checkRoot(disclose(digest2)) == false, "");
+
+  historicMerkleTree.insert(100 as Field);
+
+  const hash = pad(32, "hash");
+  historicMerkleTree.insertHash(hash);
+
+  const hashIndex = 2;
+  historicMerkleTree.insertHashIndex(hash, hashIndex);
+
+  const index = 1;
+  const value = 200 as Field;
+  historicMerkleTree.insertIndex(value, index);
+
+  const defaultIndex = 3;
+  historicMerkleTree.insertIndexDefault(defaultIndex);
+
+  for (const i of 0..4) {
+    historicMerkleTreeSmall.insert(i as Field);
+  }
+  assert(historicMerkleTreeSmall.isFull() == true, "");
+
+  assert(historicPartialTree.isFull() == false, "");
+
+  historicMerkleTree.resetHistory();
+
+  historicMerkleTree.resetToDefault();
+  assert(historicMerkleTree.isFull() == false, "");
+
+  historicMerkleTree.insert(500 as Field);
+}
