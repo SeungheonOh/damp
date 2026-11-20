@@ -455,7 +455,8 @@ macro_rules
           shape := .prim (.enum $(quote (variants.size - 1)))
           toExprs := fun x => [x.code]
           ofExprs := fun xs => ⟨xs.headD (.const 0)⟩
-        instance : Damp.CmpEq $name $name := ⟨Damp.valueEq⟩)
+        instance : Damp.CmpEq $name $name := ⟨Damp.valueEq⟩
+        instance : Damp.EnumType $name := ⟨$(quote (variants.size - 1)), fun x => x.code, fun e => ⟨e⟩⟩)
       return mkNullNode (#[main.raw] ++ consts.map (·.raw))
 
 /-! ### Named values

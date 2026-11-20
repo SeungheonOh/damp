@@ -497,6 +497,61 @@ def leafHash [Value α] (x : α) : Bytes 32 :=
   let xs := (Bytes.pad 6 "mdn:lh").limbs ++ Value.toExprs x
   ⟨[.phash true align xs, .phash false align xs]⟩
 
+/-- Compact's `MerkleTreePathEntry`: one step of a path from a leaf to the
+    root, the sibling's digest and whether the path goes left at this step. -/
+structure MerkleTreePathEntry where
+  sibling : MerkleTreeDigest
+  goesLeft : Boolean
+  deriving Inhabited
+
+instance : Value MerkleTreePathEntry where
+  shape := .struct "MerkleTreePathEntry" ["sibling", "goes_left"]
+    [Value.shape MerkleTreeDigest, .prim .bool]
+  toExprs e := [e.sibling.field.expr, e.goesLeft.expr]
+  ofExprs xs := ⟨⟨⟨xs.headD (.const 0)⟩⟩, ⟨xs.getD 1 (.const 0)⟩⟩
+
+instance : CmpEq MerkleTreePathEntry MerkleTreePathEntry := ⟨valueEq⟩
+
+/-- Compact's `MerkleTreePath<n, α>`: a leaf and the `n` steps from it up to the
+    root of a tree of depth `n`. Not a ledger type: a circuit gets one from a
+    witness (the executor's caller looks it up with the tree's `pathForLeaf`) or
+    an argument, and checks it with `merkleTreePathRoot` and `checkRoot`. -/
+structure MerkleTreePath (n : Nat) (α : Type) where
+  leaf : α
+  path : Vector MerkleTreePathEntry n
+
+instance [Value α] : Value (MerkleTreePath n α) where
+  shape := .struct "MerkleTreePath" ["leaf", "path"]
+    [Value.shape α, .vector n (Value.shape MerkleTreePathEntry)]
+  toExprs p := Value.toExprs p.leaf ++ Value.toExprs p.path
+  ofExprs xs :=
+    let (l, rest) := Value.take α xs
+    ⟨l, Value.ofExprs rest⟩
+
+instance [Value α] : CmpEq (MerkleTreePath n α) (MerkleTreePath n α) := ⟨valueEq⟩
+
+/-- One step of `merkleTreePathRoot`: Compact's `merkleTreePathEntryRoot`. -/
+def merkleTreePathEntryRoot (digest : Field) (e : MerkleTreePathEntry) : Field :=
+  let left := select e.goesLeft digest e.sibling.field
+  let right := select e.goesLeft e.sibling.field digest
+  transientHash #v[left, right]
+
+/-- Fold the path's steps over the leaf's digest. Each step's digest is named
+    (no instruction): it is used twice by the next step, so as a plain
+    expression the root would double in size with every step. -/
+def foldPath (start : Field) (p : Vector MerkleTreePathEntry n) : CircuitM Field :=
+  p.toList.foldlM (fun d e => val (merkleTreePathEntryRoot d e) "digest") start
+
+/-- The root of the tree a path leads to, the leaf hashed as `insert` hashes it:
+    Compact's `merkleTreePathRoot<n, α>`. -/
+def merkleTreePathRoot [Value α] (p : MerkleTreePath n α) : CircuitM MerkleTreeDigest :=
+  return ⟨← foldPath (← val (degradeToTransient (leafHash p.leaf)) "digest") p.path⟩
+
+/-- The same for a path whose leaf is already a hash (stored with `insertHash`):
+    Compact's `merkleTreePathRootNoLeafHash<n>`. -/
+def merkleTreePathRootNoLeafHash (p : MerkleTreePath n (Bytes 32)) : CircuitM MerkleTreeDigest :=
+  return ⟨← foldPath (← val (degradeToTransient p.leaf) "digest") p.path⟩
+
 /-- Compact's `MerkleTree<depth, α>`. -/
 structure MerkleTree (depth : Nat) (α : Type) where
   index : Nat

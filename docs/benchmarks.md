@@ -1,6 +1,6 @@
 # Benchmarks: Damp against compactc on real Compact programs
 
-`test/bench.sh` compiles 21 Compact programs with compactc 0.36.1 (`--skip-zk`), builds the same
+`test/bench.sh` compiles 23 Compact programs with compactc 0.36.1 (`--skip-zk`), builds the same
 programs written in Damp (`Bench/*.lean`) at four levels (`--no-opt`, default, `--O2`, `--O3`), and compares
 the ZKIR circuits instruction by instruction and row by row. The aim is evidence for the optimizer:
 where does Damp's output differ from compactc's, in which direction, and what is still left to remove.
@@ -17,15 +17,15 @@ BENCH_SKIP_EXEC=1 test/bench.sh    # without the executor comparison
 | `bench/report.py` | the table, totals, ranked lists; writes `build/bench/results.json` |
 | `bench/headroom.py` | what a sound optimizer could still remove from a circuit (`build/bench/headroom-*.json`) |
 | `bench/zdiff.py` | canonical text and diff of two ZKIR files (`--normalize`, `--multiset`, `--show`) |
-| `bench/costs.py` | rows each ZKIR instruction adds |
+| `bench/costs.py` | rows each ZKIR instruction adds; with `--attribute ROOT VARIANT`, the rows each kind of instruction accounts for in every circuit |
 | `executor/test/bench.mjs` | the behavioural comparison, run by `test/bench.sh` |
 
-Numbers below are from the tree as of this writing (Damp at a9ca519 plus the uncommitted work of the
-other agents; the default and `--O2` levels are the pipelines of `Damp/Optimize/Pipeline.lean` at
-that moment: `simplify, bounds2, simplify, algebra` and, for `--O2`, `asserts`, `forwardOpt` besides). Rows are the
-`rows` of `zkir-v3 mock-compile`. "Same" in the table: `=` the default Damp circuit is compactc's up to
-variable names; `~` after `test/zkir-normalize.py`; `c` after that and dropping compactc's `copy`
-instructions; `x` it differs.
+Numbers below are from one run of `test/bench.sh` on the tree after commit c627efe plus the
+uncommitted work of this round (the final ports of `election_core`, `zerocash_core` and `adt_merkle`,
+the new `proof_data` and `zkir_generation`, and the optimizer of `Damp/Optimize/Pipeline.lean` as
+described in "Optimizer levels"). Rows are the `rows` of `zkir-v3 mock-compile`. "Same" in the table:
+`=` the default Damp circuit is compactc's up to variable names; `~` after `test/zkir-normalize.py`;
+`c` after that and dropping compactc's `copy` instructions; `x` it differs.
 
 ## The programs
 
@@ -45,8 +45,8 @@ touches the ledger gets no ZKIR from compactc (or Damp) and is not in the table.
 | `block_time` | test-center/compact/block-time.compact | the four block-time comparisons | none |
 | `unshielded_tokens` | test-center/compact/unshielded-tokens.compact | 20 token circuits: mint/send/receive unshielded and shielded coins, to self, a contract and a user | none |
 | `coracle` | examples/camelCase/new/coracle.compact | a two-player game with a pot of shielded coins: hashes and commitments, enums, structs, `Maybe`, six ledger fields, `sendShielded`, `mergeCoinImmediate`, `writeCoin` | `disclose` added to the `wager`/`deposit` parameters of `start`, to the results of `is_red`/`is_blue` and to the guess stored in `last_guess` (compactc 0.36.1's disclosure analysis rejects the 0.33 text); `Committable<A>`/`Commitment<A>` are written for `A = Board` in Lean |
-| `election_core` | examples/election.compact | the election state machine: `MerkleTree`, `Set`, `Counter`, nullifiers by `persistentHash`, 7 witnesses | `Opaque<"string">` topic became `Field`; the two `MerkleTreePath` witnesses became witnesses returning the path's root (`MerkleTreeDigest`) and the `is_some`/`merkleTreePathRoot`/`leaf` checks became `checkRoot`; the "added twice" assertion in `add_voter` dropped; `$` in names became `_` (see "Rejected") |
-| `zerocash_core` | examples/zerocash.compact | commitments, nullifiers, `HistoricMerkleTree<32>`, nested single-field structs | as election; the `Opaque<"Uint8Array">` encryption field, ciphertext ledger field and `context$encrypt` witness removed; `commitments` exported so the behavioural test can read its root |
+| `election_core` | examples/election.compact | the election state machine: `MerkleTree`, `MerkleTreePath` witnesses and `merkleTreePathRoot`, `Set`, `Counter`, nullifiers by `persistentHash`, 7 witnesses | `Opaque<"string">` topic became `Field`; `$` in names became `_` |
+| `zerocash_core` | examples/zerocash.compact | commitments, nullifiers, `HistoricMerkleTree<32>` with a `MerkleTreePath<32>` witness and `merkleTreePathRoot`, nested single-field structs | the `Opaque<"Uint8Array">` encryption field, ciphertext ledger field and `context$encrypt` witness removed, with the two statements of `spend` that use them; `$` in names became `_`; `commitments` exported so the behavioural test can read its root |
 | `pm_19287` | examples/bugs/pm-19287.compact | loops over vectors and matrices returned by helper circuits, accumulating into 11 ledger fields; `Field as Uint<64>` comparisons; a 10-circuit driver | none |
 | `pm_20028` | examples/bugs/pm-20028/examples.compact | `Uint<248>`/`Uint<247>`/`Uint<64>` casts down and up, comparison across widths, subtraction | `module N<#n>` with its prefixed import and `test3` removed; `test10` (`Uint<0>`, no ledger) not ported |
 | `types` | examples/types/examples.compact | maps keyed and valued by aliases, map of maps, loop inserting into a map | only the ledger-touching circuits (test10, test10a, test16); the rest never touches the ledger |
@@ -54,11 +54,13 @@ touches the ledger gets no ZKIR from compactc (or Damp) and is not in the table.
 | `adt_counter` | examples/adt/tests/counter.compact | `Counter` read/increment/decrement/reset and assertions | none |
 | `adt_list_struct` | examples/adt/tests/list_struct.compact | a ledger list of a struct holding coins | none |
 | `adt_map_list` | examples/adt/tests/map_field_list_field.compact | a map whose values are ledger lists | none |
-| `adt_merkle` | examples/adt/tests/{merkletree,historicmerkletree}_field.compact | `MerkleTree` and `HistoricMerkleTree` insert variants, `isFull`, reset | the two files joined; the `MerkleTreePath` ledger fields and `merkleTreePathRoot` replaced by `MerkleTreeDigest` arguments |
+| `adt_merkle` | examples/adt/tests/{merkletree,historicmerkletree}_field.compact | `MerkleTree` and `HistoricMerkleTree` insert variants, `MerkleTreePath` ledger fields, `merkleTreePathRoot`, `isFull`, reset | the two files joined: ledger fields declared together, the historic file's `partialTree` renamed `historicPartialTree`, one shared `path` |
 | `composable_inner`, `composable_outer` | test-center/composable/Basic/{Inner,Outer}.compact | storing and calling another contract | none |
 | `vectors` | examples/vectors/spread_part_one.compact | spreads into ledger vectors, a `Map` of vectors, a 100-iteration loop, `slice` | only test1b, test2, test4, with dead statements removed; `slice_to_ledger` added (modelled on slice_part_one.compact) |
+| `proof_data` | examples/casts/proof_data.compact | casts between `Bytes<5>` and `Vector<5, Uint<8>>` of ledger fields | none |
+| `zkir_generation` | examples/casts/zkir_generation.compact | `Vector<n, Uint<8>>` to `Bytes<n>` and back, a `Counter` | none |
 
-85 circuits in all. Where a port first used a different idiom than Compact's text (for example `require
+90 circuits in all. Where a port first used a different idiom than Compact's text (for example `require
 (← c.isEmpty)` for `assert(c.isEmpty() == true, ..)`) the numbers changed, so the ports now follow the
 text: `== true` stays `==. .true`.
 
@@ -71,8 +73,8 @@ adt_counter.test_all                                 42      42      42      41 
 adt_counter.test_big_increment                       18      18      18      18          64       64       64       64  =
 adt_list_struct.test                                424     427     424     418        1329     1332     1329     1317  =
 adt_map_list.test                                    92      92      92      87         250      250      250      240  =
-adt_merkle.test                                     193     191     191     189       16651    14637    14637    14633  ~
-adt_merkle.test_historic                            291     289     289     287       18905    16884    16884    16880  ~
+adt_merkle.test                                     220     217     217     215       18797    16776    16776    16772  c
+adt_merkle.test_historic                            345     341     341     339       23176    21155    21155    21151  c
 assert_misc.abel                                     18      18      18      18          77       77       77       77  =
 assert_misc.ellen                                    31      31      31      31         139      139      139      139  x
 assert_misc.myswitch                                 36      32      30      30         414      131      128      128  x
@@ -90,11 +92,11 @@ coracle.guess                                       184     182     182     182 
 coracle.start                                       267     267     253     253       59578    59580    59565    59565  x
 coracle.withdraw                                    384     444     362     362       85226    85355    85219    85219  x
 counter.increment                                     3       3       3       3          31       31       31       31  =
-election_core.add_voter                              35      35      35      35        5872     5872     5872     5872  =
+election_core.add_voter                              73      73      73      73        5972     5972     5972     5972  =
 election_core.advance                                32      32      32      32        3898     3898     3898     3898  =
 election_core.set_topic                              24      24      24      24        3884     3884     3884     3884  =
-election_core.vote_commit                            59      60      59      57       13340    13341    13340     9591  =
-election_core.vote_reveal                            53      55      53      50        7692     7695     7692     3942  x
+election_core.vote_commit                           132     132     131     131       15552    15553    15552    15552  c
+election_core.vote_reveal                           126     127     125     125        9904     9907     9904     9904  x
 gas_cost.testGasCost                                  9       9       9       9          48       48       48       48  =
 pm_19287.test                                       880    1109     874     874        2585     3496     2581     2581  x
 pm_19287.test_circuit_calls_in_loop                  80      93      80      80         243      254      243      243  =
@@ -115,6 +117,8 @@ pm_20028.test6                                        8       8       8       8 
 pm_20028.test8                                       16      16      16      16          67       67       67       67  =
 pm_20028.test9                                       20      20      20      20          99       99       99       99  =
 pm_20028.test_cast_comparison                        26      26      26      26          91       91       91       91  =
+proof_data.test1                                     10       9       9       9         662      662      662      662  c
+proof_data.test2                                     13      17      17      17         634       54       54       54  x
 test01.clear                                         30      30      30      29        3904     3904     3904     3902  =
 test01.get                                           11      12      11      11          68       69       68       68  =
 test01.set                                           34      33      29      29        3933     3933     3929     3929  x
@@ -150,58 +154,81 @@ vectors.slice_to_ledger                               3       3       3       3 
 vectors.test1b                                        6       6       6       6          75       75       75       75  =
 vectors.test2                                        23      23      23      23         158      158      158      158  =
 vectors.test4                                       500     500     500     500        1624     1624     1624     1624  =
-zerocash_core.spend                                  67      67      67      63       21252    21252    21252    13736  =
+zerocash_core.spend                                 269     268     268     268       24011    24011    24011    24011  c
 zerocash_core.zerocash_mint                          33      33      33      33        7784     7784     7784     7784  =
-TOTAL                                              6411    7119    6293    6266      516909   492441   489983   474932
+zkir_generation.increment                             3       3       3       3          31       31       31       31  =
+zkir_generation.test1                                27      36      36      36        1499      203      203      203  x
+zkir_generation.test2                                 9       7       7       7          41       41       41       41  c
+TOTAL                                              6940    7652    6826    6808      533476   507125   504667   504631
 ```
 
 The `--O3` column is printed separately by `test/bench.sh` (only where it differs from `--O2`):
 
 ```
 --O3 where it differs from --O2                           instructions              rows
-adt_merkle.test                                            189 -> 175      14633 -> 479
-adt_merkle.test_historic                                   287 -> 271      16880 -> 712
-TOTAL --O3                                                        6236            444610
+adt_merkle.test                                            215 -> 201      16772 -> 2626    
+adt_merkle.test_historic                                   339 -> 323      21151 -> 4985    
+coracle.concede                                            298 -> 288      50468 -> 50148   
+coracle.guess                                              182 -> 176      15590 -> 15398   
+coracle.start                                              253 -> 240      59565 -> 59149   
+coracle.withdraw                                           362 -> 348      85219 -> 84771   
+election_core.add_voter                                     73 -> 69        5972 -> 5844    
+election_core.advance                                       32 -> 30        3898 -> 3834    
+election_core.set_topic                                     24 -> 22        3884 -> 3820    
+election_core.vote_commit                                  131 -> 127      15552 -> 15424   
+election_core.vote_reveal                                  125 -> 121       9904 -> 9776    
+test01.clear                                                29 -> 27        3902 -> 3838    
+test01.set                                                  29 -> 27        3929 -> 3865    
+tiny.clear                                                  29 -> 27        3902 -> 3838    
+tiny.set                                                    21 -> 19        3887 -> 3823    
+unshielded_tokens.mintShieldedToContractTest                53 -> 47        9865 -> 9673    
+unshielded_tokens.mintShieldedToSelfTest                    56 -> 52        9789 -> 9661    
+unshielded_tokens.mintShieldedToUserTest                    39 -> 33        9832 -> 9640    
+unshielded_tokens.mintUnshieldedToContractTest              69 -> 67        4144 -> 4080    
+unshielded_tokens.mintUnshieldedToSelfTest                  72 -> 70        4068 -> 4004    
+unshielded_tokens.mintUnshieldedToUserTest                  45 -> 43        4091 -> 4027    
+unshielded_tokens.receiveShieldedTest                       18 -> 13        5898 -> 5738    
+unshielded_tokens.sendImmediateShieldedToContractTest       68 -> 60       17843 -> 17587   
+unshielded_tokens.sendImmediateShieldedToSelfTest           71 -> 65       17767 -> 17575   
+unshielded_tokens.sendImmediateShieldedToUserTest           59 -> 51       17822 -> 17566   
+unshielded_tokens.sendShieldedToContractTest                69 -> 61       17881 -> 17625   
+unshielded_tokens.sendShieldedToSelfTest                    72 -> 66       17805 -> 17613   
+unshielded_tokens.sendShieldedToUserTest                    60 -> 52       17860 -> 17604   
+zerocash_core.spend                                        268 -> 254      24011 -> 23563   
+zerocash_core.zerocash_mint                                 33 -> 27        7784 -> 7592    
+TOTAL --O3                                                        6620            469263
 ```
 
 ### Totals
 
 | | compactc | Damp `--no-opt` | Damp default | Damp `--O2` | Damp `--O3` |
 |---|---|---|---|---|---|
-| instructions | 6411 | 7119 | 6293 | 6266 | 6236 |
-| rows | 516 909 | 492 441 | 489 983 | 474 932 | 444 610 |
+| instructions | 6940 | 7652 | 6826 | 6808 | 6620 |
+| rows | 533 476 | 507 125 | 504 667 | 504 631 | 469 263 |
 
-(The table above is from the tree after the optimizer work described in "Optimizer levels" below;
-the prose of this section and the next ones was written before it, against totals of 7094 / 6276 /
-6269 instructions, and its per-circuit numbers for `coracle.start` and the levels may be stale: the
-ports were still changing.)
-
-* The default Damp circuit is **never larger** than compactc's, in instructions or in rows: smaller in
-  19 circuits by instructions (135 in all) and in 18 by rows (32601 in all), equal in the other 66.
-* It is compactc's circuit up to variable names in 61 of 85, after `test/zkir-normalize.py` in
-  2 more (`adt_merkle`), and once compactc's `copy` instructions are dropped in 7 more
-  (`sendShielded` family, `pm_19287.test_circuit_returned_tuple`): 70 of 85. The other 15 differ
-  in ways listed below.
-* `--O2` differs from the default in three circuits only: `election_core.vote_commit` (13340 -> 9591
-  rows), `vote_reveal` (7692 -> 3942) and `zerocash_core.spend` (21252 -> 15619), where the
-  `forwardOpt` pass of the pipeline at the time of writing removes a hash whose only consumer is a
-  witness-call argument (see "What is left to remove"). In `spend` it leaves one: the hash of the secret
-  key, which becomes dead only once the commitment hash is gone (2 instructions, 1883 rows; run dead-code
-  removal to a fixpoint). The `asserts` pass changes nothing in these 85 circuits. The pipeline was
-  still changing while this was written: rerun `test/bench.sh`.
-* `--no-opt` is larger than compactc in 33 circuits (+683 instructions) and smaller by rows in 11
-  (Damp's library already shares what compactc recomputes). The default pipeline takes 818 instructions
-  and 2449 rows off it: it does for Damp what compactc's frontend does before it emits ZKIR (folding
-  what is constant: for example `pm_19287.test_complex_nested_patterns` goes 213 -> 56 instructions,
-  `test_circuit_returned_tuple` 55 -> 26).
+* The default Damp circuit is compactc's up to variable names in 63 of 90, and once compactc's `copy`
+  instructions are dropped in 13 more: 76 of 90 (`test/golden.sh` and `test/all.sh` check the
+  verifier keys of the examples that mirror Compact programs). It is larger than compactc's by
+  instructions only in `zkir_generation.test1` (+9) and `proof_data.test2` (+4), the byte-vector
+  casts, and smaller by rows in both (Damp 203 and 54 rows against compactc's 1499 and 634). Everywhere else it is equal or smaller: 127 instructions fewer in 24
+  circuits, mostly hashes compactc recomputes and its `copy`s.
+* `--O2` differs from the default in 7 circuits (18 instructions, 36 rows): the `assert (e == 1)`
+  rewrite (`assertEq`). With the restored `MerkleTreePath` checks the commitments and public keys
+  that `forwardAllOpt` used to remove from `zerocash_core.spend` and the election votes are compared
+  with the path's leaf, so they are no longer dead.
+* `--O3` takes 35 368 rows (7.0 %) off `--O2`: 30 312 by computing hashes of constants
+  (`foldHashes`, the two `adt_merkle` circuits) and 5 056 by dropping range checks that a later
+  persistent hash implies (`hashRanges`, 28 circuits; see "Optimizer levels").
+* `--no-opt` is larger than compactc by 712 instructions; the default pipeline takes 826 instructions
+  and 2458 rows off it.
 
 ### Behavioural check
 
-`executor/test/bench.mjs`: 112 calls on 20 programs (every file but `composable_outer`) go
-through compactc's generated module, Damp's default executor and Damp's `--O2` executor; **907 checks, all
+`executor/test/bench.mjs`: 119 calls on 22 programs (every file but `composable_outer`) go
+through compactc's generated module and Damp's default, `--O2` and `--O3` executors; **1401 checks, all
 pass**: all three succeed or all fail, results equal, proof data equal, ledger state after the call equal,
 Zswap local state equal, initial states equal, and Midnight's ZKIR checker accepts each Damp proof data
-against the circuit Damp emitted (default and `--O2`). Where Damp's circuit is not compactc's (the
+against the circuit Damp emitted at each level. Where Damp's circuit is not compactc's (the
 circuits the run lists at the end, see "Differences that are not size") the proof data is required to be
 accepted by the checker but not to equal compactc's.
 
@@ -222,62 +249,116 @@ them: at `--O3` the guarantee is relative to those implementations.
 
 | Level | Pipeline | Totals (instructions / rows) |
 |---|---|---|
-| default | `simplify, foldDivmod, bounds2, simplify, algebra, commuteOpt` | 6293 / 489 983 |
-| `--O2` | `simplify, foldDivmod, assertEq, asserts, simplify, bounds2, simplify, algebra, forwardOpt, forwardAllOpt, commuteOpt` | 6266 / 474 932 |
-| `--O3` | `simplify, foldHashes Crypto.prims`, then `--O2` | 6236 / 444 610 |
+| default | `simplify, foldDivmod, bounds2, simplify, algebra, commuteOpt` | 6826 / 504 667 |
+| `--O2` | `simplify, foldDivmod, assertEq, asserts, simplify, bounds2, simplify, algebra, forwardOpt, forwardAllOpt, commuteOpt` | 6808 / 504 631 |
+| `--O3` | `simplify, foldHashes Crypto.prims`, then `--O2`, then `hashRanges` | 6620 / 469 263 |
 
-What each addition saved in this suite (against the same ports without it):
+### Where the rows are
 
-* **Hashes of constants** (`foldHashes`, `--O3` only): `adt_merkle.test` 189 -> 175 instructions,
-  14 633 -> 479 rows; `test_historic` 287 -> 271, 16 880 -> 712. 30 instructions and **30 322 rows**,
-  6.4 % of the suite's `--O2` rows. The folded constants were checked independently (Python's
+Rows, not instructions, are what proving costs. `python3 -I bench/costs.py --attribute ROOT VARIANT`
+replaces every instruction of one kind by `private_input`s for its outputs (a `persistent_hash`
+together with its `bytes_into_natives`; a range check or assertion is dropped), measures the circuit
+again, and sums over the suite. On the `--O3` circuits:
+
+| kind | count | rows | share |
+|---|---|---|---|
+| `persistent_hash` | 96 | 439 745 | 93.7 % |
+| `div_mod_power_of_two` 248 | 25 | 3 525 | 0.8 % |
+| `transient_hash` | 96 | 1 866 | 0.4 % |
+| `constrain_bits` 248 | 15 | 930 | 0.2 % |
+| `div_mod_power_of_two` 8 | 4 | 576 | 0.1 % |
+| everything else (`constrain_bits` 8..128, `less_than`, `test_eq`, `cond_select`, `assert`, ...) | | < 1 100 together | < 0.25 % |
+
+The rest of the 469 263 rows (about 22 000) is the base cost of inputs, `impact`s and arithmetic.
+Before `hashRanges` (`--O2`), `constrain_bits` 248 was 82 instructions and 5 084 rows (1.1 %),
+`constrain_bits` 8 and 128 another 868. The largest circuits are all hashes:
+`coracle.withdraw` 84 771 rows (16 `persistent_hash`: 82 600), `coracle.start` 59 149 (11: 58 215),
+`coracle.concede` 50 148 (10: 48 790), `zerocash_core.spend` 23 563 (6: 22 544), the
+`unshielded_tokens` shielded sends about 17 600 each (3: 16 899).
+
+### What each addition saved in this suite
+
+* **Range checks a persistent hash implies** (`hashRanges`, `--O3` only; `Damp/Optimize/HashRanges.lean`).
+  A persistent hash reads a `Bytes<n>` input as one element of `8·(n mod 31)` bits and `n / 31`
+  elements of 248 bits, and fails on an element that does not fit (Midnight's
+  `Alignment::parse_field_repr` out of the circuit; in the circuit, `persistent_hash` decomposes each
+  such element into exactly that many bytes, which constrains it the same way). Compact range checks
+  a `Bytes<32>` witness result, argument or coin field when it enters the circuit and then usually
+  hashes it, so the check is paid twice. The pass drops a `constrain e (bits n)` and the `bits n`
+  range of a witness result when a later statement certainly evaluates a persistent hash reading the
+  same expression as at most `n` bits, with no variable of it rebound in between; a value the check
+  would have refused then fails the run at the hash. Measured against `--O3` without it (same tree):
+  **6 778 -> 6 620 instructions, 474 319 -> 469 263 rows (-5 056, -1.07 %)**, in 28 circuits (every
+  `coracle`, `unshielded_tokens` shielded and mint circuit, the `election_core` and `zerocash_core`
+  key and coin checks, `tiny`/`test01` `set`/`clear`; 62 rows per 248-bit check, 2 per 8-bit, 32 per
+  128-bit). In the examples: `vault.spend` 2036 -> 1972 rows, `tokens.*` 32 to 192 rows each
+  (`test/opt.sh`). Proved `Pass.SoundFor Crypto.prims` (`Circuit.hashRanges_soundFor`): sound for
+  any hash functions that refuse inputs not fitting their alignment (`AlignChecked p`), which
+  `Crypto.prims` is proved to do; not `Pass.Sound`, since with hash functions that accept any input
+  the rewritten circuit accepts more (`Examples/OptHashRanges.lean` shows it).
+* **Hashes of constants** (`foldHashes`, `--O3` only): `adt_merkle.test` 215 -> 201 instructions,
+  16 772 -> 2 626 rows; `test_historic` 339 -> 323, 21 151 -> 4 985. 30 instructions and **30 312
+  rows**, 6.0 % of the suite's `--O2` rows. The folded constants were checked independently (Python's
   `hashlib` on `"mdn:lh"` and the 32-byte field encoding gives the same limbs as the constants in the
-  `--O3` ZKIR). No other circuit changes. Building is not slower: `lake exe damp-bench --O3` takes
-  0.26 s, as `--O2` does. The executor comparison runs every call at `--O3` too, but the two
-  `adt_merkle` circuits are contradictory by construction, so only their refusal is compared there;
-  `Examples/OptFoldHashes.lean` checks the folding against `Circuit.run` with `Crypto.prims`.
-* **`divmod` of constants** (`foldDivmod`, every level): nothing in this suite or in the examples
-  (`bounds2` already folds the small cases); no golden output changes.
-* **Dead code** (`forwardAllOpt`, `--O2`): `zerocash_core.spend` 65 -> 63 instructions, 15 619 ->
-  13 736 rows (the hash of the secret key). Pruning was already a fixpoint: `Emit.pruneDeadBinds` is
-  one backward liveness pass in which a dropped binding contributes no uses. What kept the hashes is
-  that it counts the variables of **witness-call arguments** as uses, although the emitter does not
-  compile witness arguments (a witness becomes its `private_input`s only). At the default level the
-  `dead` 9 instructions / 15 015 rows of `bench/headroom.py` are exactly these: the commitment and
-  public-key hashes of `spend`, `vote_commit` and `vote_reveal` that feed only
-  `context_path_root(..)`/`context_eligible_voters_root(..)`. Removing them at the default level (not
-  counting witness arguments as uses) would change `zerocash_core.spend`, which is compactc's circuit
-  at the default level, so it is `--O2` only: `forwardOpt` substitutes single-use bindings into the
-  witness argument; `forwardAllOpt` substitutes all, which reaches the public-key hash used by both
-  halves of the commitment. At `--O2` `headroom.py` now finds 0 dead instructions.
-* **`assert (e == 1)` as `assert e`** (`assertEq`, `--O2`): exact for any `e`, no boolean knowledge
-  needed (the common `e` is a `Boolean` ledger read, which is not range checked, so it is not known
-  to be 0 or 1 and `algebra`'s rule does not fire). `adt_list_struct` 424 -> 418 instructions (1329
-  -> 1317 rows), `adt_map_list` 92 -> 87 (250 -> 240), `adt_counter.test_all` 42 -> 41,
-  `adt_merkle` -2 each, `tiny.clear` and `test01.clear` 30 -> 29: 18 instructions, 36 rows.
-  compactc keeps the comparisons, so the default level does too.
+  `--O3` ZKIR). `Examples/OptFoldHashes.lean` checks the folding against `Circuit.run` with
+  `Crypto.prims`.
+* **`divmod` of constants** (`foldDivmod`, every level): nothing in this suite or in the examples.
+* **Dead code** (`forwardAllOpt`, `--O2`): nothing in this suite now. With the earlier ports, which
+  replaced the `MerkleTreePath` witnesses by witnesses returning a root, the commitment and public-key
+  hashes of `zerocash_core.spend` and the election votes fed only a witness argument and were removed
+  (15 015 rows); the restored ports compare them with the path's leaf, so they are needed. The pass
+  substitutes a binding only when the substituted expression costs at most 64 instructions
+  (`Circuit.forwardAll`): without a bound, a Merkle path root of depth 32 (the digest of each level
+  selected on twice by the next) grew to an exponentially large expression and `damp-bench --O2` ran
+  out of memory on `zerocash_core`; `Examples/OptForwardBound.lean` checks a depth-32 chain.
+* **`assert (e == 1)` as `assert e`** (`assertEq`, `--O2`): `adt_list_struct` 424 -> 418 instructions
+  (1329 -> 1317 rows), `adt_map_list` 92 -> 87 (250 -> 240), `adt_counter.test_all` 42 -> 41,
+  `adt_merkle` -2 each, `tiny.clear` and `test01.clear` 30 -> 29: 18 instructions, 36 rows. compactc
+  keeps the comparisons, so the default level does too.
 * **Commutative duplicates** (`commuteOpt`, default and `--O2`): `assert_misc.myswitch` 32 -> 30
-  instructions, 131 -> 128 rows (`x != y` and `y != x`). Kept only when the circuit gets smaller, so
-  nothing else changes; no example's output changes, and `myswitch` already differed from compactc's.
+  instructions, 131 -> 128 rows. Kept only when the circuit gets smaller.
 
-Circuits that changed, by level: default: `assert_misc.myswitch`. `--O2` (besides that):
-`zerocash_core.spend`, `adt_counter.test_all`, `adt_list_struct.test`, `adt_map_list.test`,
-`adt_merkle.test`, `adt_merkle.test_historic`, `tiny.clear`, `test01.clear`. `--O3` (besides
-`--O2`'s): `adt_merkle.test`, `adt_merkle.test_historic`. The behavioural check (`executor/test/bench.mjs`,
-now with the `--O3` executor as a fourth implementation) passes: 1342 checks, 0 failures; where a
-level's circuit is no longer compactc's, its proof data is required to be accepted by Midnight's
-ZKIR checker rather than to equal compactc's.
+Circuits that changed, by level: default: `assert_misc.myswitch`. `--O2` (besides that): the seven
+`assertEq` circuits above. `--O3` (besides `--O2`'s): the 30 listed under the results table. The
+behavioural check runs every call at all three Damp levels (1401 checks pass); where a level's circuit
+is no longer compactc's, its proof data is required to be accepted by Midnight's ZKIR checker rather
+than to equal compactc's.
 
-What `bench/headroom.py` still finds (instructions / rows): default 9 / 15 015 dead, 20 / 51
-repeated ledger reads, 30 / 30 322 constant hashes, 3330 / 0 adjacent impacts; `--O2` 0 dead, 0 cse,
-20 / 51 reads, 30 / 30 322 hashes; `--O3` 0 dead, 0 cse, 0 fold, 0 hashes, 20 / 51 reads (not
-merged: a ledger read is part of the public transcript), 3340 / 0 `merge`. Proving cost left to an
-optimizer in this suite is therefore essentially nil at `--O3`: what remains is the hashes the
-programs need.
+What `bench/headroom.py` still finds (instructions / rows) on Damp's default circuits: 0 dead, 0 cse,
+0 fold, 0 bits, 20 / 51 repeated ledger reads (not merged: a ledger read is part of the public
+transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent impacts.
+
+### Ideas measured and not pursued
+
+* **Range checks implied by something other than a hash.** After `hashRanges`, 15 `constrain_bits 248`
+  remain (930 rows, 0.2 %): every one is of a value that only goes to the ledger (`impact` operands:
+  token colors, addresses, a stored contract address) or into arithmetic. Nothing in the circuit
+  bounds those values, so the checks are needed. `less_than` and `constrain_bits` 8..128 together
+  are under 0.1 %: not pursued.
+* **Sharing hashes across the two arms of a conditional.** `coracle` computes the same shapes of
+  hash in its red and blue branches (`withdraw`: 7 pairs, about 33 000 rows). One hash of the
+  selected inputs would do, but the inputs of the second arm (a fresh `local_secret_key()` witness,
+  ledger reads of the second player's coins) are produced inside that arm, after the first arm's
+  ledger statements have used its hashes; witness and ledger order is observable, so the merged hash
+  cannot be placed. Only `coracle.start`'s `red_pk(sk)`/`blue_pk(sk)` (one hash of a key witnessed
+  before the branch, 3 741 rows, 0.8 %) has its inputs ready; merging it needs a new analysis (the
+  hash's value is used only under its arm's guard) and is sound only relative to `Crypto.prims`
+  (with arbitrary hash functions the dropped hash could have failed). Left for later.
+* **Duplicate hashes modulo equalities.** `headroom.py cse` finds none; the remaining same-shape
+  hashes in a circuit hash different witness results (a witness asked twice, as `coracle`'s
+  `is_red(sk)` and the branch's own `local_secret_key()`), which the circuit cannot assume equal.
+* **`div_mod_power_of_two` 248** (0.8 %): the low 31 bytes of a transient hash, which the persistent
+  hash then reads; it is the value, not a check, and stays.
+* **Byte/field round trips**: none found in this suite beyond the casts of `proof_data` and
+  `zkir_generation`, whose four circuits total under 1 000 rows (0.2 %).
 
 ## Where Damp's default is larger than compactc's
 
-Nowhere. There is nothing to diff, so the evidence is the other direction, and the `--no-opt` level
+In instructions, two circuits, both new in this round and both casts between `Vector<n, Uint<8>>`
+and `Bytes<n>`: `zkir_generation.test1` 27 -> 36 and `proof_data.test2` 13 -> 17. Both are much
+smaller in rows (1499 -> 203 and 634 -> 54): compactc packs the bytes with `reconstitute_field`
+(about 140 rows each), Damp with one `mul` and one `add` per byte. In rows Damp's default is nowhere larger.
+For the rest the evidence is the other direction, and the `--no-opt` level
 shows what the default passes have to recover. The 36 circuits where `--no-opt` is larger than the
 default are larger by (instructions, summed over the suite, `--no-opt` minus compactc): `cond_select`
 +249, `impact` +254, `add` +75, `constrain_bits` +52, `less_than` +43, `test_eq` +38, `public_input`
@@ -297,7 +378,8 @@ compactc emits only the six `complex_sum` updates that the constant conditions l
 
 ## Where compactc's output is larger than Damp's default
 
-19 circuits, 135 instructions and 32601 rows in all. By kind of difference (instructions; the
+24 circuits, 127 instructions and 26 933 rows in all (the table and the examples below are from
+the earlier 85-circuit run; the totals per kind of difference are printed by `test/bench.sh`). By kind of difference (instructions; the
 column split is `bench/report.py`'s):
 
 | Cause | Instructions | Rows | Where |
@@ -405,27 +487,29 @@ the behavioural check does not require to have compactc's proof data.
 ## What is left to remove
 
 `bench/headroom.py` applies, to a circuit and one at a time, rewrites that a sound optimizer could make,
-and measures the result with `mock-compile`. On compactc's circuits and on Damp's default ones (at
-`--O2` the `dead` row becomes 2 / 1883, the rest is unchanged):
+and measures the result with `mock-compile`. On compactc's circuits and on Damp's default ones:
 
 | Rewrite | compactc: instr / rows | Damp default: instr / rows |
 |---|---|---|
-| `dead`: pure instructions nothing uses | 15 / 15 021 | 9 / 15 015 |
-| `cse`: a pure instruction repeating an earlier one | 46 / 26 612 | 2 / 3 |
-| `fold`: constant arithmetic, `x+0`, `x*1`, constant `cond_select`, `copy` | 83 / 33 | 0 / 0 |
+| `dead`: pure instructions nothing uses | 6 / 6 | 0 / 0 |
+| `cse`: a pure instruction repeating an earlier one | 46 / 26 619 | 0 / 0 |
+| `fold`: constant arithmetic, `x+0`, `x*1`, constant `cond_select`, `copy` | 92 / 33 | 0 / 0 |
 | `bits`: a range check of a value already known to fit | 0 / 0 | 0 / 0 |
-| `reads`: a ledger read repeating an earlier one, no write between | 20 / 51 | 24 / 61 |
-| `hashes`: `persistent_hash`/`transient_hash`/`div_mod` of constants only | 34 / 34 357 | 30 / 30 322 |
-| `merge`: adjacent `impact`s with one guard joined | 3327 / 0 | 3325 / 0 |
-| all together | 3489 / 72 035 | 3388 / 45 405 |
+| `reads`: a ledger read repeating an earlier one, no write between | 20 / 51 | 20 / 51 |
+| `hashes`: `persistent_hash`/`transient_hash`/`div_mod` of constants only | 34 / 34 354 | 30 / 30 312 |
+| `merge`: adjacent `impact`s with one guard joined | 3347 / 0 | 3351 / 0 |
+| all together | 3510 / 57 017 | 3400 / 30 365 |
+
+(`bits` does not see a range check implied by a later hash; that is `hashRanges`, 5 056 rows at
+`--O3`, see "Optimizer levels".)
 
 What the rows are made of (`bench/costs.py`, 20 copies of an instruction in a small circuit):
 `persistent_hash` of two `Bytes<32>` 3741, `div_mod_power_of_two` 144, `constrain_bits` 8 bits 2,
 64 bits 16, 248 bits 62, `less_than` 64/128 bits 7/9, `transient_hash` 20, `test_eq` 2,
-`add`/`mul`/`neg`/`cond_select`/`assert`/`public_input`/`private_input` 1, `copy` 0. The 102
-`persistent_hash`es in Damp's default circuits come to at most 79 % of the suite's 484 308 rows (if each
-cost what the two-`Bytes<32>` hash measured does). So the only rewrites that matter for proving cost
-are those that remove a hash; everything else is a few rows.
+`add`/`mul`/`neg`/`cond_select`/`assert`/`public_input`/`private_input` 1, `copy` 0. Attributed in
+the circuits themselves (`bench/costs.py --attribute`, "Where the rows are" above), the persistent
+hashes are 93 % of the suite's rows at every level. So the rewrites that matter for proving cost are
+those that remove a hash, or the checks around one; everything else is a few rows.
 
 **Hashes of constants.** `adt_merkle.test` inserts the literals 7, 0, 1, 2, 3, 42 and 100 into a
 `MerkleTree` (`insertIndex(7 as Field, 1)`, the unrolled `for (const i of 0..4) merkleTreeSmall.insert(i)`,
@@ -437,46 +521,38 @@ persistent_hash inputs=["0x6d646e3a6c68","0x07"] alignment=[bytes6, field]    ->
 bytes_into_natives ...
 ```
 
-Seven of them: 14 154 of the circuit's 14 637 rows (97 %); `test_historic` 16 168 of 16 884. The values are
-known when the circuit is built; folding them removes 30 instructions and 30 322 rows (6.3 % of the
-suite) from two circuits. **Done at `--O3`** (see "Optimizer levels"): the constant is computed with
+Seven of them in `test`, eight in `test_historic`. The values are known when the circuit is built;
+folding them removes 30 instructions and 30 312 rows (6.0 % of the suite) from two circuits. **Done at `--O3`** (see "Optimizer levels"): the constant is computed with
 `Damp/Crypto/Sha256.lean`, which `test/semantics.sh` checks against the real evaluator; the proof is
 relative to that implementation. (Only literals trigger this: it is rare outside
 tests, `insertIndexDefault` and constant `persistentHash` domain-separator-only inputs.)
 
-**Dead hashes.** `zerocash_core.spend` computes, in the circuit,
-
-```
-persistent_hash inputs=[%6,%7]                         (derive_zk_public_key(sk))
-bytes_into_natives
-persistent_hash inputs=["lares:zerocash:commit",%2,%3,%4,%5,%15,%14]    (commitment_from_coin_info)
-bytes_into_natives  outputs=["%17","%18"]              %17, %18 are never used
-```
-
-because `old_commitment` is only the argument of the witness call `context_path_root(old_commitment)`:
-witness arguments are evaluated by the executor, not by the circuit. 7516 rows, 35 % of the circuit.
-The same in `election_core.vote_commit` (`public_key(sk)` into `context_eligible_voters_root`: 3749
-rows) and `vote_reveal` (3750). compactc has them too. Caveat: in the original `election.compact` and
-`zerocash.compact` the hash is also compared with `path.leaf`; I removed that (no `MerkleTreePath` in
-Damp), which is what makes these dead. The pattern (a value computed for a witness call and used nowhere
-else) is real, but this suite has it only in the adapted programs.
+**Dead hashes.** With the earlier ports of `election_core` and `zerocash_core` (a witness returning
+the Merkle root instead of a `MerkleTreePath`), the commitment of `spend` and the public keys of the
+two votes were computed only for a witness-call argument, which the circuit does not evaluate: 15 015
+rows, removed at `--O2` by `forwardOpt`/`forwardAllOpt`. The restored ports compare them with
+`path.leaf`, as the Compact originals do, so they are live and nothing dead is left.
 
 ## Prioritized optimizations
 
+The order is by rows. What is left after these is the hashes the programs need (93 % of the rows),
+`div_mod` of transient hashes (0.8 %) and range checks of values that go only to the ledger (0.2 %).
+
+0. **Done (`--O3`, `hashRanges`): drop range checks a later persistent hash implies.** 158
+   instructions, **5 056 rows** (1.07 %) in 28 circuits. Sound relative to `Crypto.prims` only (the
+   hash must refuse inputs that do not fit). Next by size: share a hash between the arms of a
+   conditional when both arms' inputs are ready before either is used (`coracle.start`, one hash,
+   3 741 rows, 0.8 %; see "Ideas measured and not pursued").
 1. **Done (`--O3`, `foldHashes`; `divmod` at every level, `foldDivmod`).** **Fold `persistent_hash`, `transient_hash` and `div_mod_power_of_two` whose inputs are all constants**
-   (a `simplify` rule using the `Prims` of `Damp/Crypto`). 30 instructions and **30 322 rows** (6.3 % of
+   (a `simplify` rule using the `Prims` of `Damp/Crypto`). 30 instructions and **30 312 rows** (6.0 % of
    the suite) in `adt_merkle.test` and `test_historic`; 2014 rows per constant leaf. Needs the hash
    function at compile time; the semantics already has it. The evidence is two test programs: the gain
    is large where a literal reaches a hash and nil elsewhere.
-2. **Drop circuit computations whose only consumers are witness-call arguments** (pass on
-   `Circuit`; the executor evaluates the IR, so it does not need them in the ZKIR). Saves one hash per
-   such value: 3.7k rows each, 15 015 rows (3.1 % of the suite) in three circuits, 9 instructions.
-   Soundness argument local (an unused pure value). Evidence is from adapted programs, see above.
-   **Partly done already**: `--O2`'s `forwardOpt` removes them (vote_commit -3749 rows, vote_reveal
-   -3750, spend -5633); what remains is the fixpoint (spend's second hash, 1883 rows) and making it
-   the default level if soundness allows (compactc does not remove them, so the key would differ).
-   **Done at `--O2`** (`forwardAllOpt`): spend 65 -> 63. Not at the default level, where it would
-   change `zerocash_core.spend`, compactc's circuit.
+2. **Done at `--O2` (`forwardOpt`, `forwardAllOpt`).** **Drop circuit computations whose only consumers
+   are witness-call arguments.** It removed 15 015 rows from the earlier, adapted ports of
+   `election_core` and `zerocash_core`; the restored ports use those hashes (compared with the Merkle
+   path's leaf), so it removes nothing in this suite now. Not at the default level, where it would
+   change a circuit that is compactc's.
 3. **Short-circuit lowering for `&&.`, `||.` and `?:`-style `select`**: done (a Lang change, not an
    optimization; see "Differences that are not size"). As expected it saved nothing in rows or
    instructions (`tiny.get`, `vote_commit` have equal counts either way); it removed the behavioural
@@ -496,7 +572,7 @@ else) is real, but this suite has it only in the adapted programs.
 7. **Merge adjacent `impact` instructions with one guard**: 3325 instructions (53 % of the suite's
    instructions) and **0 rows**. Only worth doing if ZKIR size matters; it does not move the proof.
 8. Nothing for `bits` (0 redundant range checks in either compiler's output) and nothing from the
-   `asserts` pass, which has no effect on these 85 circuits. A corpus with `assert(x < n)` followed by
+   `asserts` pass, which has no effect on these 90 circuits. A corpus with `assert(x < n)` followed by
    use of `x` as a narrower `Uint` would be needed to evaluate it.
 
 Not worth chasing: `copy` (0 rows), C and A (Damp already does them). Where Damp is already ahead of

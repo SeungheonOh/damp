@@ -527,6 +527,110 @@ def Field.toUint (a : Field) (max : Nat) : CircuitM (Uint max) := do
   constrainTy e (.uint max)
   return ⟨Uint.capped max e⟩
 
+/-! ## Casts
+
+Compact's `x as T` between `Field`, `Uint`, `Boolean`, `Bytes`, `Vector<n, Uint<8>>`
+and enumerations, each built from the instructions compactc 0.36.1 emits for it
+(`Examples/Casts.lean` has the evidence). A cast that can fail is a `CircuitM`
+action whose check, like `Field.toUint`'s, is guarded by the branch it is in;
+the others are plain functions. compactc writes the value being checked through
+a `copy` first, which Damp leaves out. -/
+
+/-- The bytes of a limb holding `k` bytes, least significant first: each byte is
+    the remainder of dividing by 256 what is left, the last one the quotient. -/
+def limbBytes (x : Expr) : Nat → List Expr
+  | 0 => []
+  | 1 => [x]
+  | k + 1 => .divmod false 8 x :: limbBytes (.divmod true 8 x) k
+
+/-- How many bytes limb `j` of a `Bytes n` holds (limb 0 is the most significant). -/
+def limbWidth (n j : Nat) : Nat :=
+  if j = 0 then n - 31 * (byteLimbs n - 1) else 31
+
+/-- The error for a conversion that would need ZKIR's `reconstitute_field` on
+    a value that can overflow the field: Damp's IR has no expression for it. -/
+def reconstituteUnsupported (what : String) : String :=
+  s!"{what} is not supported: compactc checks with `reconstitute_field` that the value does not \
+    overflow the field, and Damp's IR has no expression for that check"
+
+namespace Bytes
+/-- `b as Field`, for `n ≤ 31`: the value's single limb, no instruction. -/
+def toField (b : Bytes n) : Field :=
+  if n ≤ 31 then ⟨b.limbs.headD (.const 0)⟩
+  else ⟨.invalid (reconstituteUnsupported s!"`Bytes<{n}> as Field`")⟩
+
+/-- `b as Vector<n, Uint<8>>`: byte `i` is element `i`. Each limb is taken apart
+    by repeated division by 256 (`div_mod_power_of_two … 8`). -/
+def toVector (b : Bytes n) : Vector Uint8 n :=
+  let limbs := byteLimbs n
+  let bytes := (List.range limbs).reverse.flatMap fun j =>
+    limbBytes (b.limbs.getD j (.const 0)) (limbWidth n j)
+  Vector.ofFn fun i => ⟨bytes.getD i.val (.const 0)⟩
+
+/-- `v as Bytes<n>` for a vector of bytes: each limb is rebuilt from the top byte
+    down, `acc · 256 + byte`. compactc uses one `reconstitute_field` per byte; Damp
+    a `mul` and an `add`, the same value since every byte is below 256 and a limb
+    holds at most 31 of them. -/
+def ofVector (v : Vector Uint8 n) : Bytes n :=
+  let limbs := byteLimbs n
+  ⟨(List.range limbs).map fun j =>
+    let base := 31 * (limbs - 1 - j)
+    let k := limbWidth n j
+    match (List.range k).reverse.map (fun i => (v.toList.getD (base + i) default).expr) with
+    | [] => .const 0
+    | top :: rest => rest.foldl (fun acc x => .add (.mul acc (.const 256)) x) top⟩
+end Bytes
+
+/-- `x as Bytes<n>`. For `n ≤ 31` the value must fit in `n` bytes (checked, as
+    `Field.toUint` checks); for `n ≥ 32` it always fits, and its top byte and low
+    31 bytes are the quotient and remainder of a division by `2 ^ 248`. -/
+def Field.toBytes (x : Field) (n : Nat) : CircuitM (Bytes n) := do
+  if n ≤ 31 then
+    let e ← guarded x.expr
+    emit (.constrain e (.bits (8 * n)))
+    return ⟨if n = 0 then [] else [e]⟩
+  else
+    return ⟨List.replicate (byteLimbs n - 2) (.const 0) ++
+      [.divmod true 248 x.expr, .divmod false 248 x.expr]⟩
+
+/-- `x as Bytes<n>` for a `Uint`: as for a `Field`. -/
+def Uint.toBytes (x : Uint m) (n : Nat) : CircuitM (Bytes n) := x.toField.toBytes n
+
+/-- `b as Uint<..max>`: the bytes as a number, checked to be at most `max`. -/
+def Bytes.toUint (b : Bytes n) (max : Nat) : CircuitM (Uint max) := b.toField.toUint max
+
+/-- `b as Uint`: 0 or 1, no instruction. -/
+def Boolean.toUint (b : Boolean) : Uint 1 := ⟨b.expr⟩
+
+/-- `x as Boolean`: whether `x` is not zero. -/
+def Field.toBoolean (x : Field) : Boolean := Boolean.not ⟨.eq x.expr (.const 0)⟩
+
+/-- `x as Boolean`: whether `x` is not zero. -/
+def Uint.toBoolean (x : Uint m) : Boolean := x.toField.toBoolean
+
+/-- Enumerations: values numbered `0..max`. `enum` declares an instance. -/
+class EnumType (α : Type) where
+  max : Nat
+  code : α → Expr
+  ofCode : Expr → α
+
+namespace Enum
+variable [EnumType α]
+/-- `e as Field`: the variant's number, no instruction. -/
+def toField (e : α) : Field := ⟨EnumType.code e⟩
+/-- `e as Uint`: the variant's number, no instruction (`widen` it as needed). -/
+def toUint (e : α) : Uint (EnumType.max α) := ⟨Uint.capped (EnumType.max α) (EnumType.code e)⟩
+end Enum
+
+/-- `x as E`: checked to be the number of a variant of `E`. -/
+def Field.toEnum (x : Field) (α : Type) [EnumType α] : CircuitM α := do
+  let e ← guarded x.expr
+  constrainTy e (.enum (EnumType.max α))
+  return EnumType.ofCode e
+
+/-- `x as E` for a `Uint`: as for a `Field`. -/
+def Uint.toEnum (x : Uint m) (α : Type) [EnumType α] : CircuitM α := x.toField.toEnum α
+
 /-! ## Circuits -/
 
 structure Signature where

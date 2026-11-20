@@ -21,7 +21,7 @@ ZKIR circuits Midnight executes.
 | `Damp/Zkir/` | Midnight's circuit format: the data type and JSON (`Basic`, `Json`), the producer's obligations (`Checks`), and Midnight's evaluator ported to Lean (`Semantics`) |
 | `Damp/Crypto/` | Poseidon, SHA-256 and the persistent hash, as Midnight computes them |
 | `Damp/IR/` | the circuit IR (`Basic`), what it means (`Semantics`), Impact VM instructions and their encoding (`Impact`), the disclosure check (`Disclosure`), the ledger-statement check (`LedgerCheck`) |
-| `Damp/Optimize/` | optimization passes, one per file (`Simplify`, `Bounds`, `Bounds2`, `Algebra`, `Asserts`, `Forward`, `InlineAll`, `AssertEq`, `Commute`, `FoldHashes`; `Choose` keeps the better of two results), put in order by `Pipeline` at three levels: default, `--O2`, `--O3` |
+| `Damp/Optimize/` | optimization passes, one per file (`Simplify`, `Bounds`, `Bounds2`, `Algebra`, `Asserts`, `Forward`, `InlineAll`, `AssertEq`, `Commute`, `FoldHashes`, `HashRanges`; `Choose` keeps the better of two results), put in order by `Pipeline` at three levels: default, `--O2`, `--O3` |
 | `Damp/Compile/` | IR to ZKIR (`Emit`), contract data for the executor (`Export`), the build as a pure function (`Contract.buildCore`), output, key generation and the command line (`Build`) |
 | `Damp/Executor/` | what the executor must do (`Spec`) |
 | `Damp/Ledger/` | a Lean model of Midnight's on-chain (Impact) VM, differentially tested against the real runtime (`Vm`, `Query`, `Merkle`) |

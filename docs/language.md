@@ -64,6 +64,33 @@ is a Lean function, and a configuration value is a Lean constant.
   and a ledger field whose type holds one is reported at the `ledger`
   declaration.
 
+### Casts
+
+Compact's `x as T`, as functions; a cast that checks its value is a `CircuitM`
+action (`(← x.toBytes 4)`), and its check, like `toUint`'s, only applies where
+the branch it is in runs.
+
+| Compact | Damp | Emitted |
+|---|---|---|
+| `b as Field`, `b : Bytes<n>`, n ≤ 31 | `b.toField` | nothing |
+| `x as Bytes<n>`, `x : Field` or `Uint`, n ≤ 31 | `x.toBytes n` | a check of `8n` bits |
+| `x as Bytes<n>`, n ≥ 32 | `x.toBytes n` | one division by 2^248 |
+| `b as Uint<..k>` | `b.toUint k` | a check, as `Field.toUint` |
+| `b as Vector<n, Uint<8>>` | `b.toVector` | n − 1 divisions by 256 per 31 bytes |
+| `v as Bytes<n>` | `Bytes.ofVector v` | `mul` and `add` per byte |
+| `e as Field`, `e as Uint<..>` (enum) | `Enum.toField e`, `Enum.toUint e` | nothing |
+| `x as E` (enum) | `x.toEnum E` | a check that `x` names a variant |
+| `b as Uint<..>` (Boolean) | `b.toUint` (a `Uint 1`) | nothing |
+| `x as Boolean` | `x.toBoolean` | `x != 0` |
+
+These are compactc's instructions, less a `copy` compactc makes of a value it
+checks; `Vector<n, Uint<8>> as Bytes<n>` uses a `mul` and an `add` per byte
+where compactc uses one `reconstitute_field` (which costs more rows: it range
+checks its operands again). `Bytes<n> as Field` for n ≥ 32 is not supported:
+compactc checks that the value does not overflow the field, and the IR has no
+expression for that check; the circuit is rejected with that message.
+`Examples/Casts.lean` compares each cast with compactc's output.
+
 A numeral is accepted wherever a `Uint` or `Field` is expected. One that does
 not fit its `Uint` is reported when the circuit is checked. A `Field` numeral
 (and `Field.ofNat`, `Field.ofString`) is reduced modulo the field size: with
@@ -164,7 +191,33 @@ runs on the user's machine only.
 | `Map κ ν` | `member`, `lookup`, `insert`, `insertDefault`, `remove`, `size`, `isEmpty`, `resetToDefault` |
 | `Set α` | `member`, `insert`, `remove`, `size`, `isEmpty`, `resetToDefault` |
 | `LedgerList α` | `pushFront`, `popFront`, `head`, `length`, `isEmpty`, `resetToDefault` |
-| `MerkleTree d α`, `HistoricMerkleTree d α` | `insert` and its variants, `checkRoot`, `isFull`, `resetToDefault` |
+| `MerkleTree d α`, `HistoricMerkleTree d α` | `insert` and its variants, `checkRoot`, `isFull`, `resetToDefault`; paths below |
+
+### Merkle tree paths
+
+A circuit checks membership in a tree with a path it is given, as in Compact:
+`MerkleTreePath n α` (fields `leaf : α` and `path : Vector MerkleTreePathEntry n`;
+an entry has `sibling : MerkleTreeDigest` and `goesLeft : Boolean`) is an
+ordinary value, so it can come from a witness, an argument or a `Cell`.
+`merkleTreePathRoot p : CircuitM MerkleTreeDigest` computes the root it leads
+to, hashing the leaf as `insert` does (`merkleTreePathRootNoLeafHash` for a
+`MerkleTreePath n (Bytes 32)` whose leaf is already a hash); it emits what
+compactc emits for the library circuit of the same name, except compactc's
+`copy` of the leaf digest.
+
+```lean
+-- Compact: const path = disclose(context$path_of(pk));
+--          assert(path.is_some && tree.checkRoot(disclose(merkleTreePathRoot<10, Bytes<32>>(path.value)))
+--                 && pk == path.value.leaf, "not a member");
+witness context_path_of (pk : Bytes 32) : Maybe (MerkleTreePath 10 (Bytes 32))
+...
+  const path := disclose (← context_path_of pk)
+  require (path.isSome &&. (← tree.checkRoot (disclose (← merkleTreePathRoot path.value))) &&.
+           pk ==. path.value.leaf) "not a member"
+```
+
+In JS a path is what compactc's `ledger(state).tree.findPathForLeaf(leaf)` returns:
+`{ leaf, path: [{ sibling: { field }, goes_left }, …] }`.
 
 A map's values may themselves be ledger types; `(← m.lookup k)` then gives a
 handle to operate on. Kernel operations: `Kernel.self`, `Kernel.checkpoint`,

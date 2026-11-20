@@ -22,6 +22,9 @@ import Examples.OptForward
 import Examples.OptFoldHashes
 import Examples.OptInlineAll
 import Examples.OptSmall
+import Examples.OptHashRanges
+import Examples.OptForwardBound
+import Examples.Casts
 import Examples.EmitAgrees
 import Examples.Semantics
 import Examples.LedgerAgreement

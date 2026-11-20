@@ -3,6 +3,7 @@ import Damp.Field
 import Damp.Zkir.Basic
 import Damp.Zkir.Checks
 import Damp.Zkir.Json
+import Damp.Zkir.JsonText
 import Damp.Zkir.Semantics
 import Damp.Crypto.Prims
 -- The intermediate representation and its meaning
@@ -21,6 +22,7 @@ import Damp.Optimize.Bounds2
 import Damp.Optimize.Choose
 import Damp.Optimize.Forward
 import Damp.Optimize.FoldHashes
+import Damp.Optimize.HashRanges
 import Damp.Optimize.InlineAll
 import Damp.Optimize.AssertEq
 import Damp.Optimize.Commute
@@ -56,6 +58,7 @@ import Damp.Proofs.Optimize.Choose
 import Damp.Proofs.Optimize.Forward
 import Damp.Proofs.Optimize.SoundFor
 import Damp.Proofs.Optimize.FoldHashes
+import Damp.Proofs.Optimize.HashRanges
 import Damp.Proofs.Optimize.InlineAll
 import Damp.Proofs.Optimize.AssertEq
 import Damp.Proofs.Optimize.Commute
@@ -76,6 +79,9 @@ import Damp.Proofs.Interface.Bytes
 import Damp.Proofs.Interface.Circuit
 import Damp.Proofs.Disclosure
 import Damp.Proofs.ZkirJson
+import Damp.Proofs.JsonText
+import Damp.Proofs.ZkirText
+import Damp.Proofs.ExportJson
 import Damp.Proofs.Build
 import Damp.Proofs.Ledger.Basic
 import Damp.Proofs.Ledger.Cell
@@ -83,5 +89,8 @@ import Damp.Proofs.Ledger.Counter
 import Damp.Proofs.Ledger.Map
 import Damp.Proofs.Ledger.Limbs
 import Damp.Proofs.Ledger.Nested
+import Damp.Proofs.Ledger.List
+import Damp.Proofs.Ledger.MerkleSpec
+import Damp.Proofs.Ledger.Kernel
 import Damp.Proofs.Ledger.Executor
 import Damp.Proofs.Interface.LedgerLogic

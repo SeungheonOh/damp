@@ -16,8 +16,9 @@ condition the statement is false (see `bigConst` at the end of this file);
 `checkProducer`), so it holds of everything the emitter returns
 (`IrSource.ofJson_toJson_of_emitted`).
 
-What remains between this and the bytes on disk is Lean core's printer and
-parser of JSON text (`Json.pretty`, `Json.parse`), not covered here.
+The text layer is `Damp/Proofs/ZkirText.lean` (`IrSource.ofText`), for Damp's
+reference JSON parser; Lean core's `Json.pretty` and `Json.parse` are `partial`
+and are tested against it (`test/jsontext.sh`).
 -/
 import Damp.Zkir.Json
 import Damp.Compile.Build

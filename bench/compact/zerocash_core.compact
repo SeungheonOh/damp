@@ -13,14 +13,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// bench: derived from Compact's examples/zerocash.compact. Changes, because Damp has neither
-// `Opaque` types nor `MerkleTreePath`/`merkleTreePathRoot`:
-//   - the `public_key.encryption` field, the `ciphertexts` ledger field and the `context$encrypt`
-//     witness (all Opaque<"Uint8Array">) are removed;
-//   - `context$path_of`, which returned a MerkleTreePath<32, commitment>, is a witness returning
-//     the path's root (a MerkleTreeDigest); the `commitment_path.leaf` check is dropped;
+// bench: Compact's examples/zerocash.compact. Changes, because Damp has no `Opaque` types:
+//   - the `public_key.encryption` field, the `ciphertexts` ledger field and the `context_encrypt`
+//     witness (all Opaque<"Uint8Array">) are removed, with the two statements of `spend` that use them;
 //   - names with `$` are written with `_`;
 //   - `commitments` is `export`ed (no effect on the circuits) so the behavioural test can read its root.
+
 export {zerocash_mint, spend}
 
 import CompactStandardLibrary;
@@ -44,7 +42,7 @@ witness private_zk_secret_key(): zk_secret_key;
 witness private_remove_coin(coin: coin_info): [];
 witness private_zk_public_key(): zk_public_key;
 witness private_add_coin(coin: coin_info): [];
-witness context_path_root(cm: commitment): MerkleTreeDigest;
+witness context_path_of(cm: commitment): MerkleTreePath<32, commitment>;
 witness context_new_coin_info(): coin_info;
 
 ledger nullifiers: Set<nullifier>;
@@ -57,7 +55,9 @@ circuit spend(dest_public_key: public_key, input_coin: coin_info): [] {
   nullifiers.insert(old_nullifier);
   const source_public_key = derive_zk_public_key(source_secret_key);
   const old_commitment = commitment_from_coin_info(input_coin, source_public_key);
-  assert(commitments.checkRoot(disclose(context_path_root(old_commitment))),
+  const commitment_path = context_path_of(old_commitment);
+  assert(commitments.checkRoot(disclose(merkleTreePathRoot<32, commitment>(commitment_path))) &&
+         old_commitment == commitment_path.leaf,
          "spend: Illegal state: merkle path not recognized by public state");
   const fresh_coin_info = context_new_coin_info();
   const fresh_commitment = commitment_from_coin_info(fresh_coin_info, dest_public_key.zk);
@@ -72,6 +72,7 @@ circuit zerocash_mint(): [] {
   const cm = commitment_from_coin_info(coin, pk);
   commitments.insert(cm);
 }
+
 
 circuit derive_nullifier(coin: coin_info, sk: zk_secret_key): nullifier {
   return nullifier{ bytes: disclose(persistentHash<Vector<4, Bytes<32>>>([

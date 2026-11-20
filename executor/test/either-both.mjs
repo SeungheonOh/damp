@@ -1,10 +1,13 @@
 // An `Either` with both sides non-zero reaching `claimUnshieldedCoinSpend`
-// (docs/ledger-model.md, "Not done"). `tokens.mintUTo(amount, to)` passes its
+// (docs/ledger-model.md). `tokens.mintUTo(amount, to)` passes its
 // `Either<ContractAddress, UserAddress>` argument to the kernel unchanged; the
 // argument is range-checked limb by limb only, so both sides may be set. The
 // runtime's typed decoding of the effects (slot 8, unshielded spends) rejects
 // the key; the executor, which runs the runtime, must therefore fail the call,
-// as compactc's generated code does.
+// as compactc's generated code does. The VM model (Damp/Ledger/Query.lean,
+// `effectKey`) rejects it too: test/vm.sh runs the same calls and synthetic
+// effect writes against the model, and `decodeEffects_spend_both_sides`
+// (Damp/Proofs/Ledger/Kernel.lean) proves the rejection.
 //
 // Usage: node test/either-both.mjs <oracle build dir>   (default ../build/oracle)
 

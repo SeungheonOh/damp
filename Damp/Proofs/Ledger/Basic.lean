@@ -57,6 +57,16 @@ theorem ofAligned_byteKey {i : Nat} (h : i < 256) :
   simp [AV.ofAligned, AV.ofFields, atomWidth, atomOfFields, atomFits, Fr.ofInt_natCast_val hm]
   omega
 
+theorem ofFields_key0 : AV.ofFields [.bytes 1] [Fr.ofInt 0] = some ⟨[.bytes 1], [0]⟩ :=
+  ofAligned_byteKey (i := 0) (by decide)
+theorem ofFields_key1 : AV.ofFields [.bytes 1] [Fr.ofInt 1] = some ⟨[.bytes 1], [1]⟩ :=
+  ofAligned_byteKey (i := 1) (by decide)
+theorem ofFields_key2 : AV.ofFields [.bytes 1] [Fr.ofInt 2] = some ⟨[.bytes 1], [2]⟩ :=
+  ofAligned_byteKey (i := 2) (by decide)
+theorem ofFields_key3 : AV.ofFields [.bytes 1] [Fr.ofInt 3] = some ⟨[.bytes 1], [3]⟩ :=
+  ofAligned_byteKey (i := 3) (by decide)
+theorem frOfInt_val_one : (Fr.ofInt 1).val = 1 := rfl
+
 theorem readBack_nil : readBack [] [] = some [] := rfl
 
 theorem readBack_cons (a : List Zkir.AlignAtom) (as : List (List Zkir.AlignAtom)) (v : AV) (vs : List AV) :
@@ -117,5 +127,23 @@ theorem mapM_eval_vars (p : Zkir.Prims) (env : Env) : ∀ vs : List Var,
 theorem mapM_eval_readVars (α : Type) [Value α] (p : Zkir.Prims) (env : Env) :
     (readVars α).mapM (Expr.eval p env) = some ((List.range (Value.width α)).map env) :=
   mapM_eval_vars p env _
+
+/-! ## Running the VM model in proofs
+
+`vm_simp [h₁, ...]` unfolds the ledger oracle, the query, the program's
+decoding and every instruction the operations emit, with the given facts. -/
+
+syntax (name := vmSimp) "vm_simp" (" [" Lean.Parser.Tactic.simpLemma,* "]")? : tactic
+
+macro_rules
+  | `(tactic| vm_simp $[ [$hs,*] ]?) => do
+    let hs : Array (Lean.TSyntax `Lean.Parser.Tactic.simpLemma) := match hs with
+      | some hs => hs.getElems
+      | none => #[]
+    `(tactic| simp [ledgerOracle, Op.toR, AV.ofAligned, query, LedgerState.vm, VmState.init, runR, ROp.exec,
+      ROp.stackReq, VmState.push, VmState.pop, VmState.popCell, VmState.popU64, VmState.popBool, VmState.pushNew,
+      idxWalk, idxOne, insLoop, Cache.visit, CTree.visit, Cache.get, CTree.get, Cache.contains, CTree.contains,
+      Cache.keyFor, insCache, assocGet, assocSet, AV.toU8, AV.toU64, SV.asCell, maxStackHeight, popeqAligns,
+      CKey.push, readBack_nil, $hs,*])
 
 end Damp.Ledger

@@ -16,10 +16,12 @@ the ledger afterwards. It mirrors `oracles(...).ledger` in
 the instruction states.
 
 The effects are decoded into typed Rust values (`TryFrom<VmValue> for
-Effects`) and re-encoded. The model does this for the hash sets and the mint
-maps (slots 0 to 2, 4 and 5, `decodeEffects`); for the other four slots it
-checks only that values are cells or null and keeps the entries as they are
-(abstracted). See `docs/ledger-model.md`.
+Effects`) and re-encoded, for all nine slots (`decodeEffects`): the hash sets
+(0 to 2), the claimed contract calls (3), the mint maps (4, 5), and the
+unshielded inputs, outputs and spends (6 to 8), keyed by `TokenType` and
+`(TokenType, PublicAddress)`. A key or value that is not a well-formed value
+of its type makes the query fail, as in the runtime. See
+`docs/ledger-model.md`.
 -/
 import Damp.Ledger.Vm
 import Damp.Executor.Spec
@@ -39,31 +41,96 @@ structure LedgerState where
 def LedgerState.vm (q : LedgerState) : VmState :=
   VmState.init [(q.context, false), (q.effects, false), (q.state, true)]
 
-/-- One entry of an effects map, through `TryFrom<VmValue> for Effects` and
-    back (`From<&Effects> for VmValue`, `onchain-runtime/src/context.rs`).
-    Slots 0 to 2 are sets of hashes (`HashOutput` keys, `()` values, stored as
-    null); slots 4 and 5 map hashes to `u64` (a null value decodes as 0). The
-    other slots (claimed contract calls, unshielded inputs, outputs and
-    spends, keyed by composite types) are kept as they are: their typed
-    decoding is abstracted. -/
-def effectEntry (slot : Nat) (k : AV) (v : SV) : Option (AV × SV) :=
-  if slot ≤ 2 then do
+/-! ### Typed decoding of the effects' keys
+
+Each decoder is a `TryFrom<&ValueSlice>` of the runtime on the key's atoms
+(its alignment is not consulted); on success the key is re-encoded with the
+type's own alignment (`From<T> for AlignedValue`). Every decoder below
+accepts atoms only when re-encoding gives them back unchanged (the atoms are
+normalised), so only the alignment changes. -/
+
+/-- `TryFrom<&ValueAtom> for HashOutput` (and for `ContractAddress`,
+    `UserAddress`, ...): at most 32 bytes. -/
+def hashOk (x : Nat) : Bool := x < 2 ^ 256
+
+/-- `TokenType` (`coin-structure/src/coin.rs`): three atoms, a `u8` tag then
+    two hashes. Tag 0 (shielded): the first hash empty; tag 1 (unshielded): the
+    second empty; tag 2 (dust): both empty. Compact's `TokenType`, an
+    `Either<Bytes<32>, Bytes<32>>` with `is_left` set for an unshielded token,
+    is exactly this. -/
+def tokenTypeOk : List Nat → Bool
+  | [t, a, b] => (t == 0 && a == 0 && hashOk b) || (t == 1 && b == 0 && hashOk a) || (t == 2 && a == 0 && b == 0)
+  | _ => false
+
+/-- `PublicAddress`: three atoms, a `bool` then two hashes; `true` (a contract)
+    needs the second hash empty, `false` (a user) the first. Compact's
+    `Either<ContractAddress, UserAddress>`. -/
+def publicAddressOk : List Nat → Bool
+  | [b, a, u] => (b == 1 && u == 0 && hashOk a) || (b == 0 && a == 0 && hashOk u)
+  | _ => false
+
+/-- `ClaimedContractCallsValue`: four atoms, a `u64`, a `ContractAddress`, a
+    `HashOutput` and an `Fr` (below the field's modulus). -/
+def contractCallOk : List Nat → Bool
+  | [p, a, h, f] => p < 2 ^ 64 && hashOk a && hashOk h && decide (f < Fr.modulus)
+  | _ => false
+
+/-- `ClaimedUnshieldedSpendsKey`: six atoms, a `TokenType` then a `PublicAddress`. -/
+def spendKeyOk (xs : List Nat) : Bool := xs.length == 6 && tokenTypeOk (xs.take 3) && publicAddressOk (xs.drop 3)
+
+def alignTokenType : List Zkir.AlignAtom := [.bytes 1, .bytes 32, .bytes 32]
+def alignPublicAddress : List Zkir.AlignAtom := [.bytes 1, .bytes 32, .bytes 32]
+def alignContractCall : List Zkir.AlignAtom := [.bytes 8, .bytes 32, .bytes 32, .field]
+
+/-- The key of an effects map in slot `slot`, decoded and re-encoded. -/
+def effectKey (slot : Nat) (k : AV) : Option AV :=
+  if slot ≤ 2 ∨ slot = 4 ∨ slot = 5 then do
     let h ← k.toHash
+    pure (AV.ofHash h)
+  else if slot = 3 then
+    if contractCallOk k.atoms then some ⟨alignContractCall, k.atoms⟩ else none
+  else if slot = 6 ∨ slot = 7 then
+    if tokenTypeOk k.atoms then some ⟨alignTokenType, k.atoms⟩ else none
+  else if slot = 8 then
+    if spendKeyOk k.atoms then some ⟨alignTokenType ++ alignPublicAddress, k.atoms⟩ else none
+  else none
+
+/-- `TryFrom<&ValueSlice> for u128`: one atom of at most 16 bytes. -/
+def AV.toU128 (v : AV) : Option Nat :=
+  match v.atoms with
+  | [x] => if x < 2 ^ 128 then some x else none
+  | _ => none
+
+/-- The value of an effects map entry in slot `slot`, decoded and re-encoded:
+    `()` for the sets (slots 0 to 3), stored as null; `u64` for the mints
+    (slots 4, 5) and `u128` for the unshielded amounts (slots 6 to 8), stored
+    as cells. A null value decodes as the default (`()`, 0). -/
+def effectValue (slot : Nat) (v : SV) : Option SV :=
+  if slot ≤ 3 then
     match v with
-    | .null => pure (AV.ofHash h, .null)
-    | .cell c => if c.atoms = [] then pure (AV.ofHash h, .null) else none
+    | .null => some .null
+    | .cell c => if c.atoms = [] then some .null else none
     | _ => none
   else if slot = 4 ∨ slot = 5 then do
-    let h ← k.toHash
     let x ← match v with
       | .null => some 0
       | .cell c => c.toU64
       | _ => none
-    pure (AV.ofHash h, .cell (AV.ofU64 x))
-  else
-    match v with
-    | .null | .cell _ => some (k, v)
-    | _ => none
+    pure (.cell (AV.ofU64 x))
+  else do
+    let x ← match v with
+      | .null => some 0
+      | .cell c => c.toU128
+      | _ => none
+    pure (.cell ⟨[.bytes 16], [x]⟩)
+
+/-- One entry of an effects map, through `TryFrom<VmValue> for Effects` and
+    back (`From<&Effects> for VmValue`, `onchain-runtime/src/context.rs`):
+    `map_from` decodes the key and the value with the slot's types. -/
+def effectEntry (slot : Nat) (k : AV) (v : SV) : Option (AV × SV) := do
+  let v' ← effectValue slot v
+  let k' ← effectKey slot k
+  pure (k', v')
 
 /-- Normalise a map's entries: later entries win when two keys decode alike. -/
 def effectMap (slot : Nat) : List (AV × SV) → Option (List (AV × SV))

@@ -17,6 +17,7 @@ import Damp.Proofs.Optimize.FoldHashes
 import Damp.Proofs.Optimize.InlineAll
 import Damp.Proofs.Optimize.AssertEq
 import Damp.Proofs.Optimize.Commute
+import Damp.Proofs.Optimize.HashRanges
 
 namespace Damp.IR
 open Damp.Zkir Damp.Exec
@@ -66,10 +67,18 @@ theorem maxPassesWith_soundFor (p : Prims) : ∀ f ∈ maxPassesWith p, Pass.Sou
 theorem Circuit.optimizeMaxWith_soundFor (p : Prims) : Pass.SoundFor p (Circuit.optimizeMaxWith p) :=
   runPasses_soundFor p _ (maxPassesWith_soundFor p)
 
+/-- Every `--O3` pass is sound for `Damp.Crypto.prims`. -/
+theorem maxPasses_soundFor : ∀ f ∈ maxPasses, Pass.SoundFor Crypto.prims f := by
+  intro f hf
+  simp only [maxPasses, List.mem_append, List.mem_singleton] at hf
+  rcases hf with h | h
+  · exact maxPassesWith_soundFor Crypto.prims f h
+  · subst h; exact Circuit.hashRanges_soundFor
+
 /-- `--O3` is sound when the hash functions are Damp's implementations of
     Midnight's (`Damp.Crypto.prims`). -/
 theorem Circuit.optimizeMax_soundFor : Pass.SoundFor Crypto.prims Circuit.optimizeMax :=
-  Circuit.optimizeMaxWith_soundFor Crypto.prims
+  runPasses_soundFor Crypto.prims _ maxPasses_soundFor
 
 /-- `--O3` does not change what a run with `Damp.Crypto.prims` produces that
     anyone can observe. -/

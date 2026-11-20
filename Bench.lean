@@ -18,3 +18,5 @@ import Bench.AdtMerkle
 import Bench.ComposableBasic
 import Bench.Vectors
 import Bench.Test01
+import Bench.ProofData
+import Bench.ZkirGeneration

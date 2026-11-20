@@ -1,7 +1,7 @@
 import Damp
 
-/-! `bench/compact/election_core.compact` (Compact's examples/election.compact without its
-`Opaque` topic and `MerkleTreePath` witnesses; see the header of the Compact file). -/
+/-! `bench/compact/election_core.compact` (Compact's examples/election.compact with a `Field`
+topic in place of its `Opaque<"string">` one; see the header of the Compact file). -/
 namespace Bench.ElectionCore
 open Damp
 
@@ -36,8 +36,8 @@ witness private_state : PrivateState
 witness private_state_advance : Unit
 witness private_vote_record (ballot : PermissibleVotes) : Unit
 witness private_vote : PermissibleVotes
-witness context_eligible_voters_root (pk : Bytes 32) : MerkleTreeDigest
-witness context_committed_votes_root (cm : Bytes 32) : MerkleTreeDigest
+witness context_eligible_voters_path_of (pk : Bytes 32) : Maybe (MerkleTreePath 10 (Bytes 32))
+witness context_committed_votes_path_of (cm : Bytes 32) : Maybe (MerkleTreePath 10 (Bytes 32))
 
 def ballotRepr (ballot : PermissibleVotes) : Bytes 32 :=
   select (ballot ==. PermissibleVotes.yes) (Bytes.pad 32 "yes") (Bytes.pad 32 "no")
@@ -66,8 +66,10 @@ circuit vote_commit (ballot : PermissibleVotes) : Unit := do
   const comNul := commitmentNullifier sk
   require (!.(← committed.member comNul)) "Unexpected attempt to double use of nullifier"
   const pk := publicKey sk
-  require (← eligible_voters.checkRoot (disclose (← context_eligible_voters_root pk)))
-    "Attempted to vote without authorization - need to add-voter"
+  const path := disclose (← context_eligible_voters_path_of pk)
+  require (path.isSome &&.
+           (← eligible_voters.checkRoot (disclose (← merkleTreePathRoot path.value))) &&.
+           pk ==. path.value.leaf) "Attempted to vote without authorization - need to add-voter"
   const cm := commitWithSk (ballotRepr ballot) sk
   committed_votes.insert cm
   committed.insert comNul
@@ -81,8 +83,10 @@ circuit vote_reveal : Unit := do
   require (!.(← revealed.member revNul)) "Attempted to double vote"
   const vote ← private_vote
   const cm := commitWithSk (ballotRepr vote) sk
-  require (← committed_votes.checkRoot (disclose (← context_committed_votes_root cm)))
-    "Attempted to reveal incorrectly"
+  const path := disclose (← context_committed_votes_path_of cm)
+  require (path.isSome &&.
+           (← committed_votes.checkRoot (disclose (← merkleTreePathRoot path.value))) &&.
+           cm ==. path.value.leaf) "Attempted to reveal incorrectly"
   if% disclose vote ==. PermissibleVotes.yes then tally_yes.increment 1 else tally_no.increment 1
   revealed.insert revNul
   private_state_advance
@@ -102,6 +106,7 @@ circuit set_topic (t : Field) : Unit := do
   topic.write (Maybe.some (disclose t))
 
 circuit add_voter (pk : Bytes 32) : Unit := do
+  require (!.(← context_eligible_voters_path_of pk).isSome) "Attempted to add a voter twice"
   const sk ← private_secret_key
   const apk := publicKey sk
   require (apk ==. (← authority.read)) "Attempted to add a voter without authorization"

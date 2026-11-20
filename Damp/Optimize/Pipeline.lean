@@ -20,9 +20,11 @@ Three levels:
   and then has a different verifier key.
 * `Circuit.optimizeMax` (`--O3`), `--O2` after computing hashes of constants
   at compile time (`foldHashes`) with `Damp.Crypto.prims`, the Lean
-  implementations of Midnight's Poseidon and SHA-256. Every other level is
-  sound whatever the hash functions are (`Pass.Sound`); this one only when
-  they are those implementations (`Pass.SoundFor Crypto.prims`), which
+  implementations of Midnight's Poseidon and SHA-256, and then without the
+  range checks that a later persistent hash implies (`hashRanges`: the hash
+  refuses an input that does not fit the bytes it reads it as). Every other
+  level is sound whatever the hash functions are (`Pass.Sound`); this one only
+  when they are those implementations (`Pass.SoundFor Crypto.prims`), which
   `test/semantics.sh` checks against Midnight's runtime on samples but which
   are not proved equal to it.
 
@@ -42,6 +44,7 @@ import Damp.Optimize.FoldHashes
 import Damp.Optimize.InlineAll
 import Damp.Optimize.AssertEq
 import Damp.Optimize.Commute
+import Damp.Optimize.HashRanges
 import Damp.Crypto.Prims
 
 namespace Damp.IR
@@ -68,8 +71,13 @@ def Circuit.optimizeFull (c : Circuit) : Circuit := runPasses fullPasses c
 /-- Optimize a circuit with every pass, hashes of constants computed with `p`. -/
 def Circuit.optimizeMaxWith (p : Zkir.Prims) (c : Circuit) : Circuit := runPasses (maxPassesWith p) c
 
+/-- `--O3`: `maxPassesWith Crypto.prims`, then drop the range checks a later
+    persistent hash implies (sound for hash functions that check their
+    inputs' alignment, as `Crypto.prims` does). -/
+def maxPasses : List Pass := maxPassesWith Crypto.prims ++ [Circuit.hashRanges]
+
 /-- Optimize a circuit with every pass, hashes of constants computed with
     Damp's implementations of Midnight's hash functions (`--O3`). -/
-def Circuit.optimizeMax (c : Circuit) : Circuit := c.optimizeMaxWith Crypto.prims
+def Circuit.optimizeMax (c : Circuit) : Circuit := runPasses maxPasses c
 
 end Damp.IR

@@ -15,13 +15,10 @@ and must agree on all of it. Maps and Merkle tree leaves are compared as sets.
 The `root` instruction is a parameter of the model (`Hooks.root`); here it is
 `merkleHooks` (`Damp/Ledger/Merkle.lean`), the real Merkle root.
 
-One part of a query is abstracted on purpose: the runtime decodes the effects
-into typed Rust values at the end of a query and rejects keys and values of
-the wrong type ("failed to decode for built-in type ..."); the model checks only
-their outer shape. A vector where the runtime rejects for that reason and the
-model accepts is counted separately, not as a disagreement. Likewise the
-effects after a successful query are compared but reported separately, since
-the runtime re-encodes them (normalising alignments).
+At the end of a query the runtime decodes the effects into typed Rust values
+(rejecting keys and values of the wrong type, "failed to decode for built-in
+type ...") and re-encodes them; the model does the same for all nine slots
+(`decodeEffects`). The effects after a successful query must agree too.
 -/
 import Damp.Ledger.Query
 import Damp.Ledger.Merkle
@@ -213,8 +210,7 @@ def compareQuery (values : Array SV) (v : Vec) : Except String (Verdict × Bool)
   | false, none => pure (.pass, true)
   | false, some _ =>
       let err := (v.query.getObjValAs? String "err").toOption.getD ""
-      if (err.splitOn "failed to decode for built-in type").length > 1 then pure (.skip, true)
-      else pure (.fail s!"query: real fails ({err}), model succeeds", true)
+      pure (.fail s!"query: real fails ({err}), model succeeds", true)
   | true, none => pure (.fail "query: real succeeds, model fails", true)
   | true, some (reads, q') =>
       let state ← (do let i ← v.query.getObjValAs? Nat "state"; pure values[i]!)
@@ -225,6 +221,8 @@ def compareQuery (values : Array SV) (v : Vec) : Except String (Verdict × Bool)
         return (.fail s!"query: state {canon q'.state}, real {canon state}", effOk)
       if expReads != reads then
         return (.fail s!"query: reads {reads.map avStr}, real {expReads.map avStr}", effOk)
+      if !effOk then
+        return (.fail s!"query: effects {canon q'.effects}, real {canon effects}", effOk)
       pure (.pass, effOk)
 
 def vecOf (values : Array SV) (j : Json) : Except String Vec := do
@@ -254,6 +252,7 @@ def run (file : String) (verbose : Bool) : IO UInt32 := do
   let mut effCompared := 0
   let mut fails := 0
   let mut realOk := 0
+  let mut decodeRejects := 0
   for vj in vecs do
     match vecOf values vj with
     | .error e =>
@@ -279,6 +278,8 @@ def run (file : String) (verbose : Bool) : IO UInt32 := do
         | .ok (.skip, _) => qSkip := qSkip + 1
         | .ok (.fail w, _) => why := why ++ [w]
         | .error e => why := why ++ [s!"query: unreadable: {e}"]
+        let qerr := (v.query.getObjValAs? String "err").toOption.getD ""
+        if (qerr.splitOn "failed to decode for built-in type").length > 1 then decodeRejects := decodeRejects + 1
         unless why.isEmpty do
           fails := fails + 1
           if fails ≤ 60 then
@@ -286,8 +287,8 @@ def run (file : String) (verbose : Bool) : IO UInt32 := do
   let n := vecs.length
   IO.println s!"{n} vectors ({realOk} succeed in the real VM)"
   IO.println s!"VM (runProgram):         {vmPass} agree, {n - vmPass - vmSkip} disagree"
-  IO.println s!"query (QueryContext):    {qPass} agree, {qSkip} rejected by the runtime's typed effects decoding (abstracted), {n - qPass - qSkip} disagree"
-  IO.println s!"effects after a query:   {effAgree} of {effCompared} successful queries agree (typed re-encoding abstracted)"
+  IO.println s!"query (QueryContext):    {qPass} agree, {n - qPass - qSkip} disagree ({decodeRejects} rejected by the runtime's typed decoding of the effects)"
+  IO.println s!"effects after a query:   {effAgree} of {effCompared} successful queries agree"
   IO.println (if fails = 0 then "ALL AGREE" else s!"{fails} vector(s) disagree")
   return if fails = 0 then 0 else 1
 

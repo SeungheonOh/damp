@@ -577,8 +577,24 @@ theorem Circuit.optimizeMaxWith_checkLedger (p : Zkir.Prims) (c : Circuit) (h : 
   · subst h; exact Circuit.foldHashes_checkLedger p
   · exact fullPasses_keepsLedger f h
 
+/-- `Circuit.hashRanges` keeps a circuit's ledger statements well formed: it
+    changes no ledger statement. -/
+theorem Circuit.hashRanges_checkLedger : Pass.KeepsLedger Circuit.hashRanges := fun c h => by
+  rw [Circuit.checkLedger_ok_iff] at h ⊢
+  simpa [Circuit.hashRanges] using hashRangesGo_ledgerProblem _ h
+
 theorem Circuit.optimizeMax_checkLedger (c : Circuit) (h : c.checkLedger = .ok ()) :
-    c.optimizeMax.checkLedger = .ok () :=
-  Circuit.optimizeMaxWith_checkLedger _ c h
+    c.optimizeMax.checkLedger = .ok () := by
+  refine runPasses_keepsLedger _ ?_ c h
+  intro f hf
+  simp only [maxPasses, List.mem_append, List.mem_singleton] at hf
+  rcases hf with h | h
+  · intro c hc
+    simp only [maxPassesWith, List.mem_cons] at h
+    rcases h with h | h | h
+    · subst h; exact Circuit.simplify_checkLedger c hc
+    · subst h; exact Circuit.foldHashes_checkLedger Crypto.prims c hc
+    · exact fullPasses_keepsLedger f h c hc
+  · subst h; exact Circuit.hashRanges_checkLedger
 
 end Damp.IR

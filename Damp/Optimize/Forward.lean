@@ -114,8 +114,12 @@ def Circuit.forwardWith (elig : Var → Expr → Bool) (c : Circuit) : Circuit :
 /-- The pass: forward substitution of bindings used at most once (see the header). -/
 def Circuit.forward (c : Circuit) : Circuit := c.forwardWith (Forward.elig c)
 
-/-- Forward substitution of every binding it may (no cost test). -/
-def Circuit.forwardAll (c : Circuit) : Circuit := c.forwardWith fun _ _ => true
+/-- Forward substitution of every binding it may whose expression, once
+    substituted, costs at most 64 instructions. The bound keeps the rewritten
+    expressions small: a binding used twice by the next one (a Merkle path's
+    digest, selected on at each level) would otherwise double the expression
+    at every level. Soundness does not depend on it. -/
+def Circuit.forwardAll (c : Circuit) : Circuit := c.forwardWith fun _ e => Algebra.cost e ≤ 64
 
 /-- Number of instructions emitted for a circuit, if it can be emitted. -/
 def Circuit.emittedSize (c : Circuit) : Option Nat :=

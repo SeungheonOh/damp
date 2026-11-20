@@ -108,6 +108,14 @@ const listed = [
   ['structures_nested', 'hgrow', (c) => [1n, 20n, 6n, rootIn('hists', 1n)(c), 0n]],
   ['structures_nested', 'hgrow', [1n, 40n, 8n, { field: 0n }, 2n]],
   ['tuned', 'settle', [[1n, 2n, 3n, 4n], true]], ['tuned', 'settle', [[65535n, 65535n, 65535n, 65535n], true]],
+  // Unshielded spends (effects slot 8) and inputs/outputs (6, 7): an `Either` with one side set, and with
+  // both (rejected by the runtime's typed decoding of the effects, executor/test/either-both.mjs).
+  ['tokens', 'mintUTo', [5n, { is_left: false, left: { bytes: bytes(32, 0, 0) }, right: { bytes: bytes(32, 7, 7) } }]],
+  ['tokens', 'mintUTo', [5n, { is_left: true, left: { bytes: bytes(32, 9, 9) }, right: { bytes: bytes(32, 0, 0) } }]],
+  ['tokens', 'mintUTo', [5n, { is_left: false, left: { bytes: bytes(32, 9, 9) }, right: { bytes: bytes(32, 7, 7) } }]],
+  ['tokens', 'mintUTo', [5n, { is_left: true, left: { bytes: bytes(32, 9, 9) }, right: { bytes: bytes(32, 7, 7) } }]],
+  ['tokens', 'sendU', [5n, { is_left: false, left: { bytes: bytes(32, 0, 0) }, right: { bytes: bytes(32, 7, 7) } }]],
+  ['tokens', 'sendU', [5n, { is_left: false, left: { bytes: bytes(32, 1, 0) }, right: { bytes: bytes(32, 7, 7) } }]],
 ];
 
 /** A JS value of a shape: every leaf from `leaf(ty)`. */
@@ -301,7 +309,8 @@ function programVariants(ops) {
       }
     }
     if (k === 'addi' || k === 'subi') {
-      for (const n of [0, 1, 65535, 2 ** 32 - 1]) tweak(`imm=${n}`, (o) => { o.immediate = n; });
+      // The VM's immediates are `u32`: 2^32 and above are rejected when the program is decoded.
+      for (const n of [0, 1, 65535, 2 ** 32 - 1, 2 ** 32, 2 ** 32 + 1, 2 ** 53]) tweak(`imm=${n}`, (o) => { o.immediate = n; });
       const q = clone(ops); q[i] = { [k === 'addi' ? 'subi' : 'addi']: { immediate: v.immediate } }; add(`addi<->subi at ${i}`, q);
     }
     if (k === 'dup' || k === 'swap') { tweak('n+1', (o) => { o.n += 1; }); tweak('n+3', (o) => { o.n += 3; }); }
@@ -478,6 +487,65 @@ for (const [n, c] of distinct.entries()) {
     'type of long array': [st({ tag: 'array', content: Array.from({ length: 16 }, () => ({ tag: 'null' })) }), 'type', 'pop'],
   };
   for (const [name, ops] of Object.entries(progs)) addVector(`synthetic: ${name}`, 'synthetic', qc0, ops);
+
+  // The typed decoding of the effects at the end of a query (`TryFrom<VmValue> for Effects`): an entry
+  // written into effects slot `slot` with the key and the value given, well formed or not.
+  const P = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001n;
+  const h = 0x1234n, a = 0x5678n, u = 0x9abcn, H = (1n << 256n) - 1n;
+  const T = [b(1), b(32), b(32)];
+  const C = [b(8), b(32), b(32), f];
+  const nul = { push: { storage: false, value: { tag: 'null' } } };
+  const u128 = (x) => cell([b(16)], [x]);
+  const put = (slot, key, val) => [{ swap: { n: 0 } },
+    { idx: { cached: true, pushPath: true, path: [{ tag: 'value', value: av([b(1)], [BigInt(slot)]) }] } },
+    cell(key[0], key[1]), val, { ins: { cached: true, n: 2 } }, { swap: { n: 0 } }];
+  const effs = {
+    // slot 3: claimed contract calls, (u64, ContractAddress, HashOutput, Fr) -> ()
+    'call ok': [3, [C, [3n, h, h, 5n]], nul],
+    'call ok, other alignment': [3, [[b(16), b(32), b(32), b(32)], [3n, h, h, 5n]], nul],
+    'call ok, empty cell value': [3, [C, [0n, 0n, 0n, 0n]], cell([], [])],
+    'call ok, Fr max': [3, [[b(8), b(32), b(32), b(32)], [3n, H, H, P - 1n]], nul],
+    'call, Fr = modulus': [3, [[b(8), b(32), b(32), b(32)], [3n, h, h, P]], nul],
+    'call, u64 overflow': [3, [[b(16), b(32), b(32), f], [1n << 64n, h, h, 5n]], nul],
+    'call, three atoms': [3, [[b(8), b(32), b(32)], [3n, h, h]], nul],
+    'call, five atoms': [3, [[...C, f], [3n, h, h, 5n, 1n]], nul],
+    'call, cell value': [3, [C, [3n, h, h, 5n]], cell([b(1)], [1n])],
+    // slots 6, 7: unshielded inputs and outputs, TokenType -> u128
+    'token unshielded': [6, [T, [1n, h, 0n]], u128(5n)],
+    'token shielded': [7, [T, [0n, 0n, h]], u128(5n)],
+    'token dust': [6, [T, [2n, 0n, 0n]], nul],
+    'token max hash, max u128': [7, [T, [1n, H, 0n]], u128((1n << 128n) - 1n)],
+    'token, other alignment': [6, [[b(8), b(32), b(32)], [1n, h, 0n]], u128(5n)],
+    'token unshielded both sides': [6, [T, [1n, h, h]], u128(5n)],
+    'token shielded both sides': [7, [T, [0n, h, h]], u128(5n)],
+    'token dust non-empty': [6, [T, [2n, 1n, 0n]], u128(5n)],
+    'token tag 3': [7, [T, [3n, 0n, 0n]], u128(5n)],
+    'token long hash': [6, [[b(1), b(33), b(32)], [1n, 1n << 256n, 0n]], u128(5n)],
+    'token two atoms': [6, [[b(1), b(32)], [1n, h]], u128(5n)],
+    'token, u128 overflow': [6, [T, [1n, h, 0n]], cell([b(17)], [1n << 128n])],
+    'token, two-atom value': [7, [T, [1n, h, 0n]], cell([b(8), b(8)], [1n, 1n])],
+    'token, empty cell value': [7, [T, [1n, h, 0n]], cell([], [])],
+    'token, map value': [6, [T, [1n, h, 0n]], st({ tag: 'map', content: new Map() })],
+    // slot 8: claimed unshielded spends, (TokenType, PublicAddress) -> u128
+    'spend to contract': [8, [[...T, ...T], [1n, h, 0n, 1n, a, 0n]], u128(5n)],
+    'spend to user': [8, [[...T, ...T], [1n, h, 0n, 0n, 0n, u]], u128(5n)],
+    'spend, other alignment': [8, [[...T, b(8), b(32), b(32)], [0n, 0n, h, 0n, 0n, u]], nul],
+    'spend to user, both sides set': [8, [[...T, ...T], [1n, h, 0n, 0n, a, u]], u128(5n)],
+    'spend to contract, both sides set': [8, [[...T, ...T], [1n, h, 0n, 1n, a, u]], u128(5n)],
+    'spend, address tag 2': [8, [[...T, ...T], [1n, h, 0n, 2n, 0n, u]], u128(5n)],
+    'spend, token both sides set': [8, [[...T, ...T], [1n, h, h, 1n, a, 0n]], u128(5n)],
+    'spend, five atoms': [8, [[...T, b(1), b(32)], [1n, h, 0n, 1n, a]], u128(5n)],
+    'spend, seven atoms': [8, [[...T, ...T, b(1)], [1n, h, 0n, 1n, a, 0n, 0n]], u128(5n)],
+  };
+  for (const [name, [slot, key, val]] of Object.entries(effs)) addVector(`synthetic effects: ${name}`, 'synthetic', qc0, put(slot, key, val));
+  // Several entries in one query, and one key written under two alignments (one entry after decoding).
+  addVector('synthetic effects: all well formed', 'synthetic', qc0,
+    Object.values(effs).slice(0, 4).concat(Object.values(effs).slice(9, 14), Object.values(effs).slice(24, 27))
+      .flatMap(([slot, key, val]) => put(slot, key, val)));
+  addVector('synthetic effects: one key, two alignments, same value', 'synthetic', qc0,
+    [...put(6, [T, [1n, h, 0n]], u128(5n)), ...put(6, [[b(8), b(32), b(32)], [1n, h, 0n]], u128(5n))]);
+  addVector('synthetic effects: one key, two alignments, other values', 'synthetic', qc0,
+    [...put(6, [T, [1n, h, 0n]], u128(5n)), ...put(6, [[b(8), b(32), b(32)], [1n, h, 0n]], u128(6n))]);
 }
 
 fs.writeFileSync(path.join(outDir, 'vectors.json'), JSON.stringify({ values, vectors }));

@@ -24,6 +24,8 @@ import Damp.Proofs.Executor
 import Damp.Proofs.LedgerAgreement
 import Damp.Proofs.Optimize.LedgerCheck
 import Damp.Proofs.ZkirJson
+import Damp.Proofs.ZkirText
+import Damp.Proofs.ExportJson
 
 namespace Damp
 open IR
@@ -211,6 +213,15 @@ structure ShippedOK (sound : Prims → Prop) (circ s : Circuit) (src : Zkir.IrSo
       reader (which follows the loader's rules), as `src` itself
       (`IrSource.ofJson_toJson`). -/
   readsBack : Zkir.IrSource.ofJson src.toJson = .ok src
+  /-- (7) ... and so does the text: any text that lexes as the tokens of
+      `src.toJson` (the compact text, or any layout of the same tokens with
+      JSON whitespace between them) parses, with Damp's total reference parser
+      (`Zkir.Text.parse`), to a value Damp's reader reads as `src`
+      (`IrSource.ofText`). That the `Json.pretty` text written to the file is
+      such a layout, and that `Zkir.Text.parse` agrees with Lean's
+      `Json.parse`, is tested, not proved (`test/jsontext.sh`). -/
+  readsBackText : ∀ text, Zkir.Text.lex text = .ok (Zkir.Text.toks src.toJson) →
+    (Zkir.Text.parse text >>= Zkir.IrSource.ofJson) = .ok src
 
 theorem shippedOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, sound p → Pass.SoundFor p f)
     {circ : Circuit} {src : Zkir.IrSource}
@@ -226,6 +237,7 @@ theorem shippedOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, sound p �
   groups p _ _ _ _ _ h := Exec.run_groups_fromLedger p hl h
   producer := Emit.circuit_checkProducer _ src he
   readsBack := Zkir.IrSource.ofJson_toJson_of_emitted he
+  readsBackText := Zkir.IrSource.ofText_of_emitted he
 
 /-! ## The theorem -/
 
@@ -238,7 +250,8 @@ theorem shippedOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, sound p �
     the same observable outcome, accepts what the executor records on the
     shipped circuit, the shipped circuit passes the ledger check (with its
     consequence for the executor's public inputs), the ZKIR meets the
-    producer obligations, and its JSON reads back as itself. The two
+    producer obligations, and its JSON reads back as itself, as a JSON tree
+    and as text (for every text that lexes as its tokens). The two
     statements about runs of the original circuit hold for every choice of
     hash functions, except at `--O3`, where they hold for `Damp.Crypto.prims`
     (`OptLevel.SoundAt`). -/
@@ -261,6 +274,21 @@ theorem build_correct {c : Contract} {level : OptLevel} {shipped : Contract}
   refine ⟨src, hx, ?_⟩
   exact shippedOK_of (buildPass_soundFor level) (hd circ hcirc)
     (hl _ (List.mem_map_of_mem hcirc)) (he _ hx)
+
+/-- **What `contract.json` gives the executor.** If `buildCore` succeeds, the
+    contract written to `contract.json` is the shipped contract `c.optimize level`,
+    and any text that lexes as the tokens of what is written (`Export.contract`)
+    reads back, with Damp's reference parser and `Export.ofJson`, as that
+    contract with what the file does not carry erased (`Contract.exported`:
+    `disclose` wrappers, input names and ranges, circuit errors). That the
+    `Json.pretty` text written to the file lexes so is tested
+    (`test/jsontext.sh`). -/
+theorem build_contractJson {c : Contract} {level : OptLevel} {shipped : Contract}
+    {srcs : List (Circuit × Zkir.IrSource)} (h : c.buildCore level = .ok (shipped, srcs)) :
+    shipped = c.optimize level ∧
+    ∀ text, Zkir.Text.lex text = .ok (Zkir.Text.toks (Export.contract shipped)) →
+      Export.parse text = .ok shipped.exported :=
+  ⟨(BuildProof.buildCore_ok h).1, fun text hl => Export.ofText shipped text hl⟩
 
 /-- The ledger check `buildCore` makes on the shipped circuits never fails on
     a circuit that already passes it: the optimizer keeps ledger statements

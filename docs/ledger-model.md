@@ -7,7 +7,8 @@ were copied from compactc's output and checked by running them
 instructions *do*. `Damp/Ledger/` is a Lean model of Midnight's on-chain VM on
 the fragment Damp emits; `test/vm.sh` checks it against the real VM; and
 `Damp/Proofs/Ledger/` proves what Damp's `Cell`, `Counter`, `Map` and `Set`
-operations do against it.
+operations do against it, as well as `LedgerList`, the Merkle trees, kernel
+reads and maps inside maps.
 
 | File | Contents |
 |---|---|
@@ -15,7 +16,7 @@ operations do against it.
 | `Damp/Ledger/Query.lean` | `QueryContext::query` (`query`), the effects' decoding, and the ledger oracle Damp's executor is given (`ledgerOracle`, `oracles`) |
 | `Damp/Ledger/Merkle.lean` | The root of a bounded Merkle tree (`merkleHooks`), for the `root` instruction |
 | `Damp/Proofs/Ledger/Basic.lean` | `emitted` (the instructions an operation emits), shared lemmas |
-| `Damp/Proofs/Ledger/{Cell,Counter,Map,Nested}.lean` | The theorems below |
+| `Damp/Proofs/Ledger/{Cell,Counter,Map,Nested,List,MerkleSpec,Kernel}.lean` | The theorems below |
 | `Damp/Proofs/Ledger/Limbs.lean` | Byte strings over 31 bytes: the write-then-read round trip for every alignment |
 | `Damp/Proofs/Ledger/Executor.lean` | The executor's theorems instantiated with the modelled ledger |
 | `Damp/Proofs/Interface/LedgerLogic.lean` | A program logic for circuit bodies run by the executor, ledger and witnesses included (`XRuns`) |
@@ -63,7 +64,17 @@ conversions and serialized sizes), `onchain-runtime/src/context.rs`
   its alignment, or an `addi`/`subi` immediate of 2^32 or more, fails the request.
 * **Queries** (`query`): the stack `[context, effects, state]` (context and
   effects weak); the program must leave three values, the state strong; the
-  effects are decoded and re-encoded.
+  effects are decoded into their typed Rust values and re-encoded
+  (`TryFrom<VmValue> for Effects`), all nine slots: the hash sets (0 to 2,
+  `HashOutput -> ()`), the claimed contract calls (3, `(u64,
+  ContractAddress, HashOutput, Fr) -> ()`), the mints (4, 5, `HashOutput ->
+  u64`), the unshielded inputs and outputs (6, 7, `TokenType -> u128`) and
+  spends (8, `(TokenType, PublicAddress) -> u128`). A key or value that is not
+  a well-formed value of its type fails the query (a `TokenType` or
+  `PublicAddress` whose unused side is not empty, a tag out of range, an `Fr`
+  not below the modulus, a wrong number of atoms, an amount too wide); keys
+  are re-encoded with the type's alignment, a null value becomes the
+  default (`effectKey`, `effectValue` in `Query.lean`).
 * **The ledger oracle** (`ledgerOracle`): each `popeq`'s value read back as
   field elements under the alignment the instruction states (the executor's
   `fieldsOfAligned`), in program order.
@@ -77,18 +88,12 @@ conversions and serialized sizes), `onchain-runtime/src/context.rs`
 * **Merkle roots** are a parameter of the VM model (`Hooks.root`), so the
   theorems hold for any root function; `merkleHooks` is the real one, used by
   the test.
-* **Typed effects.** At the end of a query the runtime decodes the effects
-  into Rust types and re-encodes them. The model does this for the sets of
-  claimed nullifiers and coin commitments (slots 0 to 2) and the mint maps
-  (slots 4, 5); for claimed contract calls and the unshielded inputs, outputs
-  and spends (slots 3, 6, 7, 8), keyed by composite types (`TokenType`,
-  `PublicAddress`, ...), it only checks that values are cells or null and
-  keeps the entries as they are. The runtime is stricter there: it rejects
-  keys that are not well-formed values of those types (in the test, 62
-  vectors; one is a real `claimUnshieldedCoinSpend` call whose `Either`
-  argument had both sides non-zero) and normalises alignments (33 vectors
-  where the effects differ after a successful query). The contract state is
-  not affected.
+* **Duplicate effect keys.** When two entries of one effects map decode to
+  the same typed key (the same atoms under two alignments), the runtime's
+  `HashMap` keeps one of them in its own iteration order; the model keeps the
+  one later in its list. The test has such a vector (different values) and
+  they agree, but the order is not modelled in general. Damp never writes a
+  key under two alignments.
 * `log` pops its operand; its events and size bound are not modelled (Damp
   never emits `log`). `rem` on a Merkle tree is modelled but not validated
   (never emitted). The 2^15-byte bound on pushed cells is not checked.
@@ -110,7 +115,8 @@ conversions and serialized sizes), `onchain-runtime/src/context.rs`
    sequences Damp emits, operands evaluated, with the state they ran on. From
    each it derives variants: each instruction dropped; adjacent ones swapped;
    prefixes; `cached` and `pushPath` flipped; the first key changed;
-   immediates set to 0, 1, 65535, 2^32-1; `addi` and `subi` exchanged; `dup`
+   immediates set to 0, 1, 65535, 2^32-1, 2^32, 2^32+1 and 2^53 (the last three
+rejected by the runtime as not `u32`); `addi` and `subi` exchanged; `dup`
    and `swap` offsets, branch and jump skips and `ins` counts changed; `concat`
    bounds changed; pushed values given a one-byte alignment, `u64::MAX`, or
    null; a `popeq` or `pop` appended; the program doubled; and the field it
@@ -120,23 +126,34 @@ conversions and serialized sizes), `onchain-runtime/src/context.rs`
    do not reach (`eq` on long values, `concat` at its bound, `type` and `size`
    of every kind of value, tree insertion and indexing out of range, cached
    `idx` before and after a visit, stack keys, a weak state returned, the
-   effects replaced). Each runs through the real VM twice: `runProgram` (final
+   effects replaced), and 36 more writing entries into effects slots 3, 6, 7 and
+8 with well-formed and ill-formed keys and values (an `Either` with both sides
+set, tags 2 and 3, a 33-byte hash, an `Fr` equal to the modulus, `u64` and
+`u128` overflows, three, five or seven atoms, a map as value, other
+alignments, one key under two alignments). The calls include `tokens.mintUTo`
+and `tokens.sendU` with one-sided and two-sided `Either` arguments. Each runs
+through the real VM twice: `runProgram` (final
    stack with strengths, values read) and `QueryContext.query` (new state,
    effects, values read).
 3. `lake exe damp-vm-test` runs the model on every vector and compares
    success, every stack value and strength, the values read, and (for
-   queries) the new state and effects. Maps and tree leaves compare as sets.
+   queries) the new state and effects; any difference, the effects included,
+   is a disagreement. Maps and tree leaves compare as sets.
 
 Result (the count varies by a few vectors between runs, since some example
 calls sample random values):
 
 ```
-25708 vectors (11852 succeed in the real VM)
-VM (runProgram):         25708 agree, 0 disagree
-query (QueryContext):    25646 agree, 62 rejected by the runtime's typed effects decoding (abstracted), 0 disagree
-effects after a query:   6508 of 6541 successful queries agree (typed re-encoding abstracted)
+26942 vectors (12378 succeed in the real VM)
+VM (runProgram):         26942 agree, 0 disagree
+query (QueryContext):    26942 agree, 0 disagree (770 rejected by the runtime's typed decoding of the effects)
+effects after a query:   6752 of 6752 successful queries agree
 ALL AGREE
 ```
+
+`executor/test/either-both.mjs` checks the same rejection end to end: the
+executor and compactc's code both fail `tokens.mintUTo` with a two-sided
+`Either`.
 
 What had to change to get there. The instruction semantics, written from
 `vm.rs`, agreed with the real VM on every vector from the first run. The
@@ -148,8 +165,8 @@ disagreements were all outside it:
 * The query layer at first checked only the effects' outer shape and kept
   them as left: 64 queries the runtime rejects were accepted, and 111
   successful queries left differently encoded effects. Modelling the typed
-  decoding of slots 0 to 2, 4 and 5 brought these to 62 and 33, all in the
-  slots still abstracted (above).
+  decoding of slots 0 to 2, 4 and 5 brought these to 62 and 33; modelling
+  slots 3 and 6 to 8 as well brought both to 0 on the first run.
 
 That the comparison has teeth was checked by breaking the model on purpose:
 swapping `lt`'s operands and disabling cache checks makes 1329 vectors
@@ -161,7 +178,9 @@ All in `namespace Damp.Ledger`, about `emitted op` (the instructions the real
 definition in `Damp/Lang/Ledger.lean` emits, taken by running it), evaluated
 as the executor sends them (`Exec.request p env`), run through
 `ledgerOracle H` for any root hook `H`. The ledger state `σ` is well formed
-(`σ.WF`: its effects are as the runtime re-encodes them) and its contract
+(`σ.WF`: its effects are as the runtime re-encodes them, now for all nine
+slots; no theorem statement had to change, since no specification writes the
+effects, but `WF` now holds of fewer states) and its contract
 state is `.array fields`; the field is top level (`path = [fieldKey index]`),
 so its index is below 256. Each theorem has the form
 `∃ req, (emitted op).bind (Exec.request p env) = some req ∧ ledgerOracle H req σ = ...`.
@@ -189,7 +208,14 @@ executor's ZKIR theorem).
 * `Cell.resetToDefault_spec`: as `write_spec` for `Value.zero α`.
 
 `Counter` (`Counter.lean`), field `c.index` holding `.cell ⟨a, [n]⟩` with
-`n < 2^64`, an amount evaluating to `k` with `k.val < 2^32` (a `Uint16` is):
+`n < 2^64`, an amount evaluating to `k`. The VM's `addi`/`subi` immediates are
+`u32`: the runtime rejects 2^32 or more while decoding the program (tested),
+so the whole request fails. The `_total` theorems make no assumption on `k`;
+the others assume `k.val < 2^32` (true of a range-checked `Uint16`):
+
+* `Counter.increment_total`: `= if k.val < 2^32 ∧ n + k.val < 2^64 then some ([], σ.setField c.index (.cell (AV.ofU64 (n + k.val)))) else none`.
+* `Counter.decrement_total`: `= if k.val < 2^32 ∧ k.val ≤ n then some ([], σ.setField c.index (.cell (AV.ofU64 (n - k.val)))) else none`.
+* `Counter.lessThan_total`: `= if t.val < 2^64 then some ([Fr.ofBool (decide (n < t.val))], σ) else none`.
 
 * `Counter.increment_spec`: `= if n + k.val < 2^64 then some ([], σ.setField c.index (.cell (AV.ofU64 (n + k.val)))) else none`.
 * `Counter.decrement_spec`: `= if k.val ≤ n then some ([], σ.setField c.index (.cell (AV.ofU64 (n - k.val)))) else none`.
@@ -219,7 +245,53 @@ executor's ZKIR theorem).
 * A `Counter` inside a `Map` (`(← mp.lookup k)`, path `[fieldKey i, k]`), the
   entry for `kv` holding `⟨a, [n]⟩`: `Map.counter_increment_spec` (`if n + j < 2^64
   then some ([], σ.setField i (.map (assocSet kv (.cell (AV.ofU64 (n + j))) m))) else none`)
-  and `Map.counter_read_spec` (`some ([Fr.ofNat n], σ)`).
+  and `Map.counter_read_spec` (`some ([Fr.ofNat n], σ)`); `Map.counter_increment_total` drops the
+  `2^32` assumption (`if j < 2^32 ∧ n + j < 2^64 then ... else none`).
+* A `Map` inside a `Map` (`(← mp.lookup k)`, path `[fieldKey i, k]`), the entry for `kv` holding
+  `.map m₂`, inner key stored as `kv₂`: `Map.map_insert_spec` (`.map (assocSet kv (.map (assocSet kv₂
+  (.cell vv) m₂)) m)`), `Map.map_remove_spec` (`assocErase kv₂ m₂`), `Map.map_member_spec`
+  (`[Fr.ofBool (assocGet kv₂ m₂).isSome]`), `Map.map_lookup_spec` (the stored value's field elements),
+  `Map.map_size_spec` (`[Fr.ofNat m₂.length]`); the reads leave the ledger unchanged.
+
+`List.lean`. A list is stored as linked arrays `[head, tail, length]`;
+`listRepr xs` is the state of the list of stored elements `xs`
+(`listRepr [] = [null, null, 0]`, `listRepr (x :: xs) = [x, listRepr xs, xs.length + 1]`):
+
+* `LedgerList.pushFront_spec`: `listRepr xs` becomes `listRepr (xv :: xs)` (for `xs.length + 1 < 2^64`).
+* `LedgerList.popFront_spec`: `listRepr (y :: ys)` becomes `listRepr ys`; `LedgerList.popFront_nil`: popping
+  the empty list sets the field to `null` (what the emitted program does).
+* `LedgerList.head_nil`: the field elements of `Maybe.none`; `LedgerList.head_cons`: `Fr.ofBool true :: vs`
+  (`vs` the head's field elements), given `y.size ≤ maxAlignedSize (alignOf α)` (the runtime's bound on the
+  `concat` building `some y`) and `2 + maxAlignedSize (alignOf α) ≤ cellBound`.
+* `LedgerList.length_spec` (`[Fr.ofNat xs.length]`), `LedgerList.isEmpty_spec` (`[Fr.ofBool (decide (xs = []))]`),
+  `LedgerList.resetToDefault_spec` (`listRepr []`).
+
+`MerkleSpec.lean`. A `MerkleTree d α` field holds `[.bmt d leaves, firstFree]`, a historic one also
+`.map past`. **The hash:** the VM model takes the root from the hook `H.root`; the theorems hold for every
+`H` and assume nothing about the hash (no collision resistance): `checkRoot` is stated as equality with the
+hook's root. With `merkleHooks` (Poseidon over the degraded leaf hashes, `Merkle.lean`) the `_merkle`
+corollary states it with `merkleRootAt`.
+
+* `MerkleTree.insertHash_spec` (`insert x` is `insertHash (leafHash x)` by definition): with `ff < 2^d` and
+  `ff + 1 < 2^64` the field becomes `[.bmt d (assocSet ff x leaves), .cell (AV.ofU64 (ff + 1))]`;
+  `MerkleTree.insertHash_full`: with `d < 64` and `2^d ≤ ff` the request fails.
+* `MerkleTree.isFull_spec` (`d < 64`): `[Fr.ofBool (decide (2^d ≤ ff))]`.
+* `MerkleTree.checkRoot_spec`: with `H.root d leaves = some ρ`, `ρ.size ≤ 64`:
+  `[Fr.ofBool (decide (⟨[.field], [rv.val]⟩ = ρ))]`; `MerkleTree.checkRoot_merkle`:
+  `ledgerOracle merkleHooks req σ = some ([Fr.ofBool (decide (rv = merkleRootAt leaves d 0))], σ)`.
+* `HistoricMerkleTree.insertHash_spec`: as above, and the root `ρ'` of the new leaves
+  (`H.root d (assocSet ff x leaves) = some ρ'`) is added: `.map (assocSet ρ' .null past)`.
+* `HistoricMerkleTree.checkRoot_spec`: `[Fr.ofBool (assocGet ⟨[.field], [rv.val]⟩ past).isSome]`.
+* `HistoricMerkleTree.resetHistory_spec`: the past roots become `.map [(ρ, .null)]`, `ρ` the current root.
+
+`Kernel.lean`, the call context an array `cfs` (0: own address, 2: block time `τ < 2^64`):
+
+* `Kernel.self_spec`: `some (ys, σ)`, `ys` the address cell read as `[bytes 32]`.
+* `blockTimeLt_spec`: `= if tv.val < 2^64 then some ([Fr.ofBool (decide (τ < tv.val))], σ) else none`;
+  `blockTimeGt_spec`: the same with `tv.val < τ`; `emitted_blockTimeGte`, `emitted_blockTimeLte`: they send
+  the requests of `blockTimeLt`, `blockTimeGt` (the negation is in the circuit).
+* `effectEntry_spend_both_sides`, `decodeEffects_spend_both_sides`: effects whose slot 8 holds a key whose
+  `PublicAddress` has both sides non-zero do not decode, so a query leaving them fails.
 
 `Executor.lean`: `oracles_ledger`, `run_accepted_vm`, `run_accepted_by_zkir_vm`
 (`Exec.run_accepted` and `Exec.run_accepted_by_zkir` with `oracles H w`, the
@@ -312,23 +384,12 @@ structure containing one) cannot be written.
 
 ## Not done, and what would make it easier
 
-* `LedgerList`, the Merkle tree operations and the kernel operations are
-  modelled and validated but have no theorems yet; nor does a `Map` or `Set`
-  inside a `Map`.
-* The typed decoding of effects slots 3 and 6 to 8 (above): the runtime rejects
-  an unshielded spend whose `Either` recipient or token type has both sides
-  non-zero, the model accepts it. `claimUnshieldedCoinSpend` stores the
-  `Either` it is given; `left`/`right` build one-sided values, but an `Either`
-  circuit argument is range-checked per limb only, so a valid Damp program
-  (`tokens.mintUTo`, `sendU`) reaches the runtime with both sides set when the
-  caller passes such an argument (as compactc's code does). The real executor
-  fails such a call, as compactc's code does (the runtime throws "failed to
-  decode for built-in type ()"; `executor/test/either-both.mjs`); a theorem saying a call *completes*
-  can be too strong there, one saying what a completed call did is not. The
-  check belongs in the model's `effectEntry` for those slots.
-* `addi`/`subi` immediates are field elements in `Op`, `u32` in the VM: the
-  counter theorems assume the amount is below 2^32, which a range-checked
-  `Uint16` is, but `Op` does not say.
+* No theorems yet for the kernel's effect-writing operations
+  (`claimZswap*`, `mint*`, `claimUnshieldedCoinSpend`, `inc*`,
+  `claimContractCall`) or the balance reads, a `Set` inside a `Map`, Merkle
+  `insertHashIndex`, or ADTs nested deeper than a counter or map in a map.
+  The specifications are for top-level fields (`path = [fieldKey i]`) plus
+  those two nestings.
 * A `popeq` carries Damp's own alignment, under which the executor reads the
   value back; the VM does not check it against the value's alignment, so the
   read-back theorems take the stored value's atoms as given.

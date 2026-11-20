@@ -103,6 +103,77 @@ theorem Counter.decrement_spec (amount : Uint16) (k : Fr)
         AV.toU8, AV.toU64, AV.ofU64, SV.asCell, maxStackHeight, readBack_nil, popeqAligns, CKey.push,
         LedgerState.setField]
 
+/-! ### Amounts of any size
+
+The VM's `addi`/`subi` take a `u32` immediate; the runtime rejects a larger one
+while decoding the program (`invalid value: integer ..., expected u32`, checked
+by `test/vm.sh` with immediates 2^32, 2^32 + 1 and 2^53), so the whole request
+fails, whatever the counter holds. The specifications below have no
+assumption on the amount: an amount below 2^32 (every range-checked `Uint16`)
+behaves as above, a larger one makes the request fail. -/
+
+theorem mapM_toR_none_of_mem {ops : List (Op Fr)} {o : Op Fr} (hmem : o ∈ ops) (ho : Op.toR o = none) :
+    ops.mapM Op.toR = none := by
+  induction ops with
+  | nil => simp at hmem
+  | cons x xs ih =>
+      rcases List.mem_cons.1 hmem with h | h
+      · subst h; simp [List.mapM_cons, ho]
+      · simp [List.mapM_cons, ih h]
+
+theorem ledgerOracle_of_toR_none {ops : List (Op Fr)} {o : Op Fr} (hmem : o ∈ ops) (ho : Op.toR o = none)
+    (q : LedgerState) : ledgerOracle H ops q = none := by
+  simp [ledgerOracle, mapM_toR_none_of_mem hmem ho]
+
+theorem toR_addi_large {k : Fr} (hk : ¬ k.val < 2 ^ 32) : Op.toR (.addi k) = none := by
+  simp [Op.toR, immOf, hk]
+
+theorem toR_subi_large {k : Fr} (hk : ¬ k.val < 2 ^ 32) : Op.toR (.subi k) = none := by
+  simp [Op.toR, immOf, hk]
+
+/-- `Counter.increment` for any amount: the counter becomes `n + k` when `k`
+    is below 2^32 and the sum does not overflow 64 bits; otherwise the request
+    fails. -/
+theorem Counter.increment_total (amount : Uint16) (k : Fr)
+    (hpath : c.path = [fieldKey c.index]) (hst : σ.state = .array fields)
+    (hf : fields[c.index]? = some (.cell ⟨a, [n]⟩)) (hn : n < 2 ^ 64) (hb : c.index < 256) (hwf : σ.WF)
+    (hk : Expr.eval p env amount.expr = some k) :
+    ∃ req, (emitted (c.increment amount)).bind (Exec.request p env) = some req ∧
+      ledgerOracle H req σ =
+        if k.val < 2 ^ 32 ∧ n + k.val < 2 ^ 64 then
+          some ([], σ.setField c.index (.cell (AV.ofU64 (n + k.val))))
+        else none := by
+  by_cases hk32 : k.val < 2 ^ 32
+  · obtain ⟨req, h1, h2⟩ := Counter.increment_spec H c p env σ fields a n amount k hpath hst hf hn hb hwf hk hk32
+    exact ⟨req, h1, by rw [h2]; simp [hk32]⟩
+  · have he : emitted (c.increment amount) = some [.idx false true c.path, .addi amount.expr, .ins true c.path.length] := rfl
+    rw [he, hpath]
+    refine ⟨[.idx false true [⟨[.bytes 1], [Fr.ofInt c.index]⟩], .addi k, .ins true 1], ?_, ?_⟩
+    · simp [Exec.request, Op.mapM, Aligned.mapM, hk, Exec.blank, fieldKey, Expr.eval]
+    · rw [ledgerOracle_of_toR_none H (o := .addi k) (by simp) (toR_addi_large hk32)]
+      simp [hk32]
+
+/-- `Counter.decrement` for any amount: the counter becomes `n - k` when `k`
+    is below 2^32 and at most `n`; otherwise the request fails. -/
+theorem Counter.decrement_total (amount : Uint16) (k : Fr)
+    (hpath : c.path = [fieldKey c.index]) (hst : σ.state = .array fields)
+    (hf : fields[c.index]? = some (.cell ⟨a, [n]⟩)) (hn : n < 2 ^ 64) (hb : c.index < 256) (hwf : σ.WF)
+    (hk : Expr.eval p env amount.expr = some k) :
+    ∃ req, (emitted (c.decrement amount)).bind (Exec.request p env) = some req ∧
+      ledgerOracle H req σ =
+        if k.val < 2 ^ 32 ∧ k.val ≤ n then
+          some ([], σ.setField c.index (.cell (AV.ofU64 (n - k.val))))
+        else none := by
+  by_cases hk32 : k.val < 2 ^ 32
+  · obtain ⟨req, h1, h2⟩ := Counter.decrement_spec H c p env σ fields a n amount k hpath hst hf hn hb hwf hk hk32
+    exact ⟨req, h1, by rw [h2]; simp [hk32]⟩
+  · have he : emitted (c.decrement amount) = some [.idx false true c.path, .subi amount.expr, .ins true c.path.length] := rfl
+    rw [he, hpath]
+    refine ⟨[.idx false true [⟨[.bytes 1], [Fr.ofInt c.index]⟩], .subi k, .ins true 1], ?_, ?_⟩
+    · simp [Exec.request, Op.mapM, Aligned.mapM, hk, Exec.blank, fieldKey, Expr.eval]
+    · rw [ledgerOracle_of_toR_none H (o := .subi k) (by simp) (toR_subi_large hk32)]
+      simp [hk32]
+
 /-- `Counter.read`: the counter's value, as one field element; the ledger is unchanged. -/
 theorem Counter.read_spec
     (hpath : c.path = [fieldKey c.index]) (hst : σ.state = .array fields)
@@ -154,6 +225,28 @@ theorem Counter.lessThan_spec (threshold : Uint64) (t : Fr)
     have hbool := fieldsOf_bool (decide (n < t.val))
     simp only [decide_eq_true_eq] at hbool
     cases σ; simp_all [readBack_cons, readBack_nil]
+
+/-- `Counter.lessThan t` for any threshold: a threshold of 2^64 or more does
+    not fit the `u64` the VM is given, and the request fails. -/
+theorem Counter.lessThan_total (threshold : Uint64) (t : Fr)
+    (hpath : c.path = [fieldKey c.index]) (hst : σ.state = .array fields)
+    (hf : fields[c.index]? = some (.cell ⟨a, [n]⟩)) (hn : n < 2 ^ 64) (hb : c.index < 256) (hwf : σ.WF)
+    (ht : Expr.eval p env threshold.expr = some t) :
+    ∃ req, (emitted (c.lessThan threshold)).bind (Exec.request p env) = some req ∧
+      ledgerOracle H req σ = if t.val < 2 ^ 64 then some ([Fr.ofBool (decide (n < t.val))], σ) else none := by
+  by_cases ht64 : t.val < 2 ^ 64
+  · obtain ⟨req, h1, h2⟩ := Counter.lessThan_spec H c p env σ fields a n threshold t hpath hst hf hn hb hwf ht ht64
+    exact ⟨req, h1, by rw [h2]; simp [ht64]⟩
+  · have he : c.lessThan threshold = ledgerRead Boolean (fun es =>
+        [.dup 0, .idx false false c.path, .push false ⟨[.bytes 8], [threshold.expr]⟩, .lt,
+         .popeq true [.bytes 1] es]) := rfl
+    rw [he, emitted_ledgerRead, hpath]
+    refine ⟨[.dup 0, .idx false false [⟨[.bytes 1], [Fr.ofInt c.index]⟩], .push false ⟨[.bytes 8], [t]⟩, .lt,
+      .popeq true [.bytes 1] []], ?_, ?_⟩
+    · simp [Exec.request, Op.mapM, Aligned.mapM, Exec.blank, fieldKey, Expr.eval, mapM_eval_readVars, ht]
+    · rw [ledgerOracle_of_toR_none H (o := .push false ⟨[.bytes 8], [t]⟩) (by simp)
+        (by simp [Op.toR, AV.ofAligned, AV.ofFields, atomWidth, atomOfFields, atomFits, ht64])]
+      simp [ht64]
 
 /-- `Counter.resetToDefault`: the counter becomes 0 (a `[bytes 8]` cell),
     whatever the field held. -/

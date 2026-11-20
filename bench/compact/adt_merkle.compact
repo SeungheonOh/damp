@@ -15,19 +15,31 @@
 
 //PM-14807
 // bench: Compact's examples/adt/tests/merkletree_field.compact and historicmerkletree_field.compact
-// as one program (circuits `test` and `test_historic`, with their ledger fields renamed apart).
-// Changes: Damp has no MerkleTreePath, so the `path` ledger fields and `merkleTreePathRoot` are
-// gone and the digests they produced are circuit arguments (disclosed where the ledger is
-// checked against them); `0..4` loops are written `0..4` as before.
+// as one program (circuits `test` and `test_historic`). Changes: the two files' ledger fields are
+// declared together, the historic file's `partialTree` renamed `historicPartialTree` and both files
+// sharing one `path`; comments dropped.
 import CompactStandardLibrary;
 
+export ledger path: MerkleTreePath<4, Field>;
+
 ledger merkleTree: MerkleTree<4, Field>;
+
+ledger fakeRoot: MerkleTree<2, Field>;
+
 ledger merkleTreeSmall: MerkleTree<2, Field>;
+
 ledger partialTree: MerkleTree<4, Field>;
 
-export circuit test(digest: MerkleTreeDigest): [] {
-  assert(merkleTree.checkRoot(disclose(digest)) == true, "valid root");
-  assert(merkleTree.checkRoot(disclose(digest)) == false, "invalid root");
+export ledger historicMerkleTree: HistoricMerkleTree<4, Field>;
+
+export ledger historicMerkleTreeSmall: HistoricMerkleTree<2, Field>;
+
+export ledger historicPartialTree: HistoricMerkleTree<4, Field>;
+
+export circuit test(): [] {
+  const digest = merkleTreePathRoot<4, Field>(path);
+  assert(merkleTree.checkRoot(digest) == true, "valid root");
+  assert(merkleTree.checkRoot(digest) == false, "invalid root");
 
   const hash = pad(32, "hash");
   merkleTree.insertHash(hash);
@@ -53,17 +65,19 @@ export circuit test(digest: MerkleTreeDigest): [] {
   assert(partialTree.isFull() == false, "tree is not full");
 
   partialTree.insert(100 as Field);
+
+  return;
 }
 
-ledger historicMerkleTree: HistoricMerkleTree<4, Field>;
-ledger historicMerkleTreeSmall: HistoricMerkleTree<2, Field>;
-ledger historicPartialTree: HistoricMerkleTree<4, Field>;
+export circuit test_historic(): [] {
+  const digest = merkleTreePathRoot<4, Field>(path);
 
-export circuit test_historic(digest: MerkleTreeDigest, digest2: MerkleTreeDigest): [] {
   historicMerkleTree.insert(42 as Field);
-  assert(historicMerkleTree.checkRoot(disclose(digest)) == true, "");
+  assert(historicMerkleTree.checkRoot(digest) == true, "");
 
-  assert(historicMerkleTree.checkRoot(disclose(digest2)) == false, "");
+  const digest2 = merkleTreePathRoot<4, Field>(path);
+
+  assert(historicMerkleTree.checkRoot(digest2) == false, "");
 
   historicMerkleTree.insert(100 as Field);
 

@@ -374,7 +374,11 @@ Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
   (compactc's verifier key), and 26 instructions and 134 rows at `--O2`; it is
   the only example circuit that `--O2` changes (`test/opt.sh`).
 - `--O3`, `Circuit.optimizeMax`: `Simplify`, `foldHashes Crypto.prims`, then
-  `--O2`. Hashes of constants are computed at compile time with
+  `--O2`, then `hashRanges`. `hashRanges` (`Damp/Optimize/HashRanges.lean`)
+  drops a range check on a value that a later persistent hash certainly reads in
+  a slot at most that wide, since the hash rejects a value that does not fit; a
+  bad input then fails at the hash instead of at the check
+  (`Circuit.hashRanges_soundFor`, from `Crypto.prims_alignChecked`). Hashes of constants are computed at compile time with
   `Damp.Crypto.prims`, the Lean implementations of Midnight's Poseidon and
   SHA-256 persistent hash. Sound only *relative to those implementations*
   (`Pass.SoundFor Crypto.prims`, `Damp/Proofs/Optimize/SoundFor.lean`): the
@@ -387,7 +391,7 @@ Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
 
 `--no-opt` turns everything off.
 
-Every pass but `foldHashes` is proved sound (`Pass.Sound`,
+Every pass but `foldHashes` and `hashRanges` is proved sound (`Pass.Sound`,
 `Damp/Proofs/Optimize/Sound.lean`): for every circuit, with no hypothesis on
 it, and for every choice of hash functions `p : Prims` (the IR semantics is
 parameterized by them), the pass changes neither what a run produces that
@@ -521,8 +525,9 @@ Not done, and what it would take to call this production-ready:
 
 ## 4. What is proved
 
-`Contract.build` ships, for a circuit `c`, the ZKIR `Emit.circuit c.optimize`,
-and the executor interprets `c.optimize`. All statements are in Lean, with no
+`Contract.build` ships, for a circuit `c`, the ZKIR `Emit.circuit (buildPass level c)`
+(at the default level `c.optimize`), and the executor interprets the same
+`buildPass level c`, read from `contract.json`. All statements are in Lean, with no
 `sorry` and only Lean's three standard axioms.
 
 **The compiler** (`Damp/Proofs/Compiler.lean` chains these):
@@ -535,6 +540,9 @@ and the executor interprets `c.optimize`. All statements are in Lean, with no
 | `compile_exact` | the shipped ZKIR means exactly the shipped circuit (optimized, unused bindings dropped) |
 | `compile_complete` | every run the contract's circuit accepts is accepted by the shipped ZKIR with the same observable outcome; `compile_complete_full` the same at `--O2`, `compile_complete_max` at `--O3` for runs with `Damp.Crypto.prims` |
 | `IrSource.ofJson_toJson` | the JSON tree printed for a ZKIR value reads back, with Damp's reader (which follows the rules of Midnight's Rust loader), as that value, provided every immediate is below the field modulus in absolute value (`Damp/Proofs/ZkirJson.lean`); `IrSource.ofJson_toJson_of_emitted`: so does everything `Emit.circuit` returns, since it checks that condition |
+| `Text.parse_of_lex`, `Text.lex_render` | the JSON text layer, for Damp's total reference lexer and parser (`Damp/Zkir/JsonText.lean`, `Damp/Proofs/JsonText.lean`): for every value in the fragment Damp writes (`Text.frag`: natural numbers, distinct keys, any strings), any text that lexes as the value's tokens `Text.toks j` (in `Json.pretty`'s order) parses as `Text.reorder j`, the same value with each object rebuilt in text order as `Json.parse` builds it (same members: `getObjVal?_reorder_mkObj`); the compact rendering `Text.render j` lexes so |
+| `IrSource.ofText`, `IrSource.ofText_of_emitted` | the text of a ZKIR value reads back as the value: any text that lexes as the tokens of `src.toJson` gives, through `Text.parse` and `IrSource.ofJson`, exactly `src` (`Damp/Proofs/ZkirText.lean`) |
+| `Export.ofText`, `Export.ofJson_reorder` | `contract.json` reads back: `Export.parse` (`Damp/Compile/Export.lean`) returns, from any text that lexes as the tokens of `Export.contract c`, `c.exported`: `c` without what the file does not carry (`disclose` wrappers, input names and ranges, circuit errors) (`Damp/Proofs/ExportJson.lean`) |
 
 **The build** (`Damp/Proofs/Build.lean`). `Contract.build` does nothing but
 run the pure function `Contract.buildCore` and write the files it returns
@@ -560,7 +568,13 @@ admits: all of them at every level but `--O3`, and `Damp.Crypto.prims` at
   records encodes an instruction the ledger ran (`run_groups_fromLedger`);
 - `src` meets the producer obligations and every immediate is one the loader
   accepts (`checkProducer`);
-- `IrSource.ofJson src.toJson = .ok src`.
+- `IrSource.ofJson src.toJson = .ok src`;
+- every text that lexes as the tokens of `src.toJson` reads back, through
+  `Text.parse` and `IrSource.ofJson`, as `src` (`readsBackText`).
+
+`build_contractJson`: the contract written to `contract.json` is `shipped`,
+and every text that lexes as the tokens of `Export.contract shipped` is read
+by `Export.parse` as `shipped.exported`.
 
 The ledger check the build makes on the shipped circuits never fails on a
 circuit that passes it before optimization, at any level
@@ -582,7 +596,7 @@ is the case with no `disclose` on the way to the public inputs.
 | Theorem | Statement |
 |---|---|
 | `Exec.run_accepted` | a call the executor completes is a run the circuit accepts: the private transcript and ledger reads it recorded, the outputs and public inputs it recorded |
-| `Exec.run_accepted_by_zkir` | and therefore one the shipped ZKIR accepts |
+| `Exec.run_accepted_by_zkir` | and therefore one the ZKIR shipped at the default level accepts (`run_accepted_by_emitted`: the ZKIR emitted for whatever circuit the executor runs, so at every level) |
 | `Exec.run_none` | a call fails only if the inputs are not the circuit's, an oracle gave no usable answer, or the circuit rejects every transcript beginning with exactly what the executor recorded and was answered |
 | `Exec.optimize_correct` | on the optimized circuit the executor completes exactly when it would on the original and leaves the same outputs, transcripts, active public inputs, private state and ledger state |
 | `Circuit.bounds_sound`, `Circuit.algebra_sound`, `Circuit.asserts_sound`, `Circuit.simplify_sound`, `Circuit.foldDivmod_sound`, `Circuit.assertEq_sound`, `Circuit.commuteOpt_sound`, `Circuit.forwardAllOpt_sound`, ... | each pass is sound by itself, for every circuit; `Circuit.optimize_sound` and `Circuit.optimizeFull_sound` follow by composition, and `compile_complete_full` is the end-to-end statement at `--O2` |
@@ -657,10 +671,22 @@ What the proofs do not give:
 - **Values read from the ledger.** They are not range-checked in the circuit,
   as in Compact: a `Uint 255` read from a cell is only as good as what was
   written. `Field.unsafeToUint` is unchecked by design.
-- **The text layer of the files.** `IrSource.ofJson_toJson` is about the JSON
-  tree; Lean core's printer and parser of JSON text (`Json.pretty`,
-  `Json.parse`) are not covered, nor is the agreement of Damp's reader with
-  Midnight's Rust loader, which is tested (`test/semantics.sh`), not proved.
+- **Lean core's JSON printer and parser, and Midnight's loader.** The text
+  theorems are about Damp's total reference lexer and parser. `Json.pretty`
+  (what writes the files) and `Json.parse` are `partial` in Lean core, so
+  nothing can be proved about them; `test/jsontext.sh` checks, on every
+  `.zkir` and `contract.json` of Examples and Bench at every level and on
+  random values of the fragment and mutations of their text, that the
+  `Json.pretty` text lexes as `Text.toks` of its value (the theorems'
+  hypothesis) and that `Text.parse` and `Json.parse` agree. That Midnight's
+  Rust loader reads each `.zkir` file as Damp's reader does is tested, not
+  proved: `test/loader.sh` loads every one with `zkir-v3 mock-compile` and
+  compares the circuit it re-serializes (`.bzkir`) byte for byte with Damp's
+  reading encoded in that format; the encoding was read off the tool's output
+  and covers the instructions Damp emits.
+- **What `contract.json` does not carry.** `Contract.exported` erases
+  `disclose` wrappers, input names and ranges, and circuit errors; that the
+  executor's behaviour does not depend on them is not proved here.
 - **Parts of the interface:** no `Runs` rules for witness calls and ledger
   operations; no lemmas for enums or for projecting a vector element; the
   length of a builder result's `toExprs` is taken as a hypothesis.

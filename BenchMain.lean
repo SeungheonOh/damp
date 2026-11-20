@@ -9,5 +9,6 @@ def main (args : List String) : IO UInt32 :=
      Bench.Pm19287.contract, Bench.Types.contract, Bench.AssertMisc.contract,
      Bench.AdtCounter.contract, Bench.AdtListStruct.contract, Bench.AdtMapList.contract,
      Bench.AdtMerkle.contract, Bench.ComposableInner.contract, Bench.ComposableOuter.contract,
-     Bench.Vectors.contract, Bench.Test01.contract]
+     Bench.Vectors.contract, Bench.Test01.contract, Bench.ProofData.contract,
+     Bench.ZkirGeneration.contract]
     args

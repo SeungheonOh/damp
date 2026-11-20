@@ -1,7 +1,7 @@
 import Damp
 
 /-! `bench/compact/zerocash_core.compact` (Compact's examples/zerocash.compact without its
-`Opaque` ciphertexts and `MerkleTreePath` witness; see the header of the Compact file). -/
+`Opaque` ciphertexts; see the header of the Compact file). -/
 namespace Bench.ZerocashCore
 open Damp
 
@@ -29,7 +29,7 @@ witness private_zk_secret_key : zk_secret_key
 witness private_remove_coin (coin : coin_info) : Unit
 witness private_zk_public_key : zk_public_key
 witness private_add_coin (coin : coin_info) : Unit
-witness context_path_root (cm : commitment) : MerkleTreeDigest
+witness context_path_of (cm : commitment) : MerkleTreePath 32 commitment
 witness context_new_coin_info : coin_info
 
 ledger
@@ -54,7 +54,9 @@ circuit spend (dest_public_key : public_key) (input_coin : coin_info) : Unit := 
   nullifiers.insert oldNullifier
   const sourcePublicKey := deriveZkPublicKey sourceSecretKey
   const oldCommitment := commitmentFromCoinInfo input_coin sourcePublicKey
-  require (← commitments.checkRoot (disclose (← context_path_root oldCommitment)))
+  const commitmentPath ← context_path_of oldCommitment
+  require ((← commitments.checkRoot (disclose (← merkleTreePathRoot commitmentPath))) &&.
+           oldCommitment ==. commitmentPath.leaf)
     "spend: Illegal state: merkle path not recognized by public state"
   const freshCoinInfo ← context_new_coin_info
   const freshCommitment := commitmentFromCoinInfo freshCoinInfo dest_public_key.zk

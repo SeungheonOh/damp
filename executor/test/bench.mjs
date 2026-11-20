@@ -47,6 +47,9 @@ const coin = (n, color, value) => ({ nonce: bytes(32, n, n + 1), color, value })
 const qcoin = (n, color, value, mt_index) => ({ ...coin(n, color, value), mt_index });
 const red = bytes(32, 0x52, 0x44);
 const hashBytes32 = (b) => rt.persistentHash(new rt.CompactTypeBytes(32), b);
+const padBytes = (n, str) => { const b = new Uint8Array(n); b.set(new TextEncoder().encode(str)); return b; };
+// A MerkleTreePath<n, T> leading nowhere: every sibling zero.
+const noPath = (n, leaf) => ({ leaf, path: Array.from({ length: n }, () => ({ sibling: { field: 0n }, goes_left: false })) });
 
 // What the witnesses return is decided by the call being made, through `ctx`; both implementations
 // read the same object, so they are asked the same.
@@ -68,14 +71,14 @@ const witnesses = {
   private_state_advance: ({ privateState }) => [privateState, []],
   private_vote_record: ({ privateState }) => [privateState, []],
   private_vote: ({ privateState }) => [privateState, 0],
-  context_eligible_voters_root: ({ privateState }) => [privateState, { field: 0n }],
-  context_committed_votes_root: ({ privateState }) => [privateState, { field: 0n }],
+  context_eligible_voters_path_of: ({ privateState }) => [privateState, { is_some: false, value: noPath(10, zeros) }],
+  context_committed_votes_path_of: ({ privateState }) => [privateState, { is_some: false, value: noPath(10, zeros) }],
   // zerocash_core
   private_zk_secret_key: ({ privateState }) => [privateState, ctx.zsk],
   private_zk_public_key: ({ privateState }) => [privateState, ctx.zpk],
   private_add_coin: ({ privateState }) => [privateState, []],
   private_remove_coin: ({ privateState }) => [privateState, []],
-  context_path_root: ({ privateState }) => [privateState, ctx.root],
+  context_path_of: ({ privateState }) => [privateState, ctx.path],
   context_new_coin_info: ({ privateState }) => [privateState, ctx.coinInfo],
   // types
   t17_witness: ({ privateState }, b) => [privateState, 5n],
@@ -89,6 +92,9 @@ const zsk = { bytes: bytes(32, 0x5a, 0x5b) };
 const zcoin = { nonce: { bytes: bytes(32, 1, 2) }, opening: { bytes: bytes(32, 3, 4) } };
 const zcoin2 = { nonce: { bytes: bytes(32, 9, 8) }, opening: { bytes: bytes(32, 7, 6) } };
 const zpk = { bytes: hashBytes32(zsk.bytes) };   // what derive_zk_public_key gives
+// What commitment_from_coin_info gives: the leaf stored by zerocash_mint.
+const zcommit = (coin, pk) => ({ bytes: rt.persistentHash(new rt.CompactTypeVector(4, new rt.CompactTypeBytes(32)),
+  [padBytes(32, 'lares:zerocash:commit'), coin.nonce.bytes, coin.opening.bytes, pk.bytes]) });
 const board = (n, p) => ({ nonce: n, contents: { position: p } });
 const as = (sk, b) => (c) => { ctx.sk = sk; ctx.board = b; return c.args ?? []; };
 const skA = bytes(32, 0xa1, 0xa2), skB = bytes(32, 0xb1, 0xb2);
@@ -175,9 +181,12 @@ const calls = [
   ['election_core', 'vote_reveal', [], false],
 
   ['zerocash_core', 'zerocash_mint', (c) => { ctx.zpk = zpk; ctx.coinInfo = zcoin; return []; }, true],
-  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.root = c.rootOf('commitments'); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, true],
-  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.root = c.rootOf('commitments'); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, false],
-  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.root = { field: 12345n }; return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin2]; }, false],
+  // the path of a coin that is not in the tree, then of the minted one, then (spent) again
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.path = noPath(32, zcommit(zcoin, zpk)); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, false],
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.path = c.pathOf('commitments', zcommit(zcoin, zpk)); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, true],
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.path = c.pathOf('commitments', zcommit(zcoin, zpk)); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin]; }, false],
+  // a path to the right root, but for another leaf than the coin's commitment
+  ['zerocash_core', 'spend', (c) => { ctx.zsk = zsk; ctx.coinInfo = zcoin2; ctx.path = c.pathOf('commitments', zcommit(zcoin2, { bytes: bytes(32, 4, 4) })); return [{ zk: { bytes: bytes(32, 4, 4) } }, zcoin2]; }, false],
 
   ...['test_circuit_returned_vector', 'test_circuit_returned_tuple', 'test_nested_circuit_matrix', 'test_circuit_calls_in_loop',
       'test_dynamic_vector_processing', 'test_complex_nested_patterns', 'test_concatenated_circuit_results',
@@ -212,8 +221,8 @@ const calls = [
   ['adt_map_list', 'test', [], true],
   // The first assertion of each of these demands a root the test cannot know, the second its opposite:
   // the circuit is refused whatever the argument.
-  ['adt_merkle', 'test', [{ field: 0n }], false],
-  ['adt_merkle', 'test_historic', [{ field: 1n }, { field: 2n }], false],
+  ['adt_merkle', 'test', [], false],
+  ['adt_merkle', 'test_historic', [], false],
 
   ['composable_inner', 'add', [3n], true],
   ['composable_inner', 'add', [4n], true],
@@ -222,6 +231,14 @@ const calls = [
   ['vectors', 'test2', [[1n, 2n], [3n, 4n]], true],
   ['vectors', 'test4', [], true],
   ['vectors', 'slice_to_ledger', [range(8)], true],
+
+  ['proof_data', 'test1', [], true],
+  ['proof_data', 'test2', [], true],
+
+  ['zkir_generation', 'increment', [], true],
+  ['zkir_generation', 'test1', [range(10, (i) => BigInt(250 - 7 * i))], true],
+  ['zkir_generation', 'test1', [[...range(9), 256n]], false],
+  ['zkir_generation', 'test2', [[200n]], true],
 ];
 
 const constructorArgs = { tiny: [5n], test01: [5n], coracle: [], threading: [], gas_cost: [], pm_19287: [] };
@@ -261,6 +278,7 @@ async function load(name) {
   const enc = (l) => impl[l].init ? toJson(impl[l].init.currentContractState.data.state.encode(), 0) : `error: ${impl[l].initError}`;
   report(DAMP.every((l) => enc('compactc') === enc(l)), `${name}: initial ledger state is compactc's, at every level`);
   const entry = { name, mod, impl };
+  entry.pathOf = (field, leaf) => mod.ledger(impl.compactc.state ?? impl.compactc.init.currentContractState.data)[field].findPathForLeaf(leaf);
   entry.rootOf = (field) => mod.ledger(impl.compactc.state ?? impl.compactc.init.currentContractState.data)[field].root();
   loaded.set(name, entry);
   return entry;
