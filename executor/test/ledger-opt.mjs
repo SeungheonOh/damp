@@ -1,21 +1,25 @@
-// Differential test of the opt-in ledger passes (`--ledger-opt`: `Circuit.ledgerReuse`, then
-// `Circuit.ledgerDeadStore`; Damp/Optimize/LedgerReuse.lean, LedgerDeadStore.lean)
+// Differential test of the opt-in ledger passes (`--ledger-opt`: `Circuit.ledgerReuse`, the `--O2`
+// passes again, `Circuit.ledgerDeadStore`, `Circuit.ledgerMerge`; Damp/Optimize/Ledger*.lean)
 // through the real runtime. The same calls as test/bench.mjs (values, witnesses and calls copied from
-// it; zerocash_core is left out: its calls need compactc's module for Merkle paths, and the pass does
-// not change it) are made against two Damp builds of each benchmark program:
-//   o2: `lake exe damp-bench --O2`, and
+// it) are made against the Damp builds of each benchmark program:
+//   o2: `lake exe damp-bench --O2`,
+//   nm: the same with the ledger passes but `Circuit.ledgerMerge` (optional; test/ledger-opt.sh
+//       builds it), and
 //   lo: `lake exe damp-bench --O2 --ledger-opt`,
-// each starting from the ledger state its own previous call left. For every call it requires that
-// both succeed or both fail, and, when they succeed, that
+// each starting from the ledger state its own previous call left. zerocash_core's calls need Merkle
+// paths, which compactc's generated module computes: they are made when `compact/zerocash_core`
+// (compactc's build) is present, its module reading the paths from the `o2` build's state.
+// For every call it requires that all builds succeed or all fail, and, when they succeed, that
 //   1. the results are identical,
 //   2. the ledger state afterwards (its encoding) and the Zswap local state are identical,
-//   3. the private transcript is identical (the public transcript is NOT compared: the pass sends
-//      fewer ledger programs, which is the point),
-//   4. Midnight's ZKIR checker accepts the `lo` proof data against the `lo` circuit.
-// It also reports the gas the runtime charged each build (`gasCost` of the call), summed over the
-// calls of the circuits the pass changed.
+//   3. the private transcript is identical (the public transcript is NOT compared: the passes send
+//      fewer or differently grouped ledger programs, which is the point),
+//   4. Midnight's ZKIR checker accepts each build's proof data against its own circuit.
+// It also reports the gas the runtime charged each build (`gasCost` of the call): o2 -> lo summed
+// over the calls of the circuits the passes changed, and nm -> lo over those `ledgerMerge` changed
+// (whose ledger statements differ between nm and lo).
 //
-// Usage: node test/ledger-opt.mjs <dir holding o2/ and lo/>
+// Usage: node test/ledger-opt.mjs <dir holding o2/, lo/ and optionally nm/, compact/>
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -241,26 +245,29 @@ const calls = [
 
 const constructorArgs = { tiny: [5n], test01: [5n], coracle: [], threading: [], gas_cost: [], pm_19287: [] };
 
-const LEVELS = ['o2', 'lo'];
+const exists = async (p) => { try { await fs.access(p); return true; } catch { return false; } };
+const LEVELS = ['o2', ...((await exists(path.join(root, 'nm'))) ? ['nm'] : []), 'lo'];
+const OTHERS = LEVELS.filter((l) => l !== 'o2');
+const COMPACT = path.join(root, 'compact');
 
 // Static checks on every circuit of every program: the same circuits with the same arguments, and the
 // rewritten one sends at most as many ledger programs and has at most as many ZKIR instructions.
 {
   const progs = (await fs.readdir(path.join(root, 'o2'), { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
-  for (const prog of progs) {
+  for (const prog of progs) for (const other of OTHERS) {
     const spec = async (l) => JSON.parse(await fs.readFile(path.join(root, l, prog, 'contract.json'), 'utf-8'));
-    const [a, b] = [await spec('o2'), await spec('lo')];
+    const [a, b] = [await spec('o2'), await spec(other)];
     report(JSON.stringify(a.circuits.map((c) => [c.name, c.args])) === JSON.stringify(b.circuits.map((c) => [c.name, c.args])),
       `${prog}: same circuits and arguments`);
     for (const ca of a.circuits) {
       const cb = b.circuits.find((c) => c.name === ca.name);
       if (!cb) continue;
       const nl = (c) => c.body.filter((s) => s.kind === 'ledger' && s.ops.length > 0).length;
-      report(nl(cb) <= nl(ca), `${prog}.${ca.name}: no more ledger programs`, `${nl(ca)} -> ${nl(cb)}`);
+      report(nl(cb) <= nl(ca), `${prog}.${ca.name}: no more ledger programs (${other})`, `${nl(ca)} -> ${nl(cb)}`);
       try {
         const z = async (l) => JSON.parse(await fs.readFile(path.join(root, l, prog, 'zkir', `${ca.name}.zkir`), 'utf-8'));
-        const [za, zb] = [await z('o2'), await z('lo')];
-        report(zb.instructions.length <= za.instructions.length, `${prog}.${ca.name}: no more ZKIR instructions`,
+        const [za, zb] = [await z('o2'), await z(other)];
+        report(zb.instructions.length <= za.instructions.length, `${prog}.${ca.name}: no more ZKIR instructions (${other})`,
           `${za.instructions.length} -> ${zb.instructions.length}`);
       } catch { /* circuits without ZKIR (none expected) */ }
     }
@@ -283,8 +290,13 @@ async function load(name) {
     } catch (e) { impl[level].initError = String(e); }
   }
   const enc = (l) => impl[l].init ? toJson(impl[l].init.currentContractState.data.state.encode(), 0) : `error: ${impl[l].initError}`;
-  report(enc('o2') === enc('lo'), `${name}: same initial ledger state`);
+  report(OTHERS.every((l) => enc('o2') === enc(l)), `${name}: same initial ledger state`);
   const entry = { name, impl };
+  // Merkle paths, from compactc's generated module reading the o2 build's state.
+  if (await exists(path.join(COMPACT, name, 'contract', 'index.js'))) {
+    const mod = await import(path.join(COMPACT, name, 'contract', 'index.js'));
+    entry.pathOf = (field, leaf) => mod.ledger(impl.o2.state ?? impl.o2.init.currentContractState.data)[field].findPathForLeaf(leaf);
+  }
   loaded.set(name, entry);
   return entry;
 }
@@ -307,6 +319,14 @@ const changedCircuit = async (name, circuit) => {
   } catch { return false; }
 };
 
+// The circuits `ledgerMerge` changed: their ledger statements differ between nm and lo.
+const mergedCircuit = async (name, circuit) => {
+  if (!LEVELS.includes('nm')) return false;
+  const body = async (l) => JSON.stringify(JSON.parse(await fs.readFile(path.join(root, l, name, 'contract.json'), 'utf-8'))
+    .circuits.find((c) => c.name === circuit)?.body ?? null);
+  return (await body('nm')) !== (await body('lo'));
+};
+
 // The runtime's cost record of a call: { readTime, computeTime, bytesWritten, bytesDeleted }.
 const FIELDS = ['readTime', 'computeTime', 'bytesWritten', 'bytesDeleted'];
 const gasOf = (run) => {
@@ -314,11 +334,14 @@ const gasOf = (run) => {
   if (g === undefined || g === null) return null;
   return Object.fromEntries(FIELDS.map((f) => [f, BigInt(g[f] ?? 0)]));
 };
-const gas = { o2: Object.fromEntries(FIELDS.map((f) => [f, 0n])), lo: Object.fromEntries(FIELDS.map((f) => [f, 0n])) };
-const gasRows = [];
-let changedCalls = 0, sample = null;
+const zero = () => Object.fromEntries(FIELDS.map((f) => [f, 0n]));
+const gas = { o2: zero(), lo: zero() };
+const mgas = { nm: zero(), lo: zero() };
+const gasRows = [], mgasRows = [];
+let changedCalls = 0, mergedCalls = 0, sample = null;
 for (const [name, circuit, argsOf, shouldSucceed] of calls) {
-  if (name === 'zerocash_core' || name === 'composable_outer') continue;
+  if (name === 'composable_outer') continue;
+  if (name === 'zerocash_core' && !(await exists(path.join(COMPACT, name, 'contract', 'index.js')))) continue;
   const c = await load(name);
   const args = typeof argsOf === 'function' ? argsOf(c) : argsOf;
   const label = `${name}.${circuit}(${args.map((a) => toJson(a, 0)).join(', ')})`.replaceAll('"', '').slice(0, 110);
@@ -337,15 +360,25 @@ for (const [name, circuit, argsOf, shouldSucceed] of calls) {
   const zsw = (l) => toJson(runs[l].value.context.callContext.currentZswapLocalState, 0);
   const trace = (l) => runs[l].value.context.callProofDataTrace;
   const priv = (l) => { const t = trace(l); return t.length ? toJson(proofDataOf(t.at(-1)).privateTranscriptOutputs ?? null, 0) : 'none'; };
-  report(res('o2') === res('lo'), `${label}: same result`);
-  report(encodeState(c.impl.o2.state) === encodeState(c.impl.lo.state), `${label}: same ledger state`);
-  report(zsw('o2') === zsw('lo'), `${label}: same Zswap local state`);
-  report(priv('o2') === priv('lo'), `${label}: same private transcript`);
-  const t = trace('lo');
-  const proved = c.impl.lo.spec.circuits.find((x) => x.name === circuit)?.proof;
-  if (proved && t.length) {
-    const checked = await checkProofData({ compiledDir: c.impl.lo.dir, circuitId: circuit, proofData: proofDataOf(t.at(-1)) });
-    report(checked.ok, `${label}: ZKIR check accepts lo`, checked.ok ? '' : `${checked.stage}: ${checked.error}`);
+  for (const l of OTHERS) {
+    report(res('o2') === res(l), `${label}: same result (${l})`);
+    report(encodeState(c.impl.o2.state) === encodeState(c.impl[l].state), `${label}: same ledger state (${l})`);
+    report(zsw('o2') === zsw(l), `${label}: same Zswap local state (${l})`);
+    report(priv('o2') === priv(l), `${label}: same private transcript (${l})`);
+    const t = trace(l);
+    const proved = c.impl[l].spec.circuits.find((x) => x.name === circuit)?.proof;
+    if (proved && t.length) {
+      const checked = await checkProofData({ compiledDir: c.impl[l].dir, circuitId: circuit, proofData: proofDataOf(t.at(-1)) });
+      report(checked.ok, `${label}: ZKIR check accepts ${l}`, checked.ok ? '' : `${checked.stage}: ${checked.error}`);
+    }
+  }
+  if (LEVELS.includes('nm') && await mergedCircuit(name, circuit)) {
+    mergedCalls++;
+    const gn = gasOf(runs.nm), gl = gasOf(runs.lo);
+    if (gn !== null && gl !== null) {
+      for (const f of FIELDS) { mgas.nm[f] += gn[f]; mgas.lo[f] += gl[f]; }
+      mgasRows.push([label, gn, gl]);
+    }
   }
   if (changed) {
     changedCalls++;
@@ -365,5 +398,13 @@ for (const [l, a, b] of gasRows) {
 }
 console.log('gas over those calls (o2 -> lo):');
 for (const f of FIELDS) console.log(`  ${f}: ${gas.o2[f]} -> ${gas.lo[f]} (saved ${gas.o2[f] - gas.lo[f]})`);
+if (LEVELS.includes('nm')) {
+  console.log(`\n${mergedCalls} successful calls of circuits ledgerMerge changed (nm -> lo)`);
+  for (const [l, a, b] of mgasRows) {
+    console.log(`  ${FIELDS.map((f) => `${f} ${a[f]} -> ${b[f]}`).join(', ')}  ${l}`);
+  }
+  console.log('gas over those calls (nm -> lo):');
+  for (const f of FIELDS) console.log(`  ${f}: ${mgas.nm[f]} -> ${mgas.lo[f]} (saved ${mgas.nm[f] - mgas.lo[f]})`);
+}
 console.log(failures === 0 ? `ledger-opt: ${checks} checks passed` : `ledger-opt: ${failures} of ${checks} checks FAILED`);
 process.exit(failures === 0 ? 0 : 1);

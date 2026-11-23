@@ -2,7 +2,7 @@
 
 usage: python3 -I bench/ledger_headroom.py BUILD_DIR [--rows] [--json FILE]
        python3 -I bench/ledger_headroom.py BUILD_DIR --classes [--rows] [--sim OUT] [--no-dead] [--no-reads] [--sound]
-       python3 -I bench/ledger_headroom.py BUILD_DIR --merge OUT [all|simple|nocache]
+       python3 -I bench/ledger_headroom.py BUILD_DIR --merge OUT [all|simple|nocache|seq|seqgap]
 
 `--classes` (for a `--ledger-opt` build: what the passes still leave) replays the extended
 `ledgerReuse`/`ledgerDeadStore` on each circuit with the frame analysis of
@@ -25,8 +25,11 @@ against, for gas: give it a directory holding `o2` = the input build and `lo` = 
 `--merge OUT` writes to OUT a copy of the build whose adjacent ledger statements with the same guard
 are merged into one program (when the second does not use what the first reads): `all`, or only
 plain reads and cell writes (`simple`), or only programs without cached instructions, branches or
-swaps (`nocache`); the ZKIR is unchanged, so only gas differs (`LO_ALL=1 node
-test/ledger-opt.mjs DIR` counts every call).
+swaps (`nocache`), or the class `Circuit.ledgerMerge` proves sound (`seq`: the analysis `mcheck` of
+Damp/Optimize/LedgerMerge.lean ported; `seqgap`: also across statements that are not ledger
+statements and commute with the second, which is what the pass does). The ZKIR is unchanged, so only
+gas differs (`LO_ALL=1 node test/ledger-opt.mjs DIR` counts every call, DIR holding `o2` = the input
+build and `lo` = OUT).
 
 BUILD_DIR is a `damp-bench` output directory (one sub-directory per contract, each with
 `contract.json` and `zkir/`). For every circuit the ledger statements of `contract.json` are
@@ -53,7 +56,7 @@ With `--rows`, the `a.same` and `b` rewrites are applied to the emitted ZKIR (th
 public inputs of the removed statement dropped, its reads renamed to the earlier read / the
 written operand) and measured with `zkir-v3 mock-compile`.
 """
-import copy, glob, json, os, re, shutil, subprocess, sys, tempfile
+import collections, copy, glob, json, os, re, shutil, subprocess, sys, tempfile
 
 root = sys.argv[1]
 want_rows = '--rows' in sys.argv
@@ -707,7 +710,168 @@ def nocache(ops):
     return not any(o.get('cached') for o in ops) and not any(o['kind'] in ('idxStack', 'concatCached', 'branch', 'jmp', 'swap') for o in ops)
 
 
+
+# The analysis of Damp/Optimize/LedgerMerge.lean (`mcheck`, `mboundary`), ported: a tag per stack entry
+# (value: ('o', i) initial value i / ('k', key) a constant cell / ('x',); strength True/False/None; fully
+# cached; constant keys visited).
+INIT = [(('o', 2), True, False, frozenset()), (('o', 1), False, True, frozenset()), (('o', 0), False, True, frozenset())]
+def band(a, b):
+    if a is False or b is False: return False
+    if a is True and b is True: return True
+    return None
+NEW = (('x',), True, True, frozenset())
+def hit(cont, key):
+    return cont[2] or (key[0][0] == 'k' and key[0][1] in cont[3])
+class Fail(Exception): pass
+
+def mkey(v):
+    # `mkeyVal`: a key is known only when every operand is a constant
+    return ('k', canon(v)) if all(x.get('kind') == 'const' for x in v['vals']) else ('x',)
+
+def step(op, ts, check):
+    k = op['kind']
+    ts = list(ts)
+    def pop():
+        if not ts: raise Fail('empty')
+        return ts.pop(0)
+    if k == 'dup':
+        if op['n'] >= len(ts): raise Fail('dup')
+        ts.insert(0, ts[op['n']])
+    elif k == 'swap':
+        n = op['n'] + 1
+        if n >= len(ts): raise Fail('swap')
+        ts[0], ts[n] = ts[n], ts[0]
+    elif k in ('idx', 'idxStack'):
+        if k == 'idxStack':
+            sk = pop(); keys = [mkey(p) for p in op['path']] + [sk[0]]; cached = True; pp = False
+        else:
+            keys = [mkey(p) for p in op['path']]; cached = op['cached']; pp = op['pushPath']
+        curr = pop()
+        for kk in keys:
+            if cached and check and not (curr[2] or (kk[0] == 'k' and kk[1] in curr[3])): raise Fail('idx miss')
+            if pp:
+                ts.insert(0, (curr[0], curr[1], curr[2], curr[3] | {kk[1]} if kk[0] == 'k' else curr[3]))
+                ts.insert(0, (kk, False, True, frozenset()))
+            curr = (('x',), curr[1], curr[2], frozenset())
+        ts.insert(0, curr)
+    elif k == 'ins':
+        curr = pop(); s = curr[1]; fc = curr[2]
+        for _ in range(op['n']):
+            key = pop(); cont = pop()
+            if op['cached'] and check and not hit(cont, key): raise Fail('ins miss')
+            s = band(s, cont[1]); fc = fc and cont[2]
+        ts.insert(0, (('x',), s, fc, frozenset()))
+    elif k == 'rem':
+        key = pop(); cont = pop()
+        if op['cached'] and check and not hit(cont, key): raise Fail('rem miss')
+        ts.insert(0, (('x',), cont[1], cont[2], cont[3]))
+    elif k == 'push':
+        ts.insert(0, (mkey(op['value']), op['storage'], True, frozenset()))
+    elif k in ('pushNull', 'pushState'):
+        ts.insert(0, (('x',), op['storage'], True, frozenset()))
+    elif k in ('popeq', 'pop', 'log'):
+        pop()
+    elif k in ('lt', 'eq', 'and', 'or', 'add', 'sub', 'member', 'concat', 'concatCached'):
+        pop(); pop(); ts.insert(0, NEW)
+    elif k in ('type', 'size', 'neg', 'root', 'addi', 'subi'):
+        pop(); ts.insert(0, NEW)
+    elif k == 'ckpt':
+        pass
+    else:
+        raise Fail('op ' + k)
+    return ts
+def run(ops, ts, check, fuel=None):
+    """All paths: list of final tag stacks; raises Fail."""
+    if fuel is None: fuel = len(ops) + 1
+    if fuel == 0: raise Fail('fuel')
+    if not ops: return [ts]
+    op, rest = ops[0], ops[1:]
+    if op['kind'] == 'branch':
+        if op['skip'] > len(rest): raise Fail('jump past end')
+        if not ts: raise Fail('empty')
+        return run(rest, ts[1:], check, fuel - 1) + run(rest[op['skip']:], ts[1:], check, fuel - 1)
+    if op['kind'] == 'jmp':
+        if op['skip'] > len(rest): raise Fail('jump past end')
+        return run(rest[op['skip']:], ts, check, fuel - 1)
+    return run(rest, step(op, ts, check), check, fuel - 1)
+def boundary(ts):
+    return (len(ts) == 3 and ts[0][1] is True and ts[1][0] == ('o', 1) and ts[1][1] is False and ts[1][2]
+            and ts[2][0] == ('o', 0) and ts[2][1] is False and ts[2][2])
+def why_not(p1, p2):
+    try:
+        ends = run(p1, INIT, False)
+    except Fail as e:
+        return 'p1:' + str(e)
+    for t in ends:
+        if not boundary(t):
+            if len(t) != 3: return 'p1-height'
+            if t[0][1] is not True: return 'p1-weakstate'
+            if t[1][0] != ('o', 1): return 'p1-effects'
+            return 'p1-other'
+    try:
+        run(p2, INIT, True)
+    except Fail as e:
+        return 'p2:' + str(e)
+    return None
+
+def vars_of(x, acc=None):
+    if acc is None: acc = set()
+    if isinstance(x, dict):
+        if x.get('kind') == 'var' and 'var' in x: acc.add(x['var'])
+        for v in x.values(): vars_of(v, acc)
+    elif isinstance(x, list):
+        for v in x: vars_of(v, acc)
+    return acc
+def binds(s):
+    if s['kind'] == 'bind': return {s['var']}
+    if s['kind'] == 'witness': return {o['var'] for o in s['outs']}
+    if s['kind'] == 'ledger': return set(s['reads'])
+    return set()
+def uses(s):
+    if s['kind'] == 'bind': return vars_of(s['expr'])
+    if s['kind'] == 'witness': return vars_of(s['guard']) | vars_of(s['args'])
+    if s['kind'] == 'ledger': return vars_of(s['guard']) | vars_of([{**o, 'result': []} if o['kind'] == 'popeq' else o for o in s['ops']])
+    if s['kind'] == 'assert': return vars_of(s['cond'])
+    if s['kind'] == 'constrain': return vars_of(s['expr'])
+    return vars_of(s)
+
+def m_binds(s):
+    if s['kind'] == 'bind': return {s['var']}
+    if s['kind'] == 'witness': return {o['var'] for o in s['outs']}
+    if s['kind'] == 'ledger': return set(s['reads'])
+    return set()
+
+def m_vars(x, acc=None):
+    if acc is None: acc = set()
+    if isinstance(x, dict):
+        if x.get('kind') == 'var' and 'var' in x: acc.add(x['var'])
+        for v in x.values(): m_vars(v, acc)
+    elif isinstance(x, list):
+        for v in x: m_vars(v, acc)
+    return acc
+
+def m_uses(s):
+    return m_vars({k: v for k, v in s.items() if k not in ('reads', 'outs', 'var')})
+
+
 def main_merge(src, dst, mode):
+    """Merge ledger statements with the same guard, the second not using what the first reads, under
+    `mode`: all / simple / nocache (adjacent only), seq (adjacent, `mergeable` and the other conditions
+    of `mergeInto`), seqgap (seq, also across statements that are not ledger statements and commute
+    with the second, as `Circuit.ledgerMerge` does)."""
+    stats = collections.Counter()
+    def ok(a, b):
+        if canon(a['guard']) != canon(b['guard']): stats['guard'] += 1; return False
+        if m_uses(b) & set(a['reads']): stats['dep'] += 1; return False
+        if mode == 'all': return True
+        if mode == 'simple': return simple(a['ops']) and simple(b['ops'])
+        if mode == 'nocache': return nocache(a['ops']) and nocache(b['ops'])
+        if set(a['reads']) & set(b['reads']) or m_vars(a['ops']) & set(b['reads']): stats['dep'] += 1; return False
+        if len(a['ops']) + len(b['ops']) > 160: stats['size'] += 1; return False
+        w = why_not(a['ops'], b['ops'])
+        if w: stats[w] += 1; return False
+        return True
+    gap_ok = mode == 'seqgap'
     n = 0
     for d in sorted(glob.glob(os.path.join(src, '*'))):
         name = os.path.basename(d)
@@ -717,17 +881,20 @@ def main_merge(src, dst, mode):
         for circ in c['circuits']:
             out = []
             for s in circ['body']:
-                if s['kind'] == 'ledger' and s['ops'] and out and out[-1]['kind'] == 'ledger' and out[-1]['ops'] \
-                        and canon(out[-1]['guard']) == canon(s['guard']) \
-                        and (mode == 'all' or (mode == 'simple' and simple(out[-1]['ops'][-3:] if False else s['ops']) and simple(out[-1]['ops'][:len(out[-1]['ops'])])) or (mode == 'nocache' and nocache(s['ops']) and nocache(out[-1]['ops']))) \
-                        and not any(('"var": %d,' % v) in canon(s['ops']).replace('"var": %d}' % v, '"var": %d,' % v) for v in out[-1]['reads']):
-                    out[-1] = {**out[-1], 'reads': out[-1]['reads'] + s['reads'], 'ops': out[-1]['ops'] + s['ops']}
-                    n += 1
-                else:
-                    out.append(s)
+                if s['kind'] == 'ledger' and s['ops']:
+                    j = len(out) - 1; between = []
+                    while j >= 0 and out[j]['kind'] != 'ledger':
+                        between.append(out[j]); j -= 1
+                    if j >= 0 and out[j]['ops'] and (gap_ok or not between) and len(between) <= 64 and all(
+                            not (m_uses(s) & m_binds(g)) and not (m_binds(s) & (m_uses(g) | m_binds(g)))
+                            for g in between) and ok(out[j], s):
+                        out[j] = {**out[j], 'reads': out[j]['reads'] + s['reads'], 'ops': out[j]['ops'] + s['ops']}
+                        n += 1
+                        continue
+                out.append(s)
             circ['body'] = out
         json.dump(c, open(os.path.join(od, 'contract.json'), 'w'))
-    print('merged', n)
+    print('merged', n, dict(stats))
 
 
 if '--classes' in sys.argv:

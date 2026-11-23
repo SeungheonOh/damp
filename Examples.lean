@@ -29,6 +29,8 @@ import Examples.OptShareHashes
 import Examples.OptLedgerReuse
 import Examples.OptLedgerDeadStore
 import Examples.OptLedgerFrame
+import Examples.OptLedgerMerge
+import Examples.TokenProofs
 import Examples.Casts
 import Examples.EmitAgrees
 import Examples.Semantics

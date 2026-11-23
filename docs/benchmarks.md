@@ -389,12 +389,13 @@ transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent i
 ### Opt-in ledger passes (`--ledger-opt`)
 
 `--ledger-opt` runs, after the level's passes, `ledgerReuse` (a ledger read whose answer is known
-is replaced by that value), the `--O2` passes again (`optimizeFull`), and `ledgerDeadStore` (a
-cell write overwritten by the next ledger statement is dropped). Unlike every other pass the two
-ledger passes change what the circuit sends to the ledger, so the public transcript and the
-verifier key change, and they are proved only against the Lean model of Midnight's VM, from a
-well-formed state: same outputs, private transcript, private state and final ledger state
-(`Pass.SoundLedger`; DESIGN.md §2.6, §4). The default level is never affected.
+is replaced by that value), the `--O2` passes again (`optimizeFull`), `ledgerDeadStore` (a cell
+write overwritten by the next ledger statement is dropped) and `ledgerMerge` (consecutive ledger
+statements with the same guard run as one request). Unlike every other pass the ledger passes
+change what the circuit sends to the ledger, so the public transcript and the verifier key change,
+and they are proved only against the Lean model of Midnight's VM, from a well-formed state: same
+outputs, private transcript, private state and final ledger state (`Pass.SoundLedger`; DESIGN.md
+§2.6, §4). The default level is never affected.
 
 What `ledgerReuse` knows: the answer of an earlier plain read (one `idx`, or two: a `Map.lookup`,
 a field of a structure), the operands of a cell write, and the value of a map insert at the same
@@ -420,6 +421,10 @@ and public inputs no longer sent); the rest is the `--O2` passes on the forwarde
 Totals (`test/bench.sh`): `--O2 --ledger-opt` 4811 instructions / 456 871 rows (was 5295 /
 500 208), `--O3 --ledger-opt` 4622 / 417 754 (was 5106 / 461 092); 22 circuits end up in a smaller
 size class than compactc's at `--O2 --ledger-opt` (5 at `--O2`; sum of 2^k 775 808 -> 702 912).
+
+(`ledgerMerge`, below, changes no row or instruction count; with it 51 circuits' ZKIR differs, the
+other 21 only in instruction order.) The table below is from before `ledgerMerge` (its gas is in
+the next subsection).
 
 Behaviour and gas (`executor/test/ledger-opt.mjs`, run by `test/ledger-opt.sh`): the benchmark calls
 through the real runtime against both builds, each from the ledger state its previous call left;
@@ -472,17 +477,95 @@ remaining rewrites applied to the ZKIR for rows and to `contract.json` for gas):
 * **Counters** (a read after an increment of a known value), **`member` after `insert`**, guarded
   dead stores, and a store of the value just read from the same field: none in the benchmark or the
   examples.
-* **Merging adjacent ledger statements** into one program (same guard, the second not using what
-  the first reads; `--merge`): the ZKIR does not change (0 rows), but gas does, over all 97
-  successful benchmark calls: computeTime 585.18 -> 339.08 x10^9 (-42 %), bytesWritten 187 189 ->
-  42 439 (-77 %), readTime unchanged (every query writes the state back). Restricted to plain
-  reads and cell writes it is -6 % computeTime, to programs without cached instructions, branches
-  or swaps -10 %. Not done: one query is not two in the model in general (the read cache carries
-  over, a cached instruction of the second program can hit where it would miss alone; the effects
-  are decoded and re-encoded between two queries and not inside one; the first program's final
-  stack and strength are checked between two queries), so a proof needs a relational simulation of
-  the cache and the effects; the naive merge (without the condition on the second program's
-  operands) changes `composable_inner.add`'s ledger state, as the runtime confirmed.
+
+#### Merging ledger statements (`ledgerMerge`)
+
+Every request (`QueryContext::query`) writes the contract state back and re-encodes the effects,
+whatever its program did, so `n` small requests cost far more than one request running the same
+instructions. `Circuit.ledgerMerge` (Damp/Optimize/LedgerMerge.lean) appends the instructions of a
+ledger statement to an earlier one, `.ledger g (rs₁ ++ rs₂) (ops₁ ++ ops₂)`. It changes no row and
+no ZKIR instruction (the same impacts and public inputs, in another order; `test/ledger-opt.sh`
+checks this on every merged circuit), only the grouping into requests.
+
+*Why one request is not two.* Between two requests the runtime (and the model, `query`) checks
+that the first program left exactly three stack entries with a strong state on top, decodes and
+re-encodes the effects, and starts the second program from a fresh stack: the state's cache key
+is a fresh root with nothing cached, the effects and the call context fully cached, every value
+in its original strength. Inside one request none of this happens: the cache carries over (a
+cached `idx`/`ins`/`rem` of the second program may hit where alone it misses, which turns a
+failure into a success), the second program sees the effects before they are re-encoded (an
+`add` leaves a `u128` amount as an 8-byte cell, a key may keep another alignment), and whatever
+the first program left on the stack is the second's starting stack. At the executor level the
+guard is evaluated once, and the second statement's operands before the first statement's reads
+are bound. The naive merge (`--merge all` without the operand condition) breaks
+`composable_inner.add` for exactly that last reason: its write `field0 := x + read` was evaluated
+with the read still 0 (reproduced: ledger state and ZKIR check differ on `add(4)`).
+
+*The condition* (`mergeInto`, proved by `ledgerOracle_merge` in Damp/Proofs/Ledger/OptMerge.lean
+and `step_merge`, `step_commute` in Damp/Proofs/Optimize/LedgerMerge.lean): the same guard
+expression, not mentioning the first statement's reads; the second statement's operands do not
+mention the first's reads and the first's do not mention the second's; each statement reads as many
+variables as its `popeq`s give field elements; and the abstract interpretation `mcheck` (a tag
+per stack entry: initial value / constant cell / unknown, strength, fully cached, constant keys
+visited) shows that
+
+* on every path the first program ends with three entries: a strong one, the effects *unchanged*
+  (so already in decoded form), weak and fully cached, and the call context unchanged, weak and
+  fully cached, and all its jumps stay inside it;
+* every cached instruction of the second program hits in any run from a state whose effects and
+  context are fully cached, whatever the contract state's cache: it works on a fully cached entry
+  (effects, context, a pushed or computed value, anything read from those) or on a container an
+  earlier path-pushing `idx` visited at the same constant key (`Map.insert`, `Counter.increment`,
+  the kernel's effect writes all have this shape).
+
+Then the second program runs exactly as with its cached flags cleared, in both situations; a
+program without cached instructions does the same to values, strengths and reads whatever the
+cache and cache keys are (`runR_er`); and the stack after the first program has exactly the values
+and strengths of the fresh stack. Merging also crosses statements that are not ledger statements
+(binds, assertions, range checks, witness calls; at most 64), when the second ledger statement
+does not read what they bind and they neither read nor bind what it reads (`step_commute`: the two
+orders give equal executor states). Merged programs are capped at 160 instructions and 6 branches.
+The executor's state after a merge is equal to the original's, public transcript and public inputs
+included (`lmergeGo_steps`).
+
+*Classes measured* (`python3 -I bench/ledger_headroom.py BUILD --merge OUT MODE` on the build
+without `ledgerMerge`, gas with `LO_ALL=1 node test/ledger-opt.mjs`, 97 successful calls without
+zerocash_core, compute time in 10^9 units, from 580.24, bytes written from 183 243):
+
+| class | merges | computeTime | bytesWritten |
+|---|---|---|---|
+| plain reads and cell writes only (`simple`) | 29 | 545.68 (-6 %) | 170 313 |
+| no cached instructions, branches or swaps (`nocache`) | 44 | 526.43 (-9 %) | 158 159 |
+| adjacent, `mcheck` (`seq`) | 211 | 355.21 (-39 %) | 45 489 |
+| all adjacent, operand condition only (`all`, NOT sound: see below) | 233 | 338.70 (-42 %) | 42 439 |
+| `mcheck`, also across other statements (`seqgap`, implemented) | 289 | 286.53 (-51 %) | 39 409 |
+
+The adjacent pairs `mcheck` refuses: 18 whose first program writes the effects (a later program
+would see them unencoded), 4 over the size cap, 1 cached `ins` that would miss. Merging across other
+statements without `mcheck` (`all` with gaps) changes `coracle`'s results in the runtime (5 calls).
+
+*Measured* (`LO_OUT=... ./test/ledger-opt.sh`, which builds `nm`, the `--O2 --ledger-opt` build
+without `ledgerMerge`, and now also runs zerocash_core's calls, its Merkle paths computed by
+compactc's module): 44 circuits merged, ledger programs 502 -> 214, rows and ZKIR instructions
+unchanged; 1547 checks pass (every call of every build: same success, results, ledger state, Zswap
+state and private transcript, ZKIR checker accepts each build's proof data). Gas over all 99
+successful calls (`LO_ALL=1`), `--O2` -> `--O2 --ledger-opt` without merging -> with it:
+
+| | `--O2` | without `ledgerMerge` | `--O2 --ledger-opt` |
+|---|---|---|---|
+| readTime (10^6) | 137 190 | 82 365 | 82 365 |
+| computeTime (10^9) | 1 116.07 | 597.74 | **304.17** (-49 %) |
+| bytesWritten | 365 235 | 187 205 | **44 121** (-76 %) |
+| bytesDeleted | 361 059 | 183 029 | **39 945** (-78 %) |
+
+Over the 48 calls of the circuits `ledgerMerge` changes: computeTime 494.19 -> 200.61 x10^9 (-59 %),
+bytesWritten 176 886 -> 33 802. Read time does not change: a merged request reads the same cells
+(the read cache is not charged differently for a cached hit here).
+
+Not done: merging when the first program writes the effects (it would need the effects writes
+shown to keep the decoded form: keys of the slot's type and alignment, no duplicate after
+re-encoding), and reordering ledger statements past each other (frame-independent statements, to
+bring mergeable ones together); 4 pairs exceed the size cap.
 
 ### Ideas measured and not pursued
 

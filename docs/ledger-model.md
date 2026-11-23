@@ -379,6 +379,69 @@ executor's `Prims`; the theorems take their field elements as given.
   started (context slot 5): `[0]` when absent, the entry read as `u128`
   otherwise; the ledger unchanged.
 
+**End to end through the executor** (`Damp/Proofs/Ledger/TokensRuns.lean`,
+values in `TokensValues.lean`, rules in `Damp/Proofs/Interface/TokenLogic.lean`
+and `CallLogic.lean`). Each theorem is an `XRuns` description of the
+operation run by `Exec.steps` with `oracles H w`: when it completes, its result,
+the private state, and the exact ledger state afterwards. The hash results
+are taken as given, as functions of the field elements the circuit hashes:
+`phashFs p align xs` (the persistent hash's two limbs, as the IR evaluates
+`persistentHash`), `p.transientHash`; `ccPre`, `cnPre`, `tokenTypePre`,
+`derivedNonceFs` say what is hashed (`coinCommitment_is`, `coinNullifier_is`,
+`tokenType_is`, `derivedNonce_is`). The built-in witnesses `createZswapInput` /
+`createZswapOutput` are answered by `w`; a theorem states the answer (no field
+elements, a private state). "Guard `gb`" means one statement for both guard
+values; with the guard off nothing is asked and nothing changes, but the
+hashes are still computed (from the zeros an inactive `kernel.self()` read
+gives, `selfOr`), so they must evaluate there too.
+
+* New `XRuns` rules (`TokenLogic.lean`): `XRuns.askWitness0` (zero-width
+  witness, guard on: completes iff the oracle answers no field elements; the
+  private state is the one it returns), `XRuns.askWitness0_off`,
+  `XRuns.askWitness0G`; `XRuns.ledgerOpG`, `XRuns.ledgerReadG` (either guard
+  value); `XRuns.when_ledgerOp` (`if% c then op`: the operation runs iff
+  `gb && cb`); `XRuns.ledgerOpE`, `XRuns.when_ledgerOpE` (operation given by
+  name, spec in the form of this file), `XRuns.condOp` / `XRuns.when_condOp`
+  (answers `if P then some ([], σ₁) else none`: completes iff `gb → P`),
+  `XRuns.someOp` / `XRuns.when_someOp`; `XRuns.val`, `XRuns.addResult`,
+  `Quiet.castTo`, `Value.Shaped`.
+* `receiveShielded_runs` (guard `gb`): completes iff (guard on) the witness
+  accepts the output `(coin, right(self))`; slot 1 gets the commitment.
+* `sendUnshielded_runs`, `mintUnshieldedToken_runs` (guard `gb`): complete iff
+  each addition fits (`sendUOk`, `mintUOk`); the effects as `sendUEffects`,
+  `mintUEffects` (slot 6 exactly when the recipient is this contract,
+  `isSelfU_runs`); `receiveUnshielded_runsG` (guard `gb`).
+* Balance reads (guard `gb`): `unshieldedBalance_runs` (the context's
+  balance `B`, 0 when absent); `unshieldedBalanceLt_runs`,
+  `unshieldedBalanceGt_runs`, `…Gte_runs`, `…Lte_runs`: with the guard on they
+  complete **iff the balance and the amount both fit 64 bits** (the VM's `lt`
+  pops two `u64`s, `Kernel.balanceLessThan_spec`, `Kernel.balanceGreaterThan_spec`):
+  a balance or amount of `2^64` or more fails the transaction although both
+  are `u128`s; then they mean `B < amount` (`amount < B`, negations).
+* `mintShieldedToken_runs`, `mergeCoin_runs`, `mergeCoinImmediate_runs`,
+  `sendShielded_runs`, `sendImmediateShielded_runs` (guard on): complete iff
+  the mint fits / the colors agree and the sum is below `2^128` / the value
+  sent is at most the coin's; the result (the coin, or `(change, sent)` with
+  `none` exactly when nothing is left over), the private state the built-in
+  witness left, and the effects (`mintSEffects`, `mergeEffects`,
+  `sendSEffects`; the change coin's commitment claimed in slots 2 and 1 only
+  when there is change: the `cond`'s `else` branch runs under the guard
+  `change ≠ 0`).
+* `XRuns.contractCall` (`CallLogic.lean`, guard on), the oracle's answer to
+  the call `resFs ++ [rand]` given: completes iff fewer than `2^64` calls were
+  claimed; the result means `resFs`; effects slot 3 gets
+  `(m.length, address, entry point, p.transientHash (rand :: args ++ results))`
+  (`claimedCall`). Under `CallIsolated C c` (`Calls.lean`) the call oracle is
+  `c` (`withCalls_witness_call`).
+
+Contract-level (`Examples/TokenProofs.lean`), stated for any successful
+`buildCore` (any level, with or without `--ledger-opt`) via `build_correct`
+(`shipped_run`, `shipped_of`), each ending with the shipped ZKIR accepting the
+proof data: `deposit_shipped` (`tokens.deposit`: `receiveShielded` and a
+`Cell.write` of the coin) and `bump_shipped` (`caller.bump`, run by `runC` under
+`CallIsolated`: the call claimed in slot 3 and `last` holding the result).
+
+
 `Calls.lean`, the call assumption: see "Cross-contract calls" below.
 
 `Executor.lean`: `oracles_ledger`, `run_accepted_vm`, `run_accepted_by_zkir_vm`
@@ -532,16 +595,18 @@ proof; and it says nothing of a runtime that would allow re-entry.
 * No theorems yet for a `Set` inside a `Map`, Merkle `insertHashIndex`, or
   ADTs nested deeper than a counter or map in a map. The specifications are
   for top-level fields (`path = [fieldKey i]`) plus those two nestings.
-* The shielded token operations (`mintShieldedToken`, `sendShielded`,
-  `mergeCoin`, `receiveShielded`) and `sendUnshielded` / `mintUnshieldedToken`
-  are stated at the level of the ledger requests they send
-  (`Tokens.lean`), not end to end through the executor: that needs `XRuns`
-  rules for zero-width witnesses (`createZswap*`) and their `if%` / `cond`
-  bodies. `receiveUnshielded` is end to end. `balanceLessThan` and
-  `balanceGreaterThan` have no theorem (they compare with `lt`, `u64` only).
+* `mintShieldedToken`, `sendShielded`, `sendImmediateShielded`, `mergeCoin`,
+  `mergeCoinImmediate` are proved end to end with the operation's own guard
+  on only (inside, `sendShielded`'s change branch is proved for both guard
+  values); the guard-off case needs the same bookkeeping with every operation
+  off, as `receiveShielded_runs` and the unshielded theorems do. `sendUnshielded` and
+  `mintUnshieldedToken` with a recipient whose `Either` has both sides set fail
+  (`sendUnshielded_badRecipient`); the end-to-end theorems assume a
+  well-formed spend key.
 * The coin-storing operations (`Cell.writeCoin`, `Map.insertCoin`,
   `Set.insertCoin`, `LedgerList.pushFrontCoin`, reading the context's
-  commitment indices) have no theorem.
+  commitment indices with `idx` on a stack key and `concat cached 91`) have no
+  VM-level specification yet, so no end-to-end theorem.
 * The duplicate-key ordering gap (above, "What is abstracted") remains.
 * A `popeq` carries Damp's own alignment, under which the executor reads the
   value back; the VM does not check it against the value's alignment, so the
