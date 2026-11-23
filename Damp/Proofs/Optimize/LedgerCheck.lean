@@ -528,6 +528,12 @@ theorem Circuit.forwardAllOpt_checkLedger : Pass.KeepsLedger Circuit.forwardAllO
       (Circuit.algebra_checkLedger _ (Circuit.forwardWith_checkLedger _ c h)))
     (fun _ h => h) _
 
+/-- `Circuit.mergeChecks` keeps a circuit's ledger statements well formed: it
+    changes no ledger statement. -/
+theorem Circuit.mergeChecks_checkLedger : Pass.KeepsLedger Circuit.mergeChecks := fun c h => by
+  rw [Circuit.checkLedger_ok_iff] at h ⊢
+  simpa [Circuit.mergeChecks] using mergeGo_ledgerProblem _ _ _ h
+
 theorem defaultPasses_keepsLedger : ∀ f ∈ defaultPasses, Pass.KeepsLedger f := by
   intro f hf
   simp only [defaultPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
@@ -542,11 +548,12 @@ theorem defaultPasses_keepsLedger : ∀ f ∈ defaultPasses, Pass.KeepsLedger f 
 theorem fullPasses_keepsLedger : ∀ f ∈ fullPasses, Pass.KeepsLedger f := by
   intro f hf
   simp only [fullPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
-  rcases hf with h | h | h | h | h | h | h | h | h | h | h <;> subst h
+  rcases hf with h | h | h | h | h | h | h | h | h | h | h | h | h <;> subst h
   · exact Circuit.simplify_checkLedger
   · exact Circuit.foldDivmod_checkLedger
   · exact Circuit.assertEq_checkLedger
   · exact Circuit.asserts_checkLedger
+  · exact Circuit.mergeChecks_checkLedger
   · exact Circuit.simplify_checkLedger
   · exact Circuit.bounds2_checkLedger
   · exact Circuit.simplify_checkLedger
@@ -554,6 +561,7 @@ theorem fullPasses_keepsLedger : ∀ f ∈ fullPasses, Pass.KeepsLedger f := by
   · exact Circuit.forwardOpt_checkLedger
   · exact Circuit.forwardAllOpt_checkLedger
   · exact Circuit.commuteOpt_checkLedger
+  · exact Circuit.assertZero_checkLedger
 
 /-- The default optimizer keeps a circuit's ledger statements well formed. -/
 theorem Circuit.optimize_checkLedger (c : Circuit) (h : c.checkLedger = .ok ()) :
@@ -583,18 +591,26 @@ theorem Circuit.hashRanges_checkLedger : Pass.KeepsLedger Circuit.hashRanges := 
   rw [Circuit.checkLedger_ok_iff] at h ⊢
   simpa [Circuit.hashRanges] using hashRangesGo_ledgerProblem _ h
 
+/-- `Circuit.shareGuarded` keeps a circuit's ledger statements well formed: it
+    rewrites a statement's operands only when the result passes `ledgerProblem`. -/
+theorem Circuit.shareGuarded_checkLedger : Pass.KeepsLedger Circuit.shareGuarded := fun c h => by
+  rw [Circuit.checkLedger_ok_iff] at h ⊢
+  simpa [Circuit.shareGuarded] using shareGo_ledgerProblem _ _ _ _ h
+
 theorem Circuit.optimizeMax_checkLedger (c : Circuit) (h : c.checkLedger = .ok ()) :
     c.optimizeMax.checkLedger = .ok () := by
   refine runPasses_keepsLedger _ ?_ c h
   intro f hf
-  simp only [maxPasses, List.mem_append, List.mem_singleton] at hf
-  rcases hf with h | h
+  simp only [maxPasses, List.mem_append, List.mem_cons, List.not_mem_nil, or_false] at hf
+  rcases hf with h | h | h | h
   · intro c hc
     simp only [maxPassesWith, List.mem_cons] at h
     rcases h with h | h | h
     · subst h; exact Circuit.simplify_checkLedger c hc
     · subst h; exact Circuit.foldHashes_checkLedger Crypto.prims c hc
     · exact fullPasses_keepsLedger f h c hc
+  · subst h; exact Circuit.shareSelects_checkLedger
+  · subst h; exact Circuit.shareGuarded_checkLedger
   · subst h; exact Circuit.hashRanges_checkLedger
 
 end Damp.IR

@@ -18,6 +18,9 @@ import Damp.Proofs.Optimize.InlineAll
 import Damp.Proofs.Optimize.AssertEq
 import Damp.Proofs.Optimize.Commute
 import Damp.Proofs.Optimize.HashRanges
+import Damp.Proofs.Optimize.AssertZero
+import Damp.Proofs.Optimize.MergeChecks
+import Damp.Proofs.Optimize.ShareHashes
 
 namespace Damp.IR
 open Damp.Zkir Damp.Exec
@@ -38,11 +41,12 @@ theorem defaultPasses_sound : ∀ f ∈ defaultPasses, Pass.Sound f := by
 theorem fullPasses_sound : ∀ f ∈ fullPasses, Pass.Sound f := by
   intro f hf
   simp only [fullPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
-  rcases hf with h | h | h | h | h | h | h | h | h | h | h <;> subst h
+  rcases hf with h | h | h | h | h | h | h | h | h | h | h | h | h <;> subst h
   · exact Circuit.simplify_sound
   · exact Circuit.foldDivmod_sound
   · exact Circuit.assertEq_sound
   · exact Circuit.asserts_sound
+  · exact Circuit.mergeChecks_sound
   · exact Circuit.simplify_sound
   · exact Circuit.bounds2_sound
   · exact Circuit.simplify_sound
@@ -50,6 +54,7 @@ theorem fullPasses_sound : ∀ f ∈ fullPasses, Pass.Sound f := by
   · exact Circuit.forwardOpt_sound
   · exact Circuit.forwardAllOpt_sound
   · exact Circuit.commuteOpt_sound
+  · exact Circuit.assertZero_sound
 
 theorem Circuit.optimizeFull_sound : Pass.Sound Circuit.optimizeFull := runPasses_sound _ fullPasses_sound
 
@@ -70,9 +75,11 @@ theorem Circuit.optimizeMaxWith_soundFor (p : Prims) : Pass.SoundFor p (Circuit.
 /-- Every `--O3` pass is sound for `Damp.Crypto.prims`. -/
 theorem maxPasses_soundFor : ∀ f ∈ maxPasses, Pass.SoundFor Crypto.prims f := by
   intro f hf
-  simp only [maxPasses, List.mem_append, List.mem_singleton] at hf
-  rcases hf with h | h
+  simp only [maxPasses, List.mem_append, List.mem_cons, List.not_mem_nil, or_false] at hf
+  rcases hf with h | h | h | h
   · exact maxPassesWith_soundFor Crypto.prims f h
+  · subst h; exact Circuit.shareSelects_soundFor
+  · subst h; exact Circuit.shareGuarded_soundFor
   · subst h; exact Circuit.hashRanges_soundFor
 
 /-- `--O3` is sound when the hash functions are Damp's implementations of

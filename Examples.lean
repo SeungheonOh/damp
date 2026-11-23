@@ -24,6 +24,10 @@ import Examples.OptInlineAll
 import Examples.OptSmall
 import Examples.OptHashRanges
 import Examples.OptForwardBound
+import Examples.OptGuards
+import Examples.OptShareHashes
+import Examples.OptLedgerReuse
+import Examples.OptLedgerDeadStore
 import Examples.Casts
 import Examples.EmitAgrees
 import Examples.Semantics

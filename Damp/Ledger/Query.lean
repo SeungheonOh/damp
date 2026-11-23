@@ -132,13 +132,16 @@ def effectEntry (slot : Nat) (k : AV) (v : SV) : Option (AV × SV) := do
   let k' ← effectKey slot k
   pure (k', v')
 
-/-- Normalise a map's entries: later entries win when two keys decode alike. -/
+/-- Normalise a map's entries: later entries win when two keys decode alike.
+    The entries kept stay in their order (the runtime's maps are unordered;
+    keeping the order makes the decoding idempotent, so that a state a query
+    leaves is well formed). -/
 def effectMap (slot : Nat) : List (AV × SV) → Option (List (AV × SV))
   | [] => some []
   | (k, v) :: rest => do
       let rest ← effectMap slot rest
       let (k', v') ← effectEntry slot k v
-      pure (if (assocGet k' rest).isSome then rest else assocSet k' v' rest)
+      pure (if (assocGet k' rest).isSome then rest else (k', v') :: rest)
 
 /-- The effects after a query: `TryFrom<VmValue> for Effects` (nine maps), then
     re-encoded, as far as `effectEntry` models it. -/

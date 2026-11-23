@@ -353,7 +353,13 @@ carries that side condition.
 | `AssertEq` | `assert (e == 1)` becomes `assert e`, for any `e`: an `assert` passes exactly when its condition is 1, and `e == 1` is 1 exactly when `e` is. No boolean knowledge needed (the usual `e` is a `Boolean` read from the ledger, which is not range checked). Only `assert`: in a `select` or a guard the rewrite is not exact for an `e` that is not 0 or 1 |
 | `Commute` | puts the operands of `add`, `mul`, `eq` in a canonical order (by a structural hash invariant under the swap) so the emitter shares `x != y` and `y != x`; kept only when the emitted circuit is strictly smaller (`commuteOpt`) |
 | `InlineAll` | `forwardAllOpt`: `Forward` with every binding eligible, `Algebra`, `Simplify`, kept only when strictly smaller. Its point is dead code: a witness call's arguments are evaluated by the executor, not by the circuit, but the emitter's pruning counts them as uses, so a value computed only for a witness argument (a hash, typically) was emitted. Once it is substituted into the argument, nothing the emitter compiles reads its binding |
-| emitter | shares equal expressions; drops unused bindings (`Emit.pruneDeadBinds`: one backward liveness pass, which is already a fixpoint, since a dropped binding adds nothing to the live set; it counts the variables of witness arguments as live, though they are not emitted) |
+| `AssertZero` | `assertZero` (`--O2`, `--O3`): `assert (a == b)` becomes `constrain (a − b) zero`, emitted as one `constrain_eq`, a copy constraint with no row of its own, where `test_eq` and `assert` cost 3 rows. `a == k` with `k` constant becomes `constrain (a + (−k)) zero`, the constant computed (nothing when `k` is 0). Exact for any hash functions: `a − b = 0` exactly when `a = b` in a field |
+| `MergeChecks` | `mergeChecks` (`--O2`, `--O3`): a check repeated under complementary guards (`assert (select b c 1)` and `assert (select !b c 1)`, or `constrain (select b x 0) r` and its `!b` twin when 0 passes `r`), which Compact's `if (b) { assert(x != y) } else { assert(y != x) }` produces, becomes one `assert (select b c c)` (`constrain (select b x x) r`) at the first's place, which `Simplify` reduces to `assert c` when `b` is known to be 0 or 1; the second is dropped. Only when nothing between them rebinds a variable of the second; `!b` is recognised from a binding `n := select b 0 1` whose variables are not rebound |
+| `ShareHashes` | `shareSelects` and `shareGuarded` (`--O3` only): one hash for the two arms of a conditional. `select c (H as) (H bs)` becomes `H (select c as bs)` componentwise; and in two ledger statements guarded by `c` and `!c` whose operands are the hashes `phash as` and `phash bs`, both operands become `phash (select c as bs)`, which the emitter computes once (a ledger statement evaluates its operands whatever its guard and uses them only when the guard is 1). Exact for the transient hash and any hash functions; for the persistent hash only when the inputs differ in constants that fit their byte slots and the hash refuses exactly the inputs that do not fit their alignment, as `Crypto.prims` does, hence `Pass.SoundFor Crypto.prims` |
+| `HashRanges` | `hashRanges` (`--O3` only): drops a range check that a later persistent hash of the same value implies (see `--O3` below) |
+| `LedgerReuse` | `ledgerReuse` (`--ledger-opt` only): drops a ledger read whose answer is already known, binding its variables to the earlier read's (a repeated plain read of the same path under the same guard) or to the operands of a cell write of the same key just before (single-limb values). Facts about the contract state are forgotten at any ledger statement that may write; facts about the call context survive; a fact is forgotten when a variable it mentions is rebound. Rewrites the ledger statements themselves: not `Pass.Sound`, see below |
+| `LedgerDeadStore` | `ledgerDeadStore` (`--ledger-opt` only): drops a cell write under the constant guard 1, with a constant key and a value that cannot fail, when the next ledger statement (within a bounded window of bindings, checks and witness calls) is a write of the same key under guard 1 |
+| emitter | writes `constrain (a + k) zero` (what `assertZero` produces for `assert (a == k)`) as one `constrain_eq a (−k)` with no `add`, one row less (`Emit.zeroShift`; covered by `circuitCore_correct`); shares equal expressions; drops unused bindings (`Emit.pruneDeadBinds`: one backward liveness pass, which is already a fixpoint, since a dropped binding adds nothing to the live set; it counts the variables of witness arguments as live, though they are not emitted) |
 
 Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
 
@@ -366,15 +372,16 @@ Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
   which compactc does not (in the benchmark: `assert_misc.myswitch`, already
   different from compactc's).
 - `--O2`, `Circuit.optimizeFull`: `Simplify`, `foldDivmod`, `assertEq`,
-  `Asserts`, `Simplify`, `Bounds2`, `Simplify`, `Algebra`, `forwardOpt`,
-  `forwardAllOpt`, `commuteOpt`. Sound, as the default. `assertEq`, `Asserts`,
-  `forwardOpt` and `forwardAllOpt` do what compactc does not, so a circuit may
+  `Asserts`, `mergeChecks`, `Simplify`, `Bounds2`, `Simplify`, `Algebra`,
+  `forwardOpt`, `forwardAllOpt`, `commuteOpt`, `assertZero`. Sound, as the
+  default. `assertEq`, `Asserts`, `mergeChecks`, `forwardOpt`,
+  `forwardAllOpt` and `assertZero` do what compactc does not, so a circuit may
   come out smaller and then has a different verifier key: `counter.arith` is
   32 instructions and 146 rows with `--no-opt`, the same at the default level
-  (compactc's verifier key), and 26 instructions and 134 rows at `--O2`; it is
+  (compactc's verifier key), and 27 instructions and 133 rows at `--O2`; it is
   the only example circuit that `--O2` changes (`test/opt.sh`).
 - `--O3`, `Circuit.optimizeMax`: `Simplify`, `foldHashes Crypto.prims`, then
-  `--O2`, then `hashRanges`. `hashRanges` (`Damp/Optimize/HashRanges.lean`)
+  `--O2`, then `shareSelects`, `shareGuarded`, `hashRanges`. `hashRanges` (`Damp/Optimize/HashRanges.lean`)
   drops a range check on a value that a later persistent hash certainly reads in
   a slot at most that wide, since the hash rejects a value that does not fit; a
   bad input then fails at the hash instead of at the check
@@ -391,7 +398,34 @@ Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
 
 `--no-opt` turns everything off.
 
-Every pass but `foldHashes` and `hashRanges` is proved sound (`Pass.Sound`,
+`--ledger-opt` (opt-in, with the default level, `--O2` or `--O3`; refused
+with `--no-opt`) runs `ledgerPasses` (`ledgerReuse`, then `ledgerDeadStore`)
+after the level's passes: the shipped circuit is
+`runPasses ledgerPasses (level.pass c)` (`buildPassWith level true`). These
+passes change what the circuit sends to the ledger: fewer reads, fewer writes.
+What that guarantees, and what it does not:
+
+- *Guaranteed* (`Pass.SoundLedger`, `Damp/Proofs/Optimize/LedgerSound.lean`):
+  run by the executor against the Lean model of Midnight's VM
+  (`Damp.Ledger.oracles`, differentially tested by `test/vm.sh`), from any
+  well-formed ledger state, the rewritten circuit completes exactly when the
+  original does, with the same outputs, private transcript (witness answers),
+  private state and final ledger state (contract state, call context,
+  effects). At `--O3`, for runs with `Crypto.prims`.
+- *Guaranteed for every build*, as without the flag: the shipped ZKIR means
+  the shipped circuit, accepts what the executor records on it, passes the
+  ledger check (`ledgerPasses_keepsLedger`), meets the producer obligations
+  and reads back.
+- *Not guaranteed*: the public transcript and the public inputs are different
+  (that is the point), so the verifier key is different and a run of the
+  original's transcript is not one the new ZKIR accepts; nothing is proved
+  against a ledger other than the model (a ledger that answered two identical
+  reads differently would break `ledgerReuse`), or from a state that is not
+  well formed; gas is not modelled (measured instead: `test/ledger-opt.sh`,
+  docs/benchmarks.md).
+
+Every pass but `foldHashes`, `shareSelects`, `shareGuarded`, `hashRanges`
+and the two ledger passes is proved sound (`Pass.Sound`,
 `Damp/Proofs/Optimize/Sound.lean`): for every circuit, with no hypothesis on
 it, and for every choice of hash functions `p : Prims` (the IR semantics is
 parameterized by them), the pass changes neither what a run produces that
@@ -404,9 +438,19 @@ sound passes is sound whatever decides it (`Pass.Sound.choose`).
 equalities at that one `p`. A sound pass is sound for every `p`
 (`Pass.Sound.soundFor`), and passes sound for `p` compose
 (`runPasses_soundFor`), so `--O3` is `Pass.SoundFor Crypto.prims`
-(`Circuit.optimizeMax_soundFor`). Each pass also keeps the ledger-statement
+(`Circuit.optimizeMax_soundFor`). The ledger passes are `Pass.SoundLedger`
+(`Circuit.ledgerReuse_soundLedger`, `Circuit.ledgerDeadStore_soundLedger`), a
+third and weaker notion: the executor only, against the modelled ledger, from
+a well-formed state, up to the public transcript. A sound pass is sound
+against the ledger (`Pass.Sound.soundLedger`) and these compose, so the
+default level or `--O2` followed by them is `Pass.SoundLedger`
+(`Circuit.optimize_ledger_soundLedger`, `Circuit.optimizeFull_ledger_soundLedger`),
+and `--O3` followed by them is `Pass.SoundLedgerFor Crypto.prims`
+(`Circuit.optimizeMax_ledger_soundLedgerFor`,
+`Damp/Proofs/Optimize/LedgerPipeline.lean`). Each pass also keeps the ledger-statement
 check passing (`Circuit.optimize_checkLedger`,
-`Circuit.optimizeFull_checkLedger`, `Circuit.optimizeMax_checkLedger`). An earlier version of the optimizer was
+`Circuit.optimizeFull_checkLedger`, `Circuit.optimizeMax_checkLedger`,
+`ledgerPasses_keepsLedger`). An earlier version of the optimizer was
 "proved" against a semantics that was total and wrong; under the real one
 several of its rules were unsound and have been restricted as above.
 
@@ -525,9 +569,9 @@ Not done, and what it would take to call this production-ready:
 
 ## 4. What is proved
 
-`Contract.build` ships, for a circuit `c`, the ZKIR `Emit.circuit (buildPass level c)`
-(at the default level `c.optimize`), and the executor interprets the same
-`buildPass level c`, read from `contract.json`. All statements are in Lean, with no
+`Contract.build` ships, for a circuit `c`, the ZKIR `Emit.circuit (buildPassWith level ledgerOpt c)`
+(at the default level without `--ledger-opt`, `buildPass .default c = c.optimize`), and the executor interprets the same
+circuit, read from `contract.json`. All statements are in Lean, with no
 `sorry` and only Lean's three standard axioms.
 
 **The compiler** (`Damp/Proofs/Compiler.lean` chains these):
@@ -548,21 +592,18 @@ Not done, and what it would take to call this production-ready:
 run the pure function `Contract.buildCore` and write the files it returns
 (`zkir/<name>.zkir` from each emitted `IrSource`, `contract.json` from the
 shipped contract), then optionally run the key generator. `build_correct`:
-if `c.buildCore level = .ok (shipped, srcs)`, then `shipped` is `c`
+if `c.buildCore level ledgerOpt = .ok (shipped, srcs)`, then `shipped` is `c`
 under the selected optimization (`level : OptLevel`: `--no-opt`, default,
-`--O2` or `--O3`), it passes `Contract.check`, `srcs` has one entry per
+`--O2` or `--O3`; `ledgerOpt`: `--ledger-opt`), `shipped = c.optimize level ledgerOpt`,
+it passes `Contract.check`, `srcs` has one entry per
 circuit of `c` in order, and for each circuit `circ` the entry is `(s, src)`
-with `s` the optimized circuit and `ShippedOK level.SoundAt circ s src`,
-which bundles the following. The two items that relate runs of `s` to runs of
-`circ` (the third and fourth) hold for the hash functions `level.SoundAt`
-admits: all of them at every level but `--O3`, and `Damp.Crypto.prims` at
-`--O3`; the others hold for all.
+with `s = buildPassWith level ledgerOpt circ` and
+`ShippedAs level.SoundAt ledgerOpt circ s src`: `ShippedOK level.SoundAt circ s src`
+without the flag, `ShippedLedgerOK level.SoundAt circ s src` with it. Both
+extend `ShippedBase circ s src`, which holds for every build:
 
 - `circ` passed the disclosure check;
 - `src` means exactly `s` with unused bindings dropped (`compile_exact`);
-- every run `circ` accepts, `src` accepts with the same observable outcome
-  (`compile_complete`);
-- the executor on `s` does what it does on `circ` (`Exec.optimize_correct`);
 - what the executor records on `s`, `src` accepts (`run_accepted_by_emitted`);
 - `s` passes the ledger check, so every active public input the executor
   records encodes an instruction the ledger ran (`run_groups_fromLedger`);
@@ -572,6 +613,27 @@ admits: all of them at every level but `--O3`, and `Damp.Crypto.prims` at
 - every text that lexes as the tokens of `src.toJson` reads back, through
   `Text.parse` and `IrSource.ofJson`, as `src` (`readsBackText`).
 
+What relates runs of `s` to runs of `circ` depends on the flag, and holds for
+the hash functions `level.SoundAt` admits (all of them at every level but
+`--O3`, `Damp.Crypto.prims` at `--O3`):
+
+- without `--ledger-opt` (`ShippedOK`, `Pass.Sound` strength): every run
+  `circ` accepts, `src` accepts with the same observable outcome
+  (`complete`, `compile_complete`), and the executor on `s` does what it does
+  on `circ` for every oracle, public transcript and public inputs included
+  (`exec_same`, `Exec.optimize_correct`);
+- with `--ledger-opt` (`ShippedLedgerOK`, `Pass.SoundLedger` strength):
+  against the modelled ledger (`Ledger.oracles H w`) from a well-formed
+  state, the executor completes on `s` exactly when on `circ`, with the same
+  outputs, private transcript, private state and ledger state
+  (`exec_ledger`); and every call of `circ` it completes there completes on
+  `s` with those equal and with a record `src` accepts (`complete_exec`).
+  Nothing is said about the public transcript or public inputs, which
+  differ, nor about other ledger oracles.
+
+`build_correct_sound` restates the theorem without the flag in its earlier
+form (`ShippedOK`), `build_correct_ledgerOpt` with it (`ShippedLedgerOK`).
+
 `build_contractJson`: the contract written to `contract.json` is `shipped`,
 and every text that lexes as the tokens of `Export.contract shipped` is read
 by `Export.parse` as `shipped.exported`.
@@ -579,7 +641,20 @@ by `Export.parse` as `shipped.exported`.
 The ledger check the build makes on the shipped circuits never fails on a
 circuit that passes it before optimization, at any level
 (`buildPass_checkLedger`, from `Circuit.optimize_checkLedger`,
-`Circuit.optimizeFull_checkLedger` and `Circuit.optimizeMax_checkLedger`).
+`Circuit.optimizeFull_checkLedger` and `Circuit.optimizeMax_checkLedger`),
+with or without `--ledger-opt` (`buildPassWith_checkLedger`, from
+`ledgerPasses_keepsLedger`).
+
+**Three notions of soundness** for a pass `f`:
+
+| Notion | Statement | Passes |
+|---|---|---|
+| `Pass.Sound f` | for every hash functions `p`: `Circuit.run` and `Exec.run` (every oracle) on `f c` give what they give on `c`, up to `observable` (outputs, transcripts, active public inputs, private and ledger state) | every pass of the default level and `--O2` |
+| `Pass.SoundFor p f` | the same at one `p` | `foldHashes p`; `shareSelects`, `shareGuarded`, `hashRanges` at `Crypto.prims`; so `--O3` |
+| `Pass.SoundLedger f` (`Pass.SoundLedgerFor p f` at one `p`) | for every `p`, hooks, witnesses, inputs, private state and well-formed ledger state: `Exec.run` against the modelled ledger on `f c` completes exactly when on `c`, with the same `ledgerObservable` (outputs, private transcript, private state, ledger state); not the public transcript or public inputs | `ledgerReuse`, `ledgerDeadStore`; so the default level or `--O2` with `--ledger-opt` (`buildPass_soundLedger`); `--O3` with it at `Crypto.prims` (`buildPass_soundLedgerFor`) |
+
+Each implies the next (`Pass.Sound.soundFor`, `Pass.Sound.soundLedger`,
+`Pass.SoundFor.soundLedgerFor`), and each composes.
 
 **Disclosure** (`Damp/Proofs/Disclosure.lean`). `groups_noninterference`: for
 a circuit that passes the disclosure check, two runs that both succeed, read
@@ -600,6 +675,7 @@ is the case with no `disclose` on the way to the public inputs.
 | `Exec.run_none` | a call fails only if the inputs are not the circuit's, an oracle gave no usable answer, or the circuit rejects every transcript beginning with exactly what the executor recorded and was answered |
 | `Exec.optimize_correct` | on the optimized circuit the executor completes exactly when it would on the original and leaves the same outputs, transcripts, active public inputs, private state and ledger state |
 | `Circuit.bounds_sound`, `Circuit.algebra_sound`, `Circuit.asserts_sound`, `Circuit.simplify_sound`, `Circuit.foldDivmod_sound`, `Circuit.assertEq_sound`, `Circuit.commuteOpt_sound`, `Circuit.forwardAllOpt_sound`, ... | each pass is sound by itself, for every circuit; `Circuit.optimize_sound` and `Circuit.optimizeFull_sound` follow by composition, and `compile_complete_full` is the end-to-end statement at `--O2` |
+| `Circuit.ledgerReuse_soundLedger`, `Circuit.ledgerDeadStore_soundLedger`, `ledgerPasses_soundLedger`, `Circuit.optimizeFull_ledger_soundLedger` | `--ledger-opt`: against the modelled ledger, from a well-formed state, the executor on the rewritten circuit completes exactly when on the original, with the same outputs, private transcript, private state and ledger state (`Pass.SoundLedger`) |
 | `Circuit.foldHashes_soundFor`, `Circuit.optimizeMax_soundFor`, `Exec.optimizeMax_correct` | folding hashes with `p` is sound for runs with `p`; so `--O3` changes nothing observable, in `Circuit.run` or in the executor, for runs with `Damp.Crypto.prims` |
 | `Exec.optimize_asks_same` | and asks the witnesses and the ledger the same questions in the same order |
 | `Exec.step_ledger_agrees`, `Exec.run_groups_fromLedger` | the public inputs a call records are the field encoding of the instructions it sent to the ledger, with the ledger's answers filled in |
@@ -656,6 +732,12 @@ What the proofs do not give:
 - **The converse of `pruned_run`.** An unused binding whose expression would
   fail fails `Circuit.run`, which evaluates every statement, but constrains
   nothing in the emitted circuit. The exact statement is `compile_exact`.
+- **`--ledger-opt` beyond the ledger model.** The ledger passes are proved
+  only against the Lean model of Midnight's VM from a well-formed state, and
+  keep neither the public transcript nor the verifier key; the model is
+  tested against the runtime (`test/vm.sh`), and the rewritten builds are run
+  through the real runtime against `--O2` (`test/ledger-opt.sh`), not proved
+  equal to it. Gas is measured, not modelled.
 - **`--O3` beyond Damp's hash functions.** `--O3` is proved sound for runs
   with `Damp.Crypto.prims`, the Lean implementations of Poseidon and of the
   SHA-256 persistent hash. That they compute what Midnight's runtime and

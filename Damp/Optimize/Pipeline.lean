@@ -28,6 +28,10 @@ Three levels:
   `test/semantics.sh` checks against Midnight's runtime on samples but which
   are not proved equal to it.
 
+`--ledger-opt` appends `ledgerPasses` to any of these levels. They are sound
+in a weaker sense (`Pass.SoundLedger`): only against the modelled ledger, and
+the public transcript changes.
+
 `bounds2` is the value-range pass with relational facts (`a < b` from an
 assertion lets it drop the range check on `b - a`); it does everything
 `bounds` does. `simplify` runs again after a pass that leaves constants behind
@@ -45,6 +49,11 @@ import Damp.Optimize.InlineAll
 import Damp.Optimize.AssertEq
 import Damp.Optimize.Commute
 import Damp.Optimize.HashRanges
+import Damp.Optimize.AssertZero
+import Damp.Optimize.MergeChecks
+import Damp.Optimize.ShareHashes
+import Damp.Optimize.LedgerReuse
+import Damp.Optimize.LedgerDeadStore
 import Damp.Crypto.Prims
 
 namespace Damp.IR
@@ -55,8 +64,10 @@ def defaultPasses : List Pass :=
 
 /-- Every pass, first to last. -/
 def fullPasses : List Pass :=
-  [Circuit.simplify, Circuit.foldDivmod, Circuit.assertEq, Circuit.asserts, Circuit.simplify, Circuit.bounds2,
-   Circuit.simplify, Circuit.algebra, Circuit.forwardOpt, Circuit.forwardAllOpt, Circuit.commuteOpt]
+  [Circuit.simplify, Circuit.foldDivmod, Circuit.assertEq, Circuit.asserts, Circuit.mergeChecks, Circuit.simplify,
+   Circuit.bounds2,
+   Circuit.simplify, Circuit.algebra, Circuit.forwardOpt, Circuit.forwardAllOpt, Circuit.commuteOpt,
+   Circuit.assertZero]
 
 /-- `--O3`: fold hashes of constants with `p`, then every pass. -/
 def maxPassesWith (p : Zkir.Prims) : List Pass :=
@@ -71,13 +82,27 @@ def Circuit.optimizeFull (c : Circuit) : Circuit := runPasses fullPasses c
 /-- Optimize a circuit with every pass, hashes of constants computed with `p`. -/
 def Circuit.optimizeMaxWith (p : Zkir.Prims) (c : Circuit) : Circuit := runPasses (maxPassesWith p) c
 
-/-- `--O3`: `maxPassesWith Crypto.prims`, then drop the range checks a later
-    persistent hash implies (sound for hash functions that check their
-    inputs' alignment, as `Crypto.prims` does). -/
-def maxPasses : List Pass := maxPassesWith Crypto.prims ++ [Circuit.hashRanges]
+/-- `--O3`: `maxPassesWith Crypto.prims`, then one hash for the two arms of
+    a conditional (`shareSelects`, `shareGuarded`: sound for hash functions
+    that refuse exactly the inputs that do not fit their alignment, as
+    `Crypto.prims` does), then drop the range checks a later persistent hash
+    implies (sound for hash functions that check their inputs' alignment). -/
+def maxPasses : List Pass :=
+  maxPassesWith Crypto.prims ++ [Circuit.shareSelects, Circuit.shareGuarded, Circuit.hashRanges]
 
 /-- Optimize a circuit with every pass, hashes of constants computed with
     Damp's implementations of Midnight's hash functions (`--O3`). -/
 def Circuit.optimizeMax (c : Circuit) : Circuit := runPasses maxPasses c
+
+/-- `--ledger-opt`, run after a level's passes: rewrite the ledger statements
+    themselves (`ledgerReuse`: reuse a value just read or written instead of
+    reading it again; `ledgerDeadStore`: drop a write that a later write to the
+    same cell overwrites). Not `Pass.Sound`: the circuit sends the ledger
+    different Impact programs, so its public transcript and verifier key
+    differ. Proved `Pass.SoundLedger` (`Damp/Proofs/Optimize/LedgerSound.lean`):
+    against the Lean model of Midnight's VM, from a well-formed ledger state,
+    the outputs, private transcript, private state and final ledger state are
+    those of the original. -/
+def ledgerPasses : List Pass := [Circuit.ledgerReuse, Circuit.ledgerDeadStore]
 
 end Damp.IR

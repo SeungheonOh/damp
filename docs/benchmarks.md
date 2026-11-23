@@ -14,10 +14,10 @@ BENCH_SKIP_EXEC=1 test/bench.sh    # without the executor comparison
 |---|---|
 | `bench/compact/*.compact` | the Compact sources as compiled (changes from the originals are in each file's header and listed below) |
 | `Bench/*.lean`, `Bench.lean`, `BenchMain.lean` | the Damp ports; `lake exe damp-bench [--no-opt \| --O2 \| --O3] DIR` builds them (`damp-bench` is not a default target) |
-| `bench/report.py` | the table, totals, ranked lists; writes `build/bench/results.json` |
+| `bench/report.py` | the table, totals, ranked lists, and the size class `k` of every circuit at every level ("Size classes"); writes `build/bench/results.json` |
 | `bench/headroom.py` | what a sound optimizer could still remove from a circuit (`build/bench/headroom-*.json`) |
 | `bench/zdiff.py` | canonical text and diff of two ZKIR files (`--normalize`, `--multiset`, `--show`) |
-| `bench/costs.py` | rows each ZKIR instruction adds; with `--attribute ROOT VARIANT`, the rows each kind of instruction accounts for in every circuit |
+| `bench/costs.py` | rows each ZKIR instruction adds; with `--attribute ROOT VARIANT`, the rows each kind of instruction accounts for in every circuit; with `--hashes ROOT VARIANT`, each circuit's rows in persistent hashes, transient hashes and the rest, and its `k` without the persistent hashes ("Where a cheaper hash would pay") |
 | `executor/test/bench.mjs` | the behavioural comparison, run by `test/bench.sh` |
 
 Numbers below are from one run of `test/bench.sh` on the tree after commit c627efe plus the
@@ -201,10 +201,21 @@ TOTAL --O3                                                        6620          
 
 ### Totals
 
-| | compactc | Damp `--no-opt` | Damp default | Damp `--O2` | Damp `--O3` |
-|---|---|---|---|---|---|
-| instructions | 6940 | 7652 | 6826 | 6808 | 6620 |
-| rows | 533 476 | 507 125 | 504 667 | 504 631 | 469 263 |
+| | compactc | Damp `--no-opt` | Damp default | Damp `--O2` | Damp `--O3` | `--O2 --ledger-opt` | `--O3 --ledger-opt` |
+|---|---|---|---|---|---|---|---|
+| instructions | 6940 | 7652 | 6826 | 6778 | 6589 | 5295 | 5106 |
+| rows | 533 476 | 507 125 | 504 667 | 504 543 | 465 427 | 500 208 | 461 092 |
+| sum of 2^k | 779 328 | 777 792 | 776 320 | 775 808 | 726 656 | 769 792 | 720 640 |
+| circuits with smaller k than compactc's | 0 | 3 | 3 | 5 | 7 | 16 | 18 |
+
+(`test/bench.sh`, columns O2+L and O3+L of `bench/report.py`. `--O2` and `--O3` include the emitter's
+`constrain_eq a (-k)` for `constrain (a + k) zero`, which took 4 instructions and 4 rows off each;
+`--ledger-opt` is opt-in and changes the verifier key and public transcript: see "Opt-in ledger
+passes" below.)
+
+(Before `assertZero`, `mergeChecks` and the hash sharing of this round: `--O2` 6808 / 504 631, `--O3`
+6620 / 469 263; the per-circuit table above is from that run, `--O3` excepted where noted. Default
+is unchanged.)
 
 * The default Damp circuit is compactc's up to variable names in 63 of 90, and once compactc's `copy`
   instructions are dropped in 13 more: 76 of 90 (`test/golden.sh` and `test/all.sh` check the
@@ -225,7 +236,7 @@ TOTAL --O3                                                        6620          
 ### Behavioural check
 
 `executor/test/bench.mjs`: 119 calls on 22 programs (every file but `composable_outer`) go
-through compactc's generated module and Damp's default, `--O2` and `--O3` executors; **1401 checks, all
+through compactc's generated module and Damp's default, `--O2` and `--O3` executors; **1396 checks, all
 pass**: all three succeed or all fail, results equal, proof data equal, ledger state after the call equal,
 Zswap local state equal, initial states equal, and Midnight's ZKIR checker accepts each Damp proof data
 against the circuit Damp emitted at each level. Where Damp's circuit is not compactc's (the
@@ -250,8 +261,10 @@ them: at `--O3` the guarantee is relative to those implementations.
 | Level | Pipeline | Totals (instructions / rows) |
 |---|---|---|
 | default | `simplify, foldDivmod, bounds2, simplify, algebra, commuteOpt` | 6826 / 504 667 |
-| `--O2` | `simplify, foldDivmod, assertEq, asserts, simplify, bounds2, simplify, algebra, forwardOpt, forwardAllOpt, commuteOpt` | 6808 / 504 631 |
-| `--O3` | `simplify, foldHashes Crypto.prims`, then `--O2`, then `hashRanges` | 6620 / 469 263 |
+| `--O2` | `simplify, foldDivmod, assertEq, asserts, mergeChecks, simplify, bounds2, simplify, algebra, forwardOpt, forwardAllOpt, commuteOpt, assertZero` | 6778 / 504 543 |
+| `--O3` | `simplify, foldHashes Crypto.prims`, then `--O2`, then `shareSelects, shareGuarded, hashRanges` | 6589 / 465 427 |
+| `--O2 --ledger-opt` | `--O2`, then `ledgerReuse, ledgerDeadStore` (`Pass.SoundLedger` only) | 5295 / 500 208 |
+| `--O3 --ledger-opt` | `--O3`, then `ledgerReuse, ledgerDeadStore` (`Pass.SoundLedgerFor Crypto.prims`) | 5106 / 461 092 |
 
 ### Where the rows are
 
@@ -277,6 +290,51 @@ Before `hashRanges` (`--O2`), `constrain_bits` 248 was 82 instructions and 5 084
 `unshielded_tokens` shielded sends about 17 600 each (3: 16 899).
 
 ### What each addition saved in this suite
+
+* **One hash for both arms of a conditional** (`shareSelects`, `shareGuarded`, `--O3` only;
+  `Damp/Optimize/ShareHashes.lean`). `select c (H as) (H bs)` becomes `H (select c as bs)`
+  componentwise (inputs that agree are kept as they are). Whether that is exact depends on the
+  hash, because `Expr.eval` evaluates both arms of a `select` and fails if either fails: for the
+  transient hash (which cannot fail) the two are equal, failures included, for every choice of hash
+  functions whenever the input lists have the same length and differ somewhere
+  (`shareSel_hash_eval`); for the persistent hash the left side also fails when the hash of the arm
+  *not* taken fails, so they differ for some hash functions (`Examples/OptShareHashes.lean`: a toy
+  hash refusing a 5), and are equal for `Crypto.prims` when, wherever the inputs differ, both are
+  constants that fit the bytes their place is read as (`phashMergeable`): Damp's persistent hash
+  succeeds or fails on the input's shape and on whether each byte slot fits
+  (`binaryRepr_isSome_transfer`) and always yields 32 bytes (`Crypto.prims_natives`). Hence
+  `Pass.SoundFor Crypto.prims` and `--O3`. The suite has no `select` of two hashes; Compact's `if`
+  instead writes each arm's hash into a ledger operation guarded by the arm's condition
+  (`coracle.start`: `red.write(red_pk(sk))` under `state == no_game`, `blue.write(blue_pk(sk))`
+  under its negation). A ledger statement evaluates its operands whatever its guard and uses their
+  values only when the guard is 1, so `shareGuarded` replaces the operand `phash as` in the
+  statement guarded by `c` and `phash bs` in the one guarded by `!c` with the same
+  `phash (select c as bs)`, which the emitter computes once (`Circuit.shareGuarded_soundFor`; each
+  replacement is checked where it is made against what the bindings before it say about the guard).
+  Ledger operations, their order, guards and public inputs are unchanged. **`coracle.start` 59 149
+  -> 55 401 rows** (-3 748: one persistent hash of two `Bytes<32>`). The other same-shape pairs
+  (`coracle.withdraw`, `concede`: 7 pairs) differ in inputs produced inside each arm (a witness, the
+  second player's coins), not constants, and are left alone: merging those would make the shared
+  hash read values the original's guarded statement never evaluates.
+* **`assert (a == b)` as `constrain (a - b) zero`** (`assertZero`, `--O2`;
+  `Damp/Optimize/AssertZero.lean`). `constrain_eq` is a copy constraint and adds no row (20 of them:
+  0 rows); `test_eq` and `assert` together add 3. `a == k` becomes `constrain (a + (-k)) zero` with
+  the constant computed (nothing when `k` is 0). The emitter writes `constrain (a + k) zero` as one
+  `constrain_eq a (-k)` (`Emit.zeroShift`), without the `add`: one row less each, 4 instructions and
+  4 rows in this suite (`adt_counter.test_all` 112 -> 111, `test_big_increment`, `adt_list_struct.test`). Exact for every hash function
+  (`Circuit.assertZero_sound`). 26 rewrites, **70 rows**, and `adt_counter.test_all` 123 -> 112 rows,
+  **size class 8 -> 7**.
+* **Checks repeated under complementary guards** (`mergeChecks`, `--O2`;
+  `Damp/Optimize/MergeChecks.lean`). `assert (select b c 1)` and `assert (select !b c 1)` (Compact's
+  `if (b) { assert(x != y) } else { assert(y != x) }`; `c` compared up to the order of operands of
+  `==`, `+`, `*`) together say `b` is 0 or 1 and `c` is 1: `assert (select b c c)`, which `simplify`
+  makes `assert c` when `b` is known boolean; likewise `constrain (select b x 0) r` in both arms when
+  0 passes `r`. The first of the pair is replaced, the second dropped, provided nothing between them
+  rebinds a variable of the second; `!b` is recognised from a binding `n := select b 0 1` whose
+  variables are not rebound. Exact for every hash function (`Circuit.mergeChecks_sound`; a check
+  evaluated earlier than written changes nothing, since the run fails as a whole either way).
+  **`assert_misc.myswitch` 128 -> 117 rows, size class 8 -> 7** (two `constrain_bits 16`, a
+  `cond_select`, an `assert`). Nothing else in the suite has such pairs.
 
 * **Range checks a persistent hash implies** (`hashRanges`, `--O3` only; `Damp/Optimize/HashRanges.lean`).
   A persistent hash reads a `Bytes<n>` input as one element of `8·(n mod 31)` bits and `n / 31`
@@ -320,13 +378,49 @@ Before `hashRanges` (`--O2`), `constrain_bits` 248 was 82 instructions and 5 084
 
 Circuits that changed, by level: default: `assert_misc.myswitch`. `--O2` (besides that): the seven
 `assertEq` circuits above. `--O3` (besides `--O2`'s): the 30 listed under the results table. The
-behavioural check runs every call at all three Damp levels (1401 checks pass); where a level's circuit
+behavioural check runs every call at all three Damp levels (1396 checks pass); where a level's circuit
 is no longer compactc's, its proof data is required to be accepted by Midnight's ZKIR checker rather
 than to equal compactc's.
 
 What `bench/headroom.py` still finds (instructions / rows) on Damp's default circuits: 0 dead, 0 cse,
 0 fold, 0 bits, 20 / 51 repeated ledger reads (not merged: a ledger read is part of the public
 transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent impacts.
+
+### Opt-in ledger passes (`--ledger-opt`)
+
+`--ledger-opt` runs `ledgerReuse` (a ledger read whose answer is known, from an earlier read of the
+same path or a cell write of the same key just before, is replaced by that value) and then
+`ledgerDeadStore` (a cell write overwritten by the next ledger statement is dropped) after the
+level's passes. Unlike every other pass they change what the circuit sends to the ledger, so the
+public transcript and the verifier key change, and they are proved only against the Lean model of
+Midnight's VM, from a well-formed state: same outputs, private transcript, private state and final
+ledger state (`Pass.SoundLedger`; DESIGN.md §2.6, §4). The default level is never affected.
+
+Size (`test/ledger-opt.sh`, `--O2` against `--O2 --ledger-opt`): 27 circuits change, **1483
+instructions and 4335 rows** fewer; 11 more circuits end up in a smaller size class than compactc's (16 against 5; sum of
+2^k 775 808 -> 769 792). Most of the instructions are the Impact programs of reads that are no longer sent; rows
+move less because `impact` instructions are cheap in rows.
+
+Behaviour and gas (`executor/test/ledger-opt.mjs`, run by `test/ledger-opt.sh`): the benchmark calls
+through the real runtime against both builds, each from the ledger state its previous call left;
+results, ledger states, Zswap states and private transcripts are equal, and Midnight's ZKIR checker
+accepts the rewritten circuits' proof data (617 checks pass). Gas the runtime charged (`gasCost` of
+the call), summed over the 28 successful calls of changed circuits, `--O2` -> `--O2 --ledger-opt`
+(read and compute time in millions of the runtime's units):
+
+| program | calls | readTime | computeTime (x10^9) | bytesWritten | bytesDeleted |
+|---|---|---|---|---|---|
+| `pm_19287` | 11 | 56 780 -> 8 330 | 540.06 -> 82.42 | 210 710 -> 36 626 | 209 908 -> 35 824 |
+| `coracle` | 4 | 5 355 -> 4 505 | 74.52 -> 61.79 | 8 580 -> 8 580 | 8 042 -> 8 042 |
+| `unshielded_tokens` | 6 | 0 -> 0 | 35.03 -> 26.38 | 0 -> 0 | 0 -> 0 |
+| `pm_20028` | 5 | 2 380 -> 1 190 | 22.11 -> 13.36 | 1 856 -> 1 856 | 1 848 -> 1 848 |
+| `composable_inner` | 2 | 850 -> 510 | 7.47 -> 4.97 | 72 -> 72 | 72 -> 72 |
+| **total** | 28 | **65 365 -> 14 535** (-78 %) | **679.19 -> 188.91** (-72 %) | **221 218 -> 47 134** (-79 %) | **219 870 -> 45 786** (-79 %) |
+
+`pm_19287` writes a cell, reads it back and writes it again in loops; after `ledgerReuse` forwards
+the reads, `ledgerDeadStore` drops the overwritten writes, which is where the bytes written and
+deleted go. Elsewhere the saving is reads (`coracle`, `pm_20028`, `composable_inner`) and the
+compute time of the Impact programs no longer sent.
 
 ### Ideas measured and not pursued
 
@@ -335,15 +429,32 @@ transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent i
   token colors, addresses, a stored contract address) or into arithmetic. Nothing in the circuit
   bounds those values, so the checks are needed. `less_than` and `constrain_bits` 8..128 together
   are under 0.1 %: not pursued.
-* **Sharing hashes across the two arms of a conditional.** `coracle` computes the same shapes of
-  hash in its red and blue branches (`withdraw`: 7 pairs, about 33 000 rows). One hash of the
-  selected inputs would do, but the inputs of the second arm (a fresh `local_secret_key()` witness,
-  ledger reads of the second player's coins) are produced inside that arm, after the first arm's
-  ledger statements have used its hashes; witness and ledger order is observable, so the merged hash
-  cannot be placed. Only `coracle.start`'s `red_pk(sk)`/`blue_pk(sk)` (one hash of a key witnessed
-  before the branch, 3 741 rows, 0.8 %) has its inputs ready; merging it needs a new analysis (the
-  hash's value is used only under its arm's guard) and is sound only relative to `Crypto.prims`
-  (with arbitrary hash functions the dropped hash could have failed). Left for later.
+* **Sharing hashes across the two arms of a conditional, beyond constants.** Done for inputs that
+  differ only in constants (`shareGuarded`, above: `coracle.start`, 3 748 rows). `coracle.withdraw`
+  and `concede` compute the same shapes of hash in their red and blue branches (about 33 000 rows),
+  but the second arm's inputs (a fresh `local_secret_key()` witness, ledger reads of the second
+  player's coins) are produced inside that arm, after the first arm's ledger statements have used
+  their hashes; witness and ledger order is observable, so a merged hash cannot be placed there, and
+  in the first arm's statement it would read values that arm never computes.
+* **Near a size-class boundary, after this round** (the circuits within 5 % of one at `--O3`; see
+  "Size classes"). `adt_counter.test_big_increment` (59 rows, class 7 ends at 57): `constrain_eq`
+  of a ledger read against 4100 is emitted as `add` + `constrain_eq 0`; a `constrain_eq x 4100`
+  would save the `add` (measured: 58 rows, still class 7). `composable_outer.add`/`addViaConst`
+  (125 rows, 121): 85 of them are the call's public inputs and `impact`s, 40 the transient hash of
+  the call commitment, all part of the protocol. `assert_misc.ellen` (+17): `(a != 0) == (b != 0)`
+  could be `(a == 0) == (b == 0)` (two `cond_select`s fewer, and with `constrain_eq a b` two more):
+  at most 5 rows. `vectors.slice_to_ledger`, `pm_19287.test_vector_slicing_with_circuits` and
+  `test_concatenated_circuit_results` (+11 to +16): every row is a ledger operation or a value
+  written to the ledger. The six shielded sends (+1 188 to +1 248 over 16 377): about 700 rows
+  outside their three persistent hashes. None of these moves a class without changing ledger
+  operations or the protocol.
+* **Cheaper `less_than` and range checks, shared `div_mod`, selects with equal arms.** On the
+  `--O3` circuits `headroom.py` finds 0 duplicate pure instructions (no `div_mod` of the same value
+  twice), 0 foldable selects, 0 range checks implied by another; all `less_than` together are 179
+  rows (12 of 128 bits in `coracle` and the shielded sends, comparing coin values that are not
+  otherwise bounded), `constrain_bits` 8..128 488 rows. `proof_data.test1`'s four
+  `div_mod_power_of_two 8` (576 rows) split a `Bytes<5>` read from the ledger into bytes; the read is
+  not range checked in the circuit, so nothing proves it narrower. Not pursued.
 * **Duplicate hashes modulo equalities.** `headroom.py cse` finds none; the remaining same-shape
   hashes in a circuit hash different witness results (a witness asked twice, as `coracle`'s
   `is_red(sk)` and the branch's own `local_secret_key()`), which the circuit cannot assume equal.
@@ -351,6 +462,184 @@ transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent i
   hash then reads; it is the value, not a check, and stays.
 * **Byte/field round trips**: none found in this suite beyond the casts of `proof_data` and
   `zkir_generation`, whose four circuits total under 1 000 rows (0.2 %).
+
+## Size classes
+
+Proving time and key size do not grow with rows but with the size class `k`: the proof system lays
+a circuit out in a table of 2^k rows. `zkir-v3 mock-compile` prints it (`k=16, rows=50148`).
+Measured with synthetic circuits (`add`s, `impact`s and `public_input`s of varying count, with and
+without the communications commitment every compactc and Damp circuit has):
+
+* a circuit is in the least class k with **rows <= 2^k - 7** (2^k - 6 without the commitment):
+  57 rows is class 6, 58 is class 7; 121 is 7, 122 is 8; 249 is 8, 250 is 9;
+* but never below its **floor**, set by the lookup tables its instructions use: **13** with a
+  `persistent_hash` (one `persistent_hash` alone is 3 787 rows, class 13 although 3 787 <= 4 089),
+  **9** with a `less_than`, `div_mod_power_of_two` or `reconstitute_field`.
+
+So a circuit moves down a class only by losing `rows - (2^(k-1) - 7)` rows, and not at all at its
+floor: every circuit with one persistent hash and fewer than 8 186 rows is class 13 whatever else
+it does. `bench/report.py` prints k per circuit and level, the rows above the next boundary, the
+counts below, and the near-boundary circuits with their rows by kind outside the hashes.
+
+| level | circuits with smaller k than compactc's | larger | sum of 2^k |
+|---|---|---|---|
+| compactc | | | 779 328 |
+| `--no-opt` | 3 | 4 | 777 792 |
+| default | 3 | 0 | 776 320 |
+| `--O2` (before this round) | 4 | 0 | 776 064 |
+| `--O2` | 5 | 0 | 775 808 |
+| `--O3` (before this round) | 6 | 0 | 726 912 |
+| `--O3` | 7 | 0 | 726 656 |
+
+Changed class this round: `adt_counter.test_all` 8 -> 7 at `--O2` and `--O3` (`assertZero`),
+`assert_misc.myswitch` 8 -> 7 at both (`mergeChecks`; it was class 8 already, compactc's is 9).
+At `--O3` 15 circuits are at their floor. Within 5 % above a boundary at `--O3` before this round:
+`adt_counter.test_all` (+2), `composable_outer.add` and `addViaConst` (+4; protocol rows, see
+"Ideas measured and not pursued"); after it: `adt_counter.test_big_increment` (+2) and the two
+`composable_outer` circuits.
+
+Per circuit (k; at `--O3`, in parentheses, rows above the next lower boundary, or `floor`):
+
+| circuit | compactc | no-opt | default | O2 | O3 before | O3 (rows above the next boundary) |
+|---|---|---|---|---|---|---|
+| adt_counter.test_all | 8 | 8 | 8 | 7 | 8 (+2) | 7 (+55) |
+| adt_counter.test_big_increment | 7 | 7 | 7 | 7 | 7 (+7) | 7 (+2) |
+| adt_list_struct.test | 11 | 11 | 11 | 11 | 11 (+300) | 11 (+292) |
+| adt_map_list.test | 9 | 9 | 9 | 8 | 8 (+119) | 8 (+105) |
+| adt_merkle.test | 15 | 15 | 15 | 15 | 13 floor | 13 floor |
+| adt_merkle.test_historic | 15 | 15 | 15 | 15 | 13 floor | 13 floor |
+| assert_misc.abel | 7 | 7 | 7 | 7 | 7 (+20) | 7 (+20) |
+| assert_misc.ellen | 8 | 8 | 8 | 8 | 8 (+18) | 8 (+17) |
+| assert_misc.myswitch | 9 | 8 | 8 | 7 | 8 (+7) | 7 (+60) |
+| block_time.testBlockTimeGt | 7 | 7 | 7 | 7 | 7 (+21) | 7 (+21) |
+| block_time.testBlockTimeGte | 7 | 7 | 7 | 7 | 7 (+23) | 7 (+23) |
+| block_time.testBlockTimeLt | 7 | 7 | 7 | 7 | 7 (+21) | 7 (+21) |
+| block_time.testBlockTimeLte | 7 | 7 | 7 | 7 | 7 (+23) | 7 (+23) |
+| composable_inner.add | 7 | 7 | 7 | 7 | 7 (+21) | 7 (+21) |
+| composable_outer.add | 8 | 8 | 8 | 8 | 8 (+4) | 8 (+4) |
+| composable_outer.addViaConst | 8 | 8 | 8 | 8 | 8 (+4) | 8 (+4) |
+| composable_outer.echoStored | 6 | 6 | 6 | 6 | 6 (+32) | 6 (+32) |
+| composable_outer.setInner | 8 | 8 | 8 | 8 | 8 (+36) | 8 (+36) |
+| coracle.concede | 16 | 16 | 16 | 16 | 16 (+17387) | 16 (+17387) |
+| coracle.guess | 14 | 14 | 14 | 14 | 14 (+7213) | 14 (+7210) |
+| coracle.start | 16 | 16 | 16 | 16 | 16 (+26388) | 16 (+22640) |
+| coracle.withdraw | 17 | 17 | 17 | 17 | 17 (+19242) | 17 (+19242) |
+| counter.increment | 6 | 6 | 6 | 6 | 6 (+6) | 6 (+6) |
+| election_core.add_voter | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| election_core.advance | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| election_core.set_topic | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| election_core.vote_commit | 14 | 14 | 14 | 14 | 14 (+7239) | 14 (+7239) |
+| election_core.vote_reveal | 14 | 14 | 14 | 14 | 14 (+1591) | 14 (+1591) |
+| gas_cost.testGasCost | 6 | 6 | 6 | 6 | 6 (+23) | 6 (+23) |
+| pm_19287.test | 12 | 12 | 12 | 12 | 12 (+540) | 12 (+540) |
+| pm_19287.test_circuit_calls_in_loop | 8 | 9 | 8 | 8 | 8 (+122) | 8 (+122) |
+| pm_19287.test_circuit_returned_tuple | 7 | 9 | 7 | 7 | 7 (+40) | 7 (+40) |
+| pm_19287.test_circuit_returned_vector | 8 | 8 | 8 | 8 | 8 (+34) | 8 (+34) |
+| pm_19287.test_complex_nested_patterns | 8 | 10 | 8 | 8 | 8 (+56) | 8 (+56) |
+| pm_19287.test_concatenated_circuit_results | 9 | 9 | 9 | 9 | 9 (+16) | 9 (+16) |
+| pm_19287.test_conditional_circuit_calls | 9 | 9 | 9 | 9 | 9 (+60) | 9 (+60) |
+| pm_19287.test_dynamic_vector_processing | 10 | 10 | 10 | 10 | 10 (+268) | 10 (+268) |
+| pm_19287.test_nested_circuit_matrix | 8 | 8 | 8 | 8 | 8 (+56) | 8 (+56) |
+| pm_19287.test_recursive_style_processing | 9 | 9 | 9 | 9 | 9 (+111) | 9 (+111) |
+| pm_19287.test_vector_slicing_with_circuits | 8 | 8 | 8 | 8 | 8 (+12) | 8 (+12) |
+| pm_20028.test1 | 6 | 6 | 6 | 6 | 6 (+10) | 6 (+10) |
+| pm_20028.test2 | 6 | 6 | 6 | 6 | 6 (+10) | 6 (+10) |
+| pm_20028.test4 | 8 | 8 | 8 | 8 | 8 (+74) | 8 (+74) |
+| pm_20028.test5 | 6 | 7 | 6 | 6 | 6 (+20) | 6 (+20) |
+| pm_20028.test6 | 6 | 6 | 6 | 6 | 6 (+20) | 6 (+20) |
+| pm_20028.test8 | 7 | 7 | 7 | 7 | 7 (+10) | 7 (+10) |
+| pm_20028.test9 | 9 | 9 | 9 | 9 | 9 floor | 9 floor |
+| pm_20028.test_cast_comparison | 7 | 7 | 7 | 7 | 7 (+34) | 7 (+33) |
+| proof_data.test1 | 10 | 10 | 10 | 10 | 10 (+157) | 10 (+157) |
+| proof_data.test2 | 10 | 6 | 6 | 6 | 6 (+29) | 6 (+29) |
+| test01.clear | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| test01.get | 7 | 7 | 7 | 7 | 7 (+11) | 7 (+11) |
+| test01.set | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| threading.fib | 7 | 7 | 7 | 7 | 7 (+61) | 7 (+61) |
+| threading.fib2 | 7 | 7 | 7 | 7 | 7 (+21) | 7 (+21) |
+| tiny.clear | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| tiny.get | 7 | 7 | 7 | 7 | 7 (+11) | 7 (+11) |
+| tiny.set | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| types.test10 | 8 | 8 | 8 | 8 | 8 (+95) | 8 (+95) |
+| types.test10a | 7 | 7 | 7 | 7 | 7 (+18) | 7 (+18) |
+| types.test16 | 9 | 9 | 9 | 9 | 9 (+89) | 9 (+89) |
+| unshielded_tokens.getUnshieldedBalanceGtTest | 8 | 8 | 8 | 8 | 8 (+94) | 8 (+94) |
+| unshielded_tokens.getUnshieldedBalanceLtTest | 8 | 8 | 8 | 8 | 8 (+94) | 8 (+94) |
+| unshielded_tokens.getUnshieldedBalanceTest | 8 | 8 | 8 | 8 | 8 (+34) | 8 (+34) |
+| unshielded_tokens.mintShieldedToContractTest | 14 | 14 | 14 | 14 | 14 (+1488) | 14 (+1488) |
+| unshielded_tokens.mintShieldedToSelfTest | 14 | 14 | 14 | 14 | 14 (+1476) | 14 (+1476) |
+| unshielded_tokens.mintShieldedToUserTest | 14 | 14 | 14 | 14 | 14 (+1455) | 14 (+1455) |
+| unshielded_tokens.mintUnshieldedToContractTest | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| unshielded_tokens.mintUnshieldedToSelfTest | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| unshielded_tokens.mintUnshieldedToUserTest | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| unshielded_tokens.receiveShieldedTest | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| unshielded_tokens.receiveUnshieldedTest | 8 | 8 | 8 | 8 | 8 (+59) | 8 (+59) |
+| unshielded_tokens.sendImmediateShieldedToContractTest | 15 | 15 | 15 | 15 | 15 (+1210) | 15 (+1210) |
+| unshielded_tokens.sendImmediateShieldedToSelfTest | 15 | 15 | 15 | 15 | 15 (+1198) | 15 (+1198) |
+| unshielded_tokens.sendImmediateShieldedToUserTest | 15 | 15 | 15 | 15 | 15 (+1189) | 15 (+1189) |
+| unshielded_tokens.sendShieldedToContractTest | 15 | 15 | 15 | 15 | 15 (+1248) | 15 (+1248) |
+| unshielded_tokens.sendShieldedToSelfTest | 15 | 15 | 15 | 15 | 15 (+1236) | 15 (+1236) |
+| unshielded_tokens.sendShieldedToUserTest | 15 | 15 | 15 | 15 | 15 (+1227) | 15 (+1227) |
+| unshielded_tokens.sendUnshieldedToContractTest | 9 | 9 | 9 | 9 | 9 (+115) | 9 (+115) |
+| unshielded_tokens.sendUnshieldedToSelfTest | 9 | 9 | 9 | 9 | 9 (+39) | 9 (+39) |
+| unshielded_tokens.sendUnshieldedToUserTest | 9 | 9 | 9 | 9 | 9 (+62) | 9 (+62) |
+| vectors.slice_to_ledger | 8 | 8 | 8 | 8 | 8 (+11) | 8 (+11) |
+| vectors.test1b | 7 | 7 | 7 | 7 | 7 (+18) | 7 (+18) |
+| vectors.test2 | 8 | 8 | 8 | 8 | 8 (+37) | 8 (+37) |
+| vectors.test4 | 11 | 11 | 11 | 11 | 11 (+607) | 11 (+607) |
+| zerocash_core.spend | 15 | 15 | 15 | 15 | 15 (+7186) | 15 (+7186) |
+| zerocash_core.zerocash_mint | 13 | 13 | 13 | 13 | 13 floor | 13 floor |
+| zkir_generation.increment | 6 | 6 | 6 | 6 | 6 (+6) | 6 (+6) |
+| zkir_generation.test1 | 11 | 8 | 8 | 8 | 8 (+82) | 8 (+82) |
+| zkir_generation.test2 | 6 | 6 | 6 | 6 | 6 (+16) | 6 (+16) |
+
+### Where a cheaper hash would pay
+
+`python3 -I bench/costs.py --hashes ROOT VARIANT` splits each circuit's rows into persistent hashes
+(`persistent_hash` with its `bytes_into_natives`), transient hashes and the rest, by replacing each
+kind with private inputs, and prints the class the circuit would have without its persistent
+hashes. A contract author who can use a transient (Poseidon) hash where the program uses
+`persistentHash` (a value that is not stored across contract versions or compared with data from
+outside the circuit) sees there what it would buy. At `--O3`, circuits with a persistent hash:
+
+```
+  circuit                                       k    rows      persistent     transient    rest  k w/o P
+  adt_merkle.test                              13    2617      2020 x1         76 x4        521       10
+  adt_merkle.test_historic                     13    4976      4040 x2        152 x8        784       10
+  coracle.concede                              16   50148     48790 x10       114 x6       1244       11
+  coracle.guess                                14   15395     14988 x4         38 x2        369        9
+  coracle.start                                16   55401     54468 x10        38 x2        895       10
+  coracle.withdraw                             17   84771     82600 x16       152 x8       2019       12
+  election_core.add_voter                      13    5841      5632 x2          0 x0        209        8
+  election_core.advance                        13    3834      3747 x1          0 x0         87        7
+  election_core.set_topic                      13    3817      3747 x1          0 x0         70        7
+  election_core.vote_commit                    14   15424     15011 x5        190 x10       223        9
+  election_core.vote_reveal                    14    9776      9379 x3        190 x10       207        9
+  test01.clear                                 13    3838      3747 x1          0 x0         91        7
+  test01.set                                   13    3862      3747 x1          0 x0        115        9
+  tiny.clear                                   13    3838      3747 x1          0 x0         91        7
+  tiny.set                                     13    3820      3747 x1          0 x0         73        7
+  unshielded_tokens.mintShieldedToContractTest 14    9673      9401 x2          0 x0        272        9
+  unshielded_tokens.mintShieldedToSelfTest     14    9661      9401 x2          0 x0        260        9
+  unshielded_tokens.mintShieldedToUserTest     14    9640      9401 x2          0 x0        239        8
+  unshielded_tokens.mintUnshieldedToContractTest 13    4080      3765 x1          0 x0        315        9
+  unshielded_tokens.mintUnshieldedToSelfTest   13    4004      3765 x1          0 x0        239        8
+  unshielded_tokens.mintUnshieldedToUserTest   13    4027      3765 x1          0 x0        262        9
+  unshielded_tokens.receiveShieldedTest        13    5738      5636 x1          0 x0        102        7
+  unshielded_tokens.sendImmediateShieldedToContractTest 15   17587     16899 x3         38 x2        650       10
+  unshielded_tokens.sendImmediateShieldedToSelfTest 15   17575     16899 x3         38 x2        638       10
+  unshielded_tokens.sendImmediateShieldedToUserTest 15   17566     16899 x3         38 x2        629       10
+  unshielded_tokens.sendShieldedToContractTest 15   17625     16899 x3         38 x2        688       10
+  unshielded_tokens.sendShieldedToSelfTest     15   17613     16899 x3         38 x2        676       10
+  unshielded_tokens.sendShieldedToUserTest     15   17604     16899 x3         38 x2        667       10
+  zerocash_core.spend                          15   23563     22544 x6        608 x32       411       11
+  zerocash_core.zerocash_mint                  13    7592      7516 x2          0 x0         76        7
+  TOTAL                                            465431    435998         1866        27567
+```
+
+Over the suite: 465 431 rows, 435 998 in persistent hashes, 1 866 in transient hashes, 27 567
+in the rest. A transient hash of two field elements is about 20 rows, a persistent hash of two
+`Bytes<32>` 3 741.
 
 ## Where Damp's default is larger than compactc's
 
@@ -540,9 +829,13 @@ The order is by rows. What is left after these is the hashes the programs need (
 
 0. **Done (`--O3`, `hashRanges`): drop range checks a later persistent hash implies.** 158
    instructions, **5 056 rows** (1.07 %) in 28 circuits. Sound relative to `Crypto.prims` only (the
-   hash must refuse inputs that do not fit). Next by size: share a hash between the arms of a
-   conditional when both arms' inputs are ready before either is used (`coracle.start`, one hash,
-   3 741 rows, 0.8 %; see "Ideas measured and not pursued").
+   hash must refuse inputs that do not fit).
+   **Done (this round): one hash for both arms of a conditional** (`--O3`, `shareGuarded`:
+   `coracle.start`, 3 748 rows), **`assert (a == b)` as `constrain_eq`** (`--O2`, `assertZero`: 70
+   rows) and **checks repeated under complementary guards** (`--O2`, `mergeChecks`:
+   `myswitch`, 11 rows). Two circuits drop a size class (`adt_counter.test_all`, `myswitch`). What
+   is left near a class boundary is ledger operations and protocol hashes ("Ideas measured and not
+   pursued").
 1. **Done (`--O3`, `foldHashes`; `divmod` at every level, `foldDivmod`).** **Fold `persistent_hash`, `transient_hash` and `div_mod_power_of_two` whose inputs are all constants**
    (a `simplify` rule using the `Prims` of `Damp/Crypto`). 30 instructions and **30 312 rows** (6.0 % of
    the suite) in `adt_merkle.test` and `test_historic`; 2014 rows per constant leaf. Needs the hash

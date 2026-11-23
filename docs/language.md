@@ -335,6 +335,8 @@ def main (args : List String) : IO UInt32 := Damp.cli [contract] args
 | `--zkir PROGRAM` | the `zkir` tool to use |
 | `--no-opt` | emit circuits as written |
 | `--O2` | every optimization pass; a circuit may come out smaller than compactc's, with a different verifier key |
+| `--O3` | `--O2`, and hashes of constants computed at compile time; sound relative to Damp's implementations of Midnight's hash functions |
+| `--ledger-opt` | after the level's passes, also drop ledger reads whose answer is known and writes that are overwritten; proved only against the Lean model of Midnight's ledger; changes the public transcript, so the verifier key; refused with `--no-opt` |
 
 Each contract is written as `zkir/<circuit>.zkir` plus `contract.json`, which
 the executor loads with `makeContract`.

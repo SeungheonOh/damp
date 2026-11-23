@@ -81,6 +81,7 @@ LAYOUT = {
     'assert': (0x01, [('cond', operand)]),
     'cond_select': (0x02, [('bit', operand), ('a', operand), ('b', operand), ('output', string)]),
     'constrain_bits': (0x03, [('val', operand), ('bits', compact)]),
+    'constrain_eq': (0x04, [('a', operand), ('b', operand)]),
     'constrain_to_boolean': (0x05, [('val', operand)]),
     'copy': (0x06, [('val', operand), ('output', string)]),
     'impact': (0x07, [('guard', operand), ('inputs', operands)]),

@@ -23,6 +23,11 @@ import Damp.Optimize.Choose
 import Damp.Optimize.Forward
 import Damp.Optimize.FoldHashes
 import Damp.Optimize.HashRanges
+import Damp.Optimize.AssertZero
+import Damp.Optimize.MergeChecks
+import Damp.Optimize.ShareHashes
+import Damp.Optimize.LedgerReuse
+import Damp.Optimize.LedgerDeadStore
 import Damp.Optimize.InlineAll
 import Damp.Optimize.AssertEq
 import Damp.Optimize.Commute
@@ -59,6 +64,9 @@ import Damp.Proofs.Optimize.Forward
 import Damp.Proofs.Optimize.SoundFor
 import Damp.Proofs.Optimize.FoldHashes
 import Damp.Proofs.Optimize.HashRanges
+import Damp.Proofs.Optimize.AssertZero
+import Damp.Proofs.Optimize.MergeChecks
+import Damp.Proofs.Optimize.ShareHashes
 import Damp.Proofs.Optimize.InlineAll
 import Damp.Proofs.Optimize.AssertEq
 import Damp.Proofs.Optimize.Commute
@@ -92,5 +100,13 @@ import Damp.Proofs.Ledger.Nested
 import Damp.Proofs.Ledger.List
 import Damp.Proofs.Ledger.MerkleSpec
 import Damp.Proofs.Ledger.Kernel
+import Damp.Proofs.Ledger.OptEffects
+import Damp.Proofs.Ledger.OptVm
+import Damp.Proofs.Optimize.LedgerSound
+import Damp.Proofs.Optimize.LedgerReuseBase
+import Damp.Proofs.Optimize.LedgerReuse
+import Damp.Proofs.Optimize.LedgerReuseCheck
+import Damp.Proofs.Optimize.LedgerDeadStore
+import Damp.Proofs.Optimize.LedgerPipeline
 import Damp.Proofs.Ledger.Executor
 import Damp.Proofs.Interface.LedgerLogic

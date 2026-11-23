@@ -11,6 +11,12 @@ usage: python3 -I bench/costs.py
          circuit is measured again. The kinds overlap little, so the rest (`base`) is what the
          inputs, ledger instructions and arithmetic cost together. Prints the suite's totals per
          kind and the N circuits with the most rows, each with its kinds.
+       python3 -I bench/costs.py --hashes ROOT VARIANT [--json FILE]
+         for each circuit, its rows (and size class k) split into persistent hashes
+         (`persistent_hash` with its `bytes_into_natives`), transient hashes (`transient_hash`)
+         and the rest, by removing each kind as above; and k without each. Shows where a cheaper
+         hash would pay: a circuit whose k drops without its persistent hashes would get a smaller
+         proof from a transient hash in their place, where the contract can use one.
 """
 import glob, json, os, re, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -47,12 +53,15 @@ def mk(op, i):
         'div_mod_power_of_two 248': {'op': 'div_mod_power_of_two', 'val': '%a', 'bits': 248, 'outputs': [o, o + 'r']},
         'bytes_into_natives (Bytes<32>)': None,
     }[op]
-def rows_of(d, name):
+def k_rows_of(d, name):
+    """(k, rows) that `zkir-v3 mock-compile` reports for the circuit `d`, or (None, None)."""
     p = os.path.join(tmp, name + '.zkir'); json.dump(d, open(p, 'w'))
     r = subprocess.run(['zkir-v3', 'mock-compile', p], capture_output=True, text=True)
     for b in glob.glob(os.path.join(tmp, name + '.bzkir')): os.remove(b)
-    m = re.search(r'rows[^0-9]*([0-9]+)', r.stdout + r.stderr)
-    return int(m.group(1)) if m else None
+    m = re.search(r'k=([0-9]+), rows=([0-9]+)', r.stdout + r.stderr)
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+def rows_of(d, name): return k_rows_of(d, name)[1]
 
 def kind(i):
     op = i['op']
@@ -66,10 +75,14 @@ COSTLY = ('persistent_hash', 'transient_hash', 'div_mod', 'constrain_bits', 'les
 
 def without(d, k):
     """The circuit with every instruction of kind `k` replaced by private inputs for its outputs."""
+    return without_kinds(d, {k})
+
+def without_kinds(d, ks):
+    """The circuit with every instruction of a kind in `ks` replaced by private inputs for its outputs."""
     out, hashed = [], set()
     pi = lambda o: {'op': 'private_input', 'type': 'Scalar<BLS12-381>', 'output': o, 'guard': None}
     for i in d['instructions']:
-        if kind(i) == k or (k == 'persistent_hash' and i['op'] == 'bytes_into_natives' and i['bytes'] in hashed):
+        if kind(i) in ks or ('persistent_hash' in ks and i['op'] == 'bytes_into_natives' and i['bytes'] in hashed):
             if i['op'] == 'persistent_hash': hashed.add(i['output']); continue
             os_ = [i['output']] if 'output' in i else i.get('outputs', [])
             out += [pi(o) for o in os_]
@@ -87,11 +100,41 @@ def attribute(path, key):
         if r is not None: res[k] = {'n': sum(kind(i) == k for i in d['instructions']), 'rows': base - r}
     return {'rows': base, 'instructions': len(d['instructions']), 'kinds': res}
 
-if '--attribute' in sys.argv:
+def hash_split(path, key):
+    d = json.load(open(path))
+    k, base = k_rows_of(d, key)
+    kp, rp = k_rows_of(without_kinds(d, {'persistent_hash'}), key + '.p')
+    kt, rt = k_rows_of(without_kinds(d, {'transient_hash'}), key + '.t')
+    n = lambda op: sum(i['op'] == op for i in d['instructions'])
+    return {'k': k, 'rows': base, 'persistent': {'n': n('persistent_hash'), 'rows': base - rp, 'k_without': kp},
+            'transient': {'n': n('transient_hash'), 'rows': base - rt, 'k_without': kt},
+            'rest': rp + rt - base}
+
+def circuits(root, variant):
+    return [(os.path.relpath(p, os.path.join(root, variant)).replace('/zkir/', '.')[:-5], p)
+            for p in sorted(glob.glob(os.path.join(root, variant, '*', 'zkir', '*.zkir')))]
+
+def main_hashes():
+    a = sys.argv.index('--hashes'); root, variant = sys.argv[a + 1], sys.argv[a + 2]
+    files = circuits(root, variant)
+    with ThreadPoolExecutor(8) as ex: res = dict(zip([k for k, _ in files], ex.map(lambda f: hash_split(f[1], f[0]), files)))
+    if '--json' in sys.argv: json.dump(res, open(sys.argv[sys.argv.index('--json') + 1], 'w'), indent=1)
+    print(f"{variant}: rows in persistent hashes (with their bytes_into_natives), transient hashes, and the rest;")
+    print("k: size class; 'k w/o P': k with the persistent hashes removed (a cheaper hash in their place).")
+    print(f"  {'circuit':<44}{'k':>3}{'rows':>8}{'persistent':>16}{'transient':>14}{'rest':>8}{'k w/o P':>9}")
+    tot = [0, 0, 0, 0]
+    for key, r in res.items():
+        if r['rows'] is None: continue
+        P, T = r['persistent'], r['transient']
+        print(f"  {key:<44}{r['k']:>3}{r['rows']:>8}{P['rows']:>10} x{P['n']:<4}{T['rows']:>8} x{T['n']:<4}{r['rest']:>8}"
+              f"{P['k_without'] if P['n'] else '':>9}")
+        for i, x in enumerate((r['rows'], P['rows'], T['rows'], r['rest'])): tot[i] += x
+    print(f"  {'TOTAL':<44}{'':>3}{tot[0]:>8}{tot[1]:>10}{'':5}{tot[2]:>8}{'':5}{tot[3]:>8}")
+
+def main_attribute():
     a = sys.argv.index('--attribute'); root, variant = sys.argv[a + 1], sys.argv[a + 2]
     top = int(sys.argv[sys.argv.index('--top') + 1]) if '--top' in sys.argv else 10
-    files = [(os.path.relpath(p, os.path.join(root, variant)).replace('/zkir/', '.')[:-5], p)
-             for p in sorted(glob.glob(os.path.join(root, variant, '*', 'zkir', '*.zkir')))]
+    files = circuits(root, variant)
     with ThreadPoolExecutor(16) as ex: res = dict(zip([k for k, _ in files], ex.map(lambda f: attribute(f[1], f[0]), files)))
     if '--json' in sys.argv: json.dump(res, open(sys.argv[sys.argv.index('--json') + 1], 'w'), indent=1)
     total = sum(r['rows'] or 0 for r in res.values())
@@ -107,13 +150,18 @@ if '--attribute' in sys.argv:
     for key, r in sorted(res.items(), key=lambda x: -(x[1]['rows'] or 0))[:top]:
         ks = ', '.join(f"{k} x{x['n']}: {x['rows']}" for k, x in sorted(r['kinds'].items(), key=lambda x: -x[1]['rows']) if x['rows'])
         print(f"  {key:<40}{r['rows']:>8}  {ks}")
-    sys.exit(0)
 
-base = rows([{'op': 'test_eq', 'a': '%a', 'b': '%b', 'output': '%z'}])
-print(f'{"instruction":<34}rows each')
-for op in ['test_eq', 'cond_select', 'add', 'mul', 'neg', 'copy', 'assert', 'constrain_to_boolean', 'constrain_bits 8', 'constrain_bits 64',
+def main_unit():
+  base = rows([{'op': 'test_eq', 'a': '%a', 'b': '%b', 'output': '%z'}])
+  print(f'{"instruction":<34}rows each')
+  for op in ['test_eq', 'cond_select', 'add', 'mul', 'neg', 'copy', 'assert', 'constrain_to_boolean', 'constrain_bits 8', 'constrain_bits 64',
            'constrain_bits 248', 'less_than 64', 'less_than 128', 'div_mod_power_of_two 16', 'div_mod_power_of_two 248', 'private_input',
            'public_input', 'transient_hash (2 in)', 'persistent_hash (2 x Bytes<32>)']:
     n = 20
     r = rows([{'op': 'test_eq', 'a': '%a', 'b': '%b', 'output': '%z'}] + [mk(op, i) for i in range(n)])
     print(f'{op:<34}{(r - base) / n:g}')
+
+if __name__ == '__main__':
+    if '--attribute' in sys.argv: main_attribute()
+    elif '--hashes' in sys.argv: main_hashes()
+    else: main_unit()

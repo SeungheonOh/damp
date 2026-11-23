@@ -2,10 +2,11 @@
 # Damp against compactc on real Compact programs.
 #
 # 1. compiles every bench/compact/*.compact with compactc (--skip-zk);
-# 2. builds the Damp ports (Bench/*.lean) with --no-opt, by default, with --O2 and with --O3;
+# 2. builds the Damp ports (Bench/*.lean) with --no-opt, by default, with --O2 and with --O3,
+#    and with --O2 --ledger-opt and --O3 --ledger-opt (columns O2+L, O3+L);
 # 3. bench/report.py prints one row per circuit (ZKIR instructions, and rows of the
-#    proof system's table from `zkir-v3 mock-compile`) for compactc and the three Damp
-#    levels, whether Damp's default output is compactc's circuit (up to variable names,
+#    proof system's table from `zkir-v3 mock-compile`) for compactc and the Damp
+#    builds, size classes k, whether Damp's default output is compactc's circuit (up to variable names,
 #    exactly or after test/zkir-normalize.py), totals, and the two ranked lists; it
 #    writes build/bench/results.json;
 # 3a. the --O3 level (--O2 plus hashes of constants computed at compile time): every circuit
@@ -31,6 +32,8 @@ lake exe damp-bench --no-opt "$out/noopt" >/dev/null
 lake exe damp-bench "$out/opt" >/dev/null
 lake exe damp-bench --O2 "$out/o2" >/dev/null
 lake exe damp-bench --O3 "$out/o3" >/dev/null
+lake exe damp-bench --O2 --ledger-opt "$out/o2l" >/dev/null
+lake exe damp-bench --O3 --ledger-opt "$out/o3l" >/dev/null
 
 for src in bench/compact/*.compact; do
   name=$(basename "$src" .compact)

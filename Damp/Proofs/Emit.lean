@@ -1239,11 +1239,93 @@ theorem stmt_assert {p : Prims} {cond : Expr} {msg : String} {s s' : State} {is 
         rw [e₁]
         exact ⟨hi, hr.priv, hr.pub, hr.groups, hr.outputs⟩
 
+theorem zeroShift_spec {e : Expr} {r : Range} {a : Expr} {k : Int} (h : zeroShift e r = some (a, k)) :
+    e = .add a (.const k) ∧ r = .zero := by
+  unfold zeroShift at h
+  split at h
+  · cases h; exact ⟨rfl, rfl⟩
+  · cases h
+
+/-- `x + k = 0` exactly when `x` is `-k`. -/
+theorem add_eq_zero_iff_eq_neg (x y : Fr) : x + y = 0 ↔ x = -y := by
+  have assoc : ∀ a b c : Fr, a + b + c = a + (b + c) := fun a b c => by
+    apply Fr.ext
+    show ((a.val + b.val) % Fr.modulus + c.val) % Fr.modulus =
+      (a.val + (b.val + c.val) % Fr.modulus) % Fr.modulus
+    rw [Nat.mod_add_mod, Nat.add_mod_mod, Nat.add_assoc]
+  have addNeg : ∀ a : Fr, a + -a = 0 := fun a => by
+    apply Fr.ext
+    show (a.val + (Fr.modulus - a.val) % Fr.modulus) % Fr.modulus = (0 : Fr).val
+    rw [Nat.add_mod_mod, Fr.val_zero]
+    have h := a.isLt
+    rw [show a.val + (Fr.modulus - a.val) = Fr.modulus by omega, Nat.mod_self]
+  constructor
+  · intro h
+    calc x = x + (y + -y) := by rw [addNeg, Fr.add_zero]
+      _ = (x + y) + -y := by rw [assoc]
+      _ = -y := by rw [h, Fr.zero_add]
+  · intro h
+    rw [h]
+    calc -y + y = -y + - -y := by rw [Fr.neg_neg]
+      _ = 0 := addNeg _
+
+theorem native_negImm (m : Memory) (k : Int) : resolve m (negImm k) = some (.native (-(Fr.ofInt k))) := by
+  simp only [negImm, resolve_imm, Option.some.injEq]
+  congr 1
+  apply Fr.ext
+  show (Fr.ofNat (-(Fr.ofInt k)).val).val = (-(Fr.ofInt k)).val
+  exact Nat.mod_eq_of_lt (-(Fr.ofInt k)).isLt
+
+/-- `constrain (a + k) zero`, emitted as `constrain_eq a (-k)`. -/
+theorem stmt_constrain_shift {p : Prims} {a : Expr} {k : Int} {s s' : State} {is : List Instr}
+    {ρ : RunState} {σ : Zkir.State}
+    (h : (match expr "t" a s with
+          | .error m => .error m
+          | .ok (o, is, s1) => .ok ((), is ++ [.constrainEq o (negImm k)], s1) : Res Unit) = .ok ((), is, s'))
+    (hr : Rel p s ρ σ) :
+    Sim p s' ((Stmt.constrain (.add a (.const k)) .zero).exec p ρ) (exec p is σ) := by
+  split at h
+  · cases h
+  next o is₁ s₁ he =>
+  simp only [Except.ok.injEq, Prod.mk.injEq] at h
+  obtain ⟨-, rfl, rfl⟩ := h
+  obtain ⟨f, k'⟩ := expr_spec p a "t" s o is₁ s₁ he ρ.env σ hr.inv
+  rw [exec_append]
+  cases hx : a.eval p ρ.env with
+  | none =>
+    have e₁ : (Stmt.constrain (.add a (.const k)) .zero).exec p ρ = none := by simp [Stmt.exec, Expr.eval, hx]
+    rw [e₁, f hx]; trivial
+  | some x =>
+    obtain ⟨m', he', -, hi, ho, -⟩ := k' x hx
+    rw [he', Option.bind_some]
+    have hres := resolve_of_native ho
+    have hn := native_negImm m' k
+    by_cases hz : x + Fr.ofInt k = 0
+    · have hx' := (add_eq_zero_iff_eq_neg _ _).mp hz
+      have e₁ : (Stmt.constrain (.add a (.const k)) .zero).exec p ρ = some ρ := by
+        simp [Stmt.exec, Expr.eval, hx, Range.holds, hz]
+      rw [e₁]
+      have e₂ : exec p [.constrainEq o (negImm k)] { σ with mem := m' } = some { σ with mem := m' } := by
+        simp [exec_single, Zkir.Instr.step, hres, hn, hx']
+      rw [e₂]
+      exact ⟨hi, hr.priv, hr.pub, hr.groups, hr.outputs⟩
+    · have hx' : ¬ x = -(Fr.ofInt k) := fun h' => hz ((add_eq_zero_iff_eq_neg _ _).mpr h')
+      have e₁ : (Stmt.constrain (.add a (.const k)) .zero).exec p ρ = none := by
+        simp [Stmt.exec, Expr.eval, hx, Range.holds, hz]
+      rw [e₁]
+      have e₂ : exec p [.constrainEq o (negImm k)] { σ with mem := m' } = none := by
+        simp [exec_single, Zkir.Instr.step, hres, hn, hx']
+      rw [e₂]; trivial
+
 /-- `constrain`: the range check on the expression's register. -/
 theorem stmt_constrain {p : Prims} {e : Expr} {r : Range} {s s' : State} {is : List Instr}
     {ρ : RunState} {σ : Zkir.State} (h : stmt (.constrain e r) s = .ok ((), is, s'))
     (hr : Rel p s ρ σ) : Sim p s' ((Stmt.constrain e r).exec p ρ) (exec p is σ) := by
   simp only [stmt] at h
+  split at h
+  · rename_i a k hz
+    obtain ⟨rfl, rfl⟩ := zeroShift_spec hz
+    exact stmt_constrain_shift h hr
   split at h
   · cases h
   next o is₁ s₁ he =>
@@ -1714,6 +1796,13 @@ theorem stmt_noOut {st : Stmt} {s s' : State} {is : List Instr}
     exact (expr_noOut _ _ _ _ _ _ he).append (NoOut.cons (by simp) NoOut.nil)
   | constrain e r =>
     simp only [stmt] at h
+    split at h
+    · split at h
+      · cases h
+      next o is₁ s₁ he =>
+      simp only [Except.ok.injEq, Prod.mk.injEq] at h
+      obtain ⟨-, rfl, -⟩ := h
+      exact (expr_noOut _ _ _ _ _ _ he).append (NoOut.cons (by simp) NoOut.nil)
     split at h
     · cases h
     next o is₁ s₁ he =>

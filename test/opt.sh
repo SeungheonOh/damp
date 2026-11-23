@@ -5,13 +5,13 @@
 # each circuit at each (instructions, and rows of the proof system's table as
 # reported by Midnight's `zkir-v3 mock-compile`), then runs the same calls
 # against both builds of the `tuned` contract and requires equal results and
-# acceptance by the ZKIR checker.
+# acceptance by the ZKIR checker. OPT_OUT: output directory (default build/opt).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 COMPACT_HOME="${COMPACT_HOME:-$HOME/.compact/versions/0.36.1/x86_64-unknown-linux-musl}"
 export PATH="$COMPACT_HOME:$PATH"
-out=build/opt
+out="${OPT_OUT:-build/opt}"
 rm -rf "$out"; mkdir -p "$out"
 
 lake build damp-examples >/dev/null

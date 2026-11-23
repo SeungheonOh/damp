@@ -1,6 +1,6 @@
 import Bench
 
-/-! Builds every benchmark contract: `lake exe damp-bench [--no-opt | --O2] [OUT_DIR]`. -/
+/-! Builds every benchmark contract: `lake exe damp-bench [--no-opt | --O2 | --O3] [--ledger-opt] [OUT_DIR]`. -/
 def main (args : List String) : IO UInt32 :=
   Damp.cli
     [Bench.Counter.contract, Bench.Tiny.contract, Bench.Threading.contract, Bench.GasCost.contract,

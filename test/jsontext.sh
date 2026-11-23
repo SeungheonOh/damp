@@ -3,7 +3,7 @@
 # total reference lexer and parser (Damp/Zkir/JsonText.lean), about which the
 # round trip is proved (Damp/Proofs/JsonText.lean, Damp/Proofs/ZkirText.lean).
 #
-# Builds every contract of Examples and Bench at every level and runs
+# Builds every contract of Examples and Bench at every level (and --O2 --ledger-opt) and runs
 # test/JsonText.lean on every .zkir and contract.json written, and on random values.
 #
 #   JSONTEXT_OUT     output directory (default build/jsontext)
@@ -15,8 +15,8 @@ out="${JSONTEXT_OUT:-build/jsontext}"
 rm -rf "$out"; mkdir -p "$out"
 
 lake build damp-examples damp-bench Damp.Compile.Export >/dev/null
-for level in no-opt default O2 O3; do
-  flag=$([[ $level == default ]] && echo "" || echo "--$level")
+for level in no-opt default O2 O3 O2-ledger-opt; do
+  case $level in default) flag="";; O2-ledger-opt) flag="--O2 --ledger-opt";; *) flag="--$level";; esac
   lake exe damp-examples $flag "$out/examples-$level" >/dev/null
   lake exe damp-bench $flag "$out/bench-$level" >/dev/null
 done

@@ -223,8 +223,8 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
   have hkl2 := phashLimbs_length hh
   have hc4 : Stable s₃.next st₃.env (fun e => Boolean.Is p e (h ==. o) (decide (hk = Bytes.limbVals 2 X))) :=
     (hh3.and (hQ₃.imp fun e h => h.2.2)).imp fun e hh =>
-      valueEq_means (by rw [← evalList_length hh.1, hkl2]; rfl)
-        (by rw [← evalList_length hh.2]; simp [Bytes.limbVals]; rfl) hh.1 hh.2
+      valueEq_means (by rw [← _root_.Damp.evalList_length hh.1, hkl2]; rfl)
+        (by rw [← _root_.Damp.evalList_length hh.2]; simp [Bytes.limbVals]; rfl) hh.1 hh.2
   have h4 := XRuns.lift (O := oracles H wit) (st := st₃)
     (Runs.require_top (p := p) (st := st₃.runState) "not owner" (by rw [hgd3, hgd2, hgd1]) hc4) (Quiet.require _ _)
   refine (XRuns.bind (ok₂ := n + amt.val < 2 ^ 64 ∧ n + amt.val ≤ L) h4

@@ -75,6 +75,14 @@ conversions and serialized sizes), `onchain-runtime/src/context.rs`
   not below the modulus, a wrong number of atoms, an amount too wide); keys
   are re-encoded with the type's alignment, a null value becomes the
   default (`effectKey`, `effectValue` in `Query.lean`).
+  Entry order: a map is a list in the model, unordered in the runtime. The
+  decoding keeps the entries it keeps in their order (`effectMap`; when two
+  decode to one key, the later wins), so decoding twice is decoding once
+  (`decodeEffects_idem`) and every state a successful query leaves is well
+  formed (`query_wf`, `ledgerOracle_wf` in `Damp/Proofs/Ledger/OptEffects.lean`).
+  An earlier version rebuilt each map in reverse, so a query flipped the order
+  of every effects map, and removing one query changed the final state as a
+  list, though not as a set.
 * **The ledger oracle** (`ledgerOracle`): each `popeq`'s value read back as
   field elements under the alignment the instruction states (the executor's
   `fieldsOfAligned`), in program order.

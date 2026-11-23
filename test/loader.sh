@@ -2,7 +2,7 @@
 # Midnight's loader reads Damp's ZKIR files as Damp's reader does.
 #
 # Builds every contract of Examples and Bench at every level (--no-opt, default,
-# --O2, --O3). For every .zkir file: `zkir-v3 mock-compile` loads it with the Rust
+# --O2, --O3) and at --O2 --ledger-opt. For every .zkir file: `zkir-v3 mock-compile` loads it with the Rust
 # loader (zkir/src/ir.rs) and must succeed (it prints the circuit's rows); it also
 # writes the loaded circuit back in the tool's binary format (.bzkir).
 # test/LoaderDump.lean prints the circuit Damp's reader (`Zkir.IrSource.parse`)
@@ -22,8 +22,8 @@ out="${LOADER_OUT:-build/loader}"
 rm -rf "$out"; mkdir -p "$out"
 
 lake build damp-examples damp-bench Damp.Zkir.Json >/dev/null
-for level in no-opt default O2 O3; do
-  flag=$([[ $level == default ]] && echo "" || echo "--$level")
+for level in no-opt default O2 O3 O2-ledger-opt; do
+  case $level in default) flag="";; O2-ledger-opt) flag="--O2 --ledger-opt";; *) flag="--$level";; esac
   lake exe damp-examples $flag "$out/examples-$level" >/dev/null
   lake exe damp-bench $flag "$out/bench-$level" >/dev/null
 done

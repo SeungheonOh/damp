@@ -198,6 +198,17 @@ def operands : List (List Expr) → State → Res (List (List Operand))
         | .error m => .error m
         | .ok (oss, is2, s2) => .ok (os :: oss, is1 ++ is2, s2)
 
+/-- A check `constrain (a + k) zero` with `k` a constant, as `(a, k)`: emitted
+    as one `constrain_eq a (-k)` instead of an `add` and a `constrain_eq`
+    against 0, one row fewer (`zkir-v3 mock-compile`). `Circuit.assertZero`
+    (`--O2`) writes `assert (a == k)` this way. -/
+def zeroShift : Expr → Range → Option (Expr × Int)
+  | .add a (.const k), .zero => some (a, k)
+  | _, _ => none
+
+/-- The immediate `-k`, as the canonical field element. -/
+def negImm (k : Int) : Operand := .imm ((-(Fr.ofInt k)).val : Int)
+
 def stmt : Stmt → State → Res Unit
   | .bind v hint e, s =>
       match expr hint e s with
@@ -211,6 +222,12 @@ def stmt : Stmt → State → Res Unit
       | .error m => .error m
       | .ok (o, is, s1) => .ok ((), is ++ [.assert o], s1)
   | .constrain e r, s =>
+      match zeroShift e r with
+      | some (a, k) =>
+          match expr "t" a s with
+          | .error m => .error m
+          | .ok (o, is, s1) => .ok ((), is ++ [.constrainEq o (negImm k)], s1)
+      | none =>
       match expr "t" e s with
       | .error m => .error m
       | .ok (o, is, s1) =>
