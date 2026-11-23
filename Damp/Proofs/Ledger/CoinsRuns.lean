@@ -1,7 +1,7 @@
 /-
 The coin-storing operations end to end through the executor (`XRuns`, as in
 `TokensRuns.lean`), under a guard meaning `gb`, against the modelled ledger
-(`oracles H w`).
+(`oracles H (Damp.Exec.liftWitness w)`).
 
 The coin means `coinFs` (stored by the VM as `cv`), the recipient
 `Fr.ofBool u :: rl ++ rr`; nothing is assumed about the hash: the commitment
@@ -39,7 +39,7 @@ theorem Cell.writeCoin_runs (c : Cell QualifiedShieldedCoinInfo) (hg : GuardIs p
     (hcmv : AV.ofFields [.bytes 32] cm = some cmv)
     (hst : st.ledger.state = .array fields) (hi : c.index < fields.length) (hb : c.index < 256)
     (hwf : st.ledger.WF) (hctx : st.ledger.context = .array cfs) (hidx : cfs[1]? = some (.map idx)) :
-    XRuns p (oracles H w) (c.writeCoin coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (c.writeCoin coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
       (fun _ _ w' l => w' = st.private_ ∧
         (if gb then ∃ q, qualifyAV cv idx cmv = some q ∧ l = st.ledger.setField c.index (.cell q)
          else l = st.ledger)) :=
@@ -61,7 +61,7 @@ theorem Map.insertCoin_runs {κ : Type} [Value κ] (mp : Map κ QualifiedShielde
     (hpath : mp.path = [fieldKey mp.index]) (hst : st.ledger.state = .array fields)
     (hf : fields[mp.index]? = some (.map m)) (hb : mp.index < 256)
     (hwf : st.ledger.WF) (hctx : st.ledger.context = .array cfs) (hidx : cfs[1]? = some (.map idx)) :
-    XRuns p (oracles H w) (mp.insertCoin k coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (mp.insertCoin k coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
       (fun _ _ w' l => w' = st.private_ ∧
         (if gb then ∃ q, qualifyAV cv idx cmv = some q ∧
             l = st.ledger.setField mp.index (.map (assocSet kv (.cell q) m))
@@ -83,7 +83,7 @@ theorem Set.insertCoin_runs (st' : Set QualifiedShieldedCoinInfo) (m : List (AV 
     (hpath : st'.path = [fieldKey st'.index]) (hst : st.ledger.state = .array fields)
     (hf : fields[st'.index]? = some (.map m)) (hb : st'.index < 256)
     (hwf : st.ledger.WF) (hctx : st.ledger.context = .array cfs) (hidx : cfs[1]? = some (.map idx)) :
-    XRuns p (oracles H w) (st'.insertCoin coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (st'.insertCoin coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
       (fun _ _ w' l => w' = st.private_ ∧
         (if gb then ∃ q, qualifyAV cv idx cmv = some q ∧
             l = st.ledger.setField st'.index (.map (assocSet q .null m))
@@ -106,7 +106,7 @@ theorem LedgerList.pushFrontCoin_runs (l : LedgerList QualifiedShieldedCoinInfo)
     (hpath : l.path = [fieldKey l.index]) (hst : st.ledger.state = .array fields)
     (hf : fields[l.index]? = some (listRepr xs)) (hb : l.index < 256) (hlen : xs.length + 1 < 2 ^ 64)
     (hwf : st.ledger.WF) (hctx : st.ledger.context = .array cfs) (hidx : cfs[1]? = some (.map idx)) :
-    XRuns p (oracles H w) (l.pushFrontCoin coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (l.pushFrontCoin coin recipient) s st (gb = true → (qualifyAV cv idx cmv).isSome = true)
       (fun _ _ w' l' => w' = st.private_ ∧
         (if gb then ∃ q, qualifyAV cv idx cmv = some q ∧ l' = st.ledger.setField l.index (listRepr (q :: xs))
          else l' = st.ledger)) :=

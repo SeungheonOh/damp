@@ -5,8 +5,11 @@ statements well formed (`Circuit.ledgerMerge_checkLedger`).
 
 * `step_commute`: a ledger statement runs the same before or after a statement
   that is not a ledger statement, when neither reads or binds what the other
-  binds (`lcommutes`); so the second ledger statement can be moved up to the
-  first (`steps_gap`).
+  binds and the statement, if a witness, is isolated (`lcommutes false`; under
+  `WitnessesOK` an `isolatedWitness` is `Isolated`: `gap_iso`); so the second
+  ledger statement can be moved up to the first (`steps_gap`).
+  `step_commute_keep`: a ledger statement that leaves the ledger as it was
+  (a context read, `ledgerHoist`) and a witness that keeps the ledger commute.
 * `step_merge`: two ledger statements that `mergeInto` accepts run, from a
   well-formed ledger state, exactly as their merge: the guard is evaluated
   once (it does not mention the first statement's reads), the second
@@ -242,7 +245,7 @@ theorem mergeable_parts {ops₁ ops₂ : List (Op Expr)} (h : mergeable ops₁ o
   simp only [mergeable, Bool.and_eq_true] at h
   exact ⟨h.1.2, h.2⟩
 
-variable (H : Hooks) (w : String → List Fr → ω → Option (List Fr × ω))
+variable (H : Hooks) (w : Damp.Exec.WitnessOracle ω LedgerState)
 
 /-- **Two statements, one request.** -/
 theorem step_merge {g : Expr} {rs₁ : List Var} {ops₁ : List (Op Expr)} {l M : Stmt}
@@ -423,9 +426,12 @@ theorem patch_nil_apply (t : Exec.State ω σ) (f : Var → Fr) :
     ({ W := [], f := f, pv := t.private_, d := [] } : Patch ω).apply t = t := by
   cases t; simp only [Patch.apply, List.append_nil]; congr 1
 
-/-- A statement that is not a ledger statement is a patch, the same for every
-    state that agrees on what it reads and on the private state. -/
-theorem step_patch (O : Exec.Oracles ω σ) (st : Stmt) (hst : st.isLedger = false) (s : Exec.State ω σ) :
+/-- A statement that is not a ledger statement, and if a witness then an
+    isolated one (`Isolated`: it neither sees nor changes the ledger), is a
+    patch, the same for every state that agrees on what it reads and on the
+    private state. -/
+theorem step_patch (O : Exec.Oracles ω σ) (st : Stmt) (hst : st.isLedger = false)
+    (hiso : ∀ g n a o sh, st = .witness g n a o sh → Isolated O.witness n) (s : Exec.State ω σ) :
     ∃ o : Option (Patch ω), (∀ P ∈ o, ∀ v ∈ P.W, v ∈ st.mBinds) ∧
       ∀ t : Exec.State ω σ, (∀ v ∈ st.mUses, t.env v = s.env v) → t.private_ = s.private_ →
         Exec.step p O t st = o.map (·.apply t) := by
@@ -476,15 +482,16 @@ theorem step_patch (O : Exec.Oracles ω σ) (st : Stmt) (hst : st.isLedger = fal
         simp only [Option.bind_some]
         rw [← hpr]; by_cases hr : r.holds x <;> simp [hr, patch_nil_apply]
   | witness g name args outs sh =>
+    obtain ⟨gi, hgi⟩ := hiso g name args outs sh rfl
     let o : Option (Patch ω) := (g.eval p s.env).bind fun gv =>
       if outs.isEmpty then
         if gv = 1 then
-          (Expr.evalList p s.env args).bind fun argVals => (O.witness name argVals s.private_).bind fun r =>
+          (Expr.evalList p s.env args).bind fun argVals => (gi argVals s.private_).bind fun r =>
             if r.1.isEmpty then some ⟨[], fun _ => 0, r.2, []⟩ else none
         else some ⟨[], fun _ => 0, s.private_, []⟩
       else (asBool gv).bind fun b =>
         if b then
-          (Expr.evalList p s.env args).bind fun argVals => (O.witness name argVals s.private_).bind fun r =>
+          (Expr.evalList p s.env args).bind fun argVals => (gi argVals s.private_).bind fun r =>
             (Exec.assign s.env outs r.1).map fun env' => ⟨outs.map Prod.fst, env', r.2, r.1⟩
         else (Exec.assign s.env outs (outs.map fun _ => 0)).map fun env' => ⟨outs.map Prod.fst, env', s.private_, []⟩
     refine ⟨o, ?_, ?_⟩
@@ -510,7 +517,7 @@ theorem step_patch (O : Exec.Oracles ω σ) (st : Stmt) (hst : st.isLedger = fal
         eval_congr_of fun w hw => ht w (by simp [Stmt.mUses, hw])
       have ha : Expr.evalList p t.env args = Expr.evalList p s.env args :=
         evalList_congr_of fun w hw => ht w (by simp [Stmt.mUses, hw])
-      simp only [Exec.step, hg, ha, hpr, o, Option.bind_eq_bind]
+      simp only [Exec.step, hg, ha, hpr, o, Option.bind_eq_bind, hgi]
       cases hgv : g.eval p s.env with
       | none => rfl
       | some gv =>
@@ -523,11 +530,11 @@ theorem step_patch (O : Exec.Oracles ω σ) (st : Stmt) (hst : st.isLedger = fal
             | none => rfl
             | some av =>
               simp only [Option.bind_some]
-              cases hw : O.witness name av s.private_ with
+              cases hw : gi av s.private_ with
               | none => rfl
               | some r =>
                 obtain ⟨vals, pv⟩ := r
-                simp only [Option.bind_some]
+                simp only [Option.bind_some, Option.map_some]
                 by_cases hv : vals.isEmpty = true
                 · simp only [hv, ite_true, Option.map_some, Option.pure_def, Option.some.injEq]
                   cases t; simp only [Patch.apply, List.append_nil]; congr 1
@@ -552,17 +559,117 @@ theorem step_patch (O : Exec.Oracles ω σ) (st : Stmt) (hst : st.isLedger = fal
               | none => rfl
               | some av =>
                 simp only [Option.bind_some]
-                cases hw : O.witness name av s.private_ with
+                cases hw : gi av s.private_ with
                 | none => rfl
                 | some r =>
                   obtain ⟨vals, pv⟩ := r
-                  simp only [Option.bind_some]
+                  simp only [Option.bind_some, Option.map_some]
                   cases hz : Exec.assign s.env outs vals with
                   | none => simp [assign_none_any hz t.env]
                   | some env' =>
                     simp only [assign_patch hz t.env, Option.bind_some, Option.map_some, Option.pure_def,
                       Option.some.injEq]
                     simp only [Patch.apply]; rfl
+
+/-- A witness statement whose witness keeps the ledger (it may read it) is a
+    patch, the same for every state that agrees on what it reads, on the
+    private state and on the ledger state. -/
+theorem step_patch_keep (O : Exec.Oracles ω σ) (g : Expr) (name : String) (args : List Expr)
+    (outs : List (Var × Option Range)) (sh : Shape) (hk : KeepsLedger O.witness name) (s : Exec.State ω σ) :
+    ∃ o : Option (Patch ω), (∀ P ∈ o, ∀ v ∈ P.W, v ∈ (Stmt.witness g name args outs sh).mBinds) ∧
+      ∀ t : Exec.State ω σ, (∀ v ∈ (Stmt.witness g name args outs sh).mUses, t.env v = s.env v) →
+        t.private_ = s.private_ → t.ledger = s.ledger →
+        Exec.step p O t (.witness g name args outs sh) = o.map (·.apply t) := by
+    let o : Option (Patch ω) := (g.eval p s.env).bind fun gv =>
+      if outs.isEmpty then
+        if gv = 1 then
+          (Expr.evalList p s.env args).bind fun argVals => (O.witness name argVals s.private_ s.ledger).bind fun r =>
+            if r.1.isEmpty then some ⟨[], fun _ => 0, r.2.1, []⟩ else none
+        else some ⟨[], fun _ => 0, s.private_, []⟩
+      else (asBool gv).bind fun b =>
+        if b then
+          (Expr.evalList p s.env args).bind fun argVals => (O.witness name argVals s.private_ s.ledger).bind fun r =>
+            (Exec.assign s.env outs r.1).map fun env' => ⟨outs.map Prod.fst, env', r.2.1, r.1⟩
+        else (Exec.assign s.env outs (outs.map fun _ => 0)).map fun env' => ⟨outs.map Prod.fst, env', s.private_, []⟩
+    refine ⟨o, ?_, ?_⟩
+    · intro P hP u hu
+      simp only [o, Option.mem_def, Option.bind_eq_some_iff] at hP
+      obtain ⟨gv, _, hP⟩ := hP
+      split at hP
+      · split at hP
+        · simp only [Option.bind_eq_some_iff] at hP
+          obtain ⟨_, _, r, _, hP⟩ := hP; split at hP <;> simp at hP; subst hP; simp at hu
+        · simp at hP; subst hP; simp at hu
+      · simp only [Option.bind_eq_some_iff] at hP
+        obtain ⟨b, _, hP⟩ := hP
+        split at hP
+        · simp only [Option.bind_eq_some_iff] at hP
+          obtain ⟨_, _, r, _, hP⟩ := hP
+          obtain ⟨env', _, hP⟩ := Option.map_eq_some_iff.mp hP
+          subst hP; simpa [Stmt.mBinds] using hu
+        · obtain ⟨env', _, hP⟩ := Option.map_eq_some_iff.mp hP
+          subst hP; simpa [Stmt.mBinds] using hu
+    · intro t ht hpr htl
+      have hg : g.eval p t.env = g.eval p s.env :=
+        eval_congr_of fun w hw => ht w (by simp [Stmt.mUses, hw])
+      have ha : Expr.evalList p t.env args = Expr.evalList p s.env args :=
+        evalList_congr_of fun w hw => ht w (by simp [Stmt.mUses, hw])
+      simp only [Exec.step, hg, ha, hpr, htl, o, Option.bind_eq_bind]
+      cases hgv : g.eval p s.env with
+      | none => rfl
+      | some gv =>
+        simp only [Option.bind_some]
+        by_cases he : outs.isEmpty = true
+        · simp only [he, ite_true]
+          by_cases h1 : gv = 1
+          · simp only [h1, ite_true]
+            cases hav : Expr.evalList p s.env args with
+            | none => rfl
+            | some av =>
+              simp only [Option.bind_some]
+              cases hw : O.witness name av s.private_ s.ledger with
+              | none => rfl
+              | some r =>
+                obtain ⟨vals, pv, l'⟩ := r
+                have hl' : l' = s.ledger := hk _ _ _ _ _ _ hw
+                simp only [Option.bind_some, Option.map_some]
+                by_cases hv : vals.isEmpty = true
+                · simp only [hv, ite_true, Option.map_some, Option.pure_def, Option.some.injEq]
+                  subst hl'; cases t; simp only at htl; subst htl; simp only [Patch.apply, List.append_nil]; congr 1
+                · simp [hv]
+          · simp only [h1, ite_false, Option.map_some, Option.pure_def, Option.some.injEq]
+            rw [← hpr, patch_nil_apply]
+        · simp only [he, Bool.false_eq_true, ite_false]
+          cases hb : asBool gv with
+          | none => rfl
+          | some b =>
+            simp only [Option.bind_some]
+            cases b
+            · simp only [Bool.false_eq_true, ite_false]
+              cases hz : Exec.assign s.env outs (outs.map fun _ => 0) with
+              | none => simp [assign_none_any hz t.env]
+              | some env' =>
+                simp only [assign_patch hz t.env, Option.bind_some, Option.map_some, Option.pure_def,
+                  Option.some.injEq]
+                cases t; simp only at hpr htl; subst hpr htl; simp only [Patch.apply, List.append_nil]; rfl
+            · simp only [ite_true]
+              cases hav : Expr.evalList p s.env args with
+              | none => rfl
+              | some av =>
+                simp only [Option.bind_some]
+                cases hw : O.witness name av s.private_ s.ledger with
+                | none => rfl
+                | some r =>
+                  obtain ⟨vals, pv, l'⟩ := r
+                  have hl' : l' = s.ledger := hk _ _ _ _ _ _ hw
+                  simp only [Option.bind_some, Option.map_some]
+                  cases hz : Exec.assign s.env outs vals with
+                  | none => simp [assign_none_any hz t.env]
+                  | some env' =>
+                    simp only [assign_patch hz t.env, Option.bind_some, Option.map_some, Option.pure_def,
+                      Option.some.injEq]
+                    subst hl'; cases t; simp only at htl; subst htl; simp only [Patch.apply]; rfl
+
 
 theorem assign_patchenv (P : Patch ω) : ∀ (e : Env) (rs : List Var) (xs : List Fr), (∀ v ∈ rs, v ∉ P.W) →
     Exec.assign (P.env e) (rs.map fun v => (v, none)) xs = (Exec.assign e (rs.map fun v => (v, none)) xs).map P.env
@@ -654,16 +761,22 @@ theorem ledger_step_private (O : Exec.Oracles ω σ) {s r : Exec.State ω σ} {g
           simp at h; subst h; rfl
 
 /-- **A ledger statement and a statement that is not one commute**, when
-    neither reads or binds what the other binds. (`lcommutes` also refuses the
-    witnesses that change the runtime's query context, `ctxWitness`, which the
-    model's witnesses cannot do: that condition is not needed here.) -/
-theorem step_commute (O : Exec.Oracles ω σ) (x : Stmt) (hx : x.isLedger = false) (g : Expr) (rs : List Var)
-    (ops : List (Op Expr)) (hne : ops ≠ []) (hc : lcommutes (.ledger g rs ops) x = true) (s : Exec.State ω σ) :
+    neither reads or binds what the other binds, and the statement is not a
+    witness that sees or changes the ledger (`hiso`; `lcommutes false` admits
+    only isolated witnesses, `isolatedWitness`, and `WitnessesOK` makes those
+    `Isolated`). Without `hiso` the witness is not a patch: its answer may
+    depend on the ledger state the moved statement changed (a user's witness
+    reading the contract state), or it may change the call context the moved
+    statement reads (`createZswapOutput`), and `step_patch` does not apply. -/
+theorem step_commute (O : Exec.Oracles ω σ) (x : Stmt) (hx : x.isLedger = false)
+    (hiso : ∀ g n a o sh, x = .witness g n a o sh → Isolated O.witness n) (g : Expr) (rs : List Var)
+    (ops : List (Op Expr)) (hne : ops ≠ []) (b : Bool) (hc : lcommutes b (.ledger g rs ops) x = true)
+    (s : Exec.State ω σ) :
     (Exec.step p O s x).bind (fun r => Exec.step p O r (.ledger g rs ops)) =
       (Exec.step p O s (.ledger g rs ops)).bind (fun r => Exec.step p O r x) := by
   simp only [lcommutes, Bool.and_eq_true, Bool.not_eq_true', List.any_eq_false, Bool.or_eq_false_iff] at hc
   obtain ⟨⟨-, hc1⟩, hc2⟩ := hc
-  obtain ⟨o, hW, ho⟩ := step_patch p O x hx s
+  obtain ⟨o, hW, ho⟩ := step_patch p O x hx hiso s
   rw [ho s (fun _ _ => rfl) rfl]
   -- after the ledger statement, `x` sees what it saw before
   have hafter : ∀ r, Exec.step p O s (.ledger g rs ops) = some r → Exec.step p O r x = o.map (·.apply r) := by
@@ -691,9 +804,53 @@ theorem step_commute (O : Exec.Oracles ω σ) (x : Stmt) (hx : x.isLedger = fals
     | none => rfl
     | some r => simp [hafter r h]
 
+/-- **A ledger statement that leaves the ledger as it was and a witness that
+    keeps the ledger commute** (the witness may read the ledger: it sees the
+    same one in both orders). This is how a context read moves above a user's
+    witness (`ledgerHoist`). -/
+theorem step_commute_keep (O : Exec.Oracles ω σ) (g' : Expr) (name : String) (args : List Expr)
+    (outs : List (Var × Option Range)) (sh : Shape) (hk : KeepsLedger O.witness name) (g : Expr) (rs : List Var)
+    (ops : List (Op Expr)) (hne : ops ≠ []) (b : Bool)
+    (hc : lcommutes b (.ledger g rs ops) (.witness g' name args outs sh) = true) (s : Exec.State ω σ)
+    (hL : ∀ r, Exec.step p O s (.ledger g rs ops) = some r → r.ledger = s.ledger) :
+    (Exec.step p O s (.witness g' name args outs sh)).bind (fun r => Exec.step p O r (.ledger g rs ops)) =
+      (Exec.step p O s (.ledger g rs ops)).bind (fun r => Exec.step p O r (.witness g' name args outs sh)) := by
+  simp only [lcommutes, Bool.and_eq_true, Bool.not_eq_true', List.any_eq_false, Bool.or_eq_false_iff] at hc
+  obtain ⟨⟨-, hc1⟩, hc2⟩ := hc
+  obtain ⟨o, hW, ho⟩ := step_patch_keep p O g' name args outs sh hk s
+  rw [ho s (fun _ _ => rfl) rfl rfl]
+  have hafter : ∀ r, Exec.step p O s (.ledger g rs ops) = some r →
+      Exec.step p O r (.witness g' name args outs sh) = o.map (·.apply r) := by
+    intro r hr
+    apply ho r
+    · intro v hv
+      apply step_env_frame p O hr v
+      intro hvr
+      have := hc2 v (by simpa [Stmt.mBinds, Stmt.lrBinds] using hvr)
+      simp [hv] at this
+    · exact ledger_step_private p O hr
+    · exact hL r hr
+  cases o with
+  | none =>
+    simp only [Option.map_none, Option.bind_none]
+    cases h : Exec.step p O s (.ledger g rs ops) with
+    | none => rfl
+    | some r => simp [hafter r h]
+  | some P =>
+    simp only [Option.map_some, Option.bind_some]
+    have hPW : ∀ v ∈ P.W, v ∈ (Stmt.witness g' name args outs sh).mBinds := hW P rfl
+    rw [step_ledger_patch p O P s g rs ops hne
+      (fun v hv hvW => by have := hc1 v (by simpa [Stmt.mUses] using hv); simp [hPW v hvW] at this)
+      (fun v hv hvW => by have := hc2 v (by simpa [Stmt.mBinds] using hv); simp [hPW v hvW] at this)]
+    cases h : Exec.step p O s (.ledger g rs ops) with
+    | none => rfl
+    | some r => simp [hafter r h]
+
+
 /-- The ledger statement `l` moves above statements it commutes with. -/
 theorem steps_gap (O : Exec.Oracles ω σ) (g : Expr) (rs : List Var) (ops : List (Op Expr)) (hne : ops ≠ []) :
-    ∀ (gap R : List Stmt), (∀ x ∈ gap, x.isLedger = false ∧ lcommutes (.ledger g rs ops) x = true) →
+    ∀ (gap R : List Stmt), (∀ x ∈ gap, x.isLedger = false ∧ lcommutes false (.ledger g rs ops) x = true ∧
+      ∀ g n a o sh, x = .witness g n a o sh → Isolated O.witness n) →
       ∀ s, Exec.steps p O (gap ++ .ledger g rs ops :: R) s = Exec.steps p O (.ledger g rs ops :: gap ++ R) s
   | [], R, _, s => rfl
   | x :: gap, R, h, s => by
@@ -706,7 +863,7 @@ theorem steps_gap (O : Exec.Oracles ω σ) (g : Expr) (rs : List Var) (ops : Lis
         cases Exec.step p O s x with
         | none => rfl
         | some r => simp only [Option.bind_some]; rw [ih r]; rfl
-      rw [e1, step_commute p O x hx.1 g rs ops hne hx.2 s]
+      rw [e1, step_commute p O x hx.1 hx.2.2 g rs ops hne false hx.2.1 s]
       cases Exec.step p O s (.ledger g rs ops) with
       | none => rfl
       | some r => rfl
@@ -734,10 +891,10 @@ theorem nextLedger_spec : ∀ {n : Nat} {l : List Stmt} {gap rest : List Stmt} {
 /-! ## The scan -/
 
 section Go
-variable {ω : Type} (p : Prims) (H : Hooks) (w : String → List Fr → ω → Option (List Fr × ω))
+variable {ω : Type} (p : Prims) (H : Hooks) (w : Damp.Exec.WitnessOracle ω LedgerState)
 
-theorem step_wf {s r : Exec.State ω LedgerState} {st : Stmt} (h : Exec.step p (oracles H w) s st = some r)
-    (hwf : s.ledger.WF) : r.ledger.WF := by
+theorem step_wf (hW : WitnessesOK w) {s r : Exec.State ω LedgerState} {st : Stmt}
+    (h : Exec.step p (oracles H w) s st = some r) (hwf : s.ledger.WF) : r.ledger.WF := by
   cases st with
   | ledger g rs ops =>
     rcases step_ledger_cases p _ h with ⟨_, rfl⟩ | ⟨gv, _, h⟩
@@ -745,9 +902,22 @@ theorem step_wf {s r : Exec.State ω LedgerState} {st : Stmt} (h : Exec.step p (
     · rcases h with ⟨_, hl, _⟩ | ⟨_, req, xs, _, ho, _⟩
       · rw [hl]; exact hwf
       · exact ledgerOracle_wf ho
-  | _ => rw [step_ledger_same p _ h (by simp)]; exact hwf
+  | witness g name args outs sh =>
+    exact step_witness_rel p (oracles H w) (fun l l' => l.WF → l'.WF) (fun _ h => h)
+      (hW.wf name) h hwf
+  | _ => rw [step_ledger_same p _ h (by simp) (by intros; simp_all)]; exact hwf
 
-theorem lmergeGo_steps : ∀ (fuel : Nat) (stmts : List Stmt) (s : Exec.State ω LedgerState), s.ledger.WF →
+/-- Every isolated witness of a `WitnessesOK` oracle is `Isolated`; the gap of a merge has only those. -/
+theorem gap_iso (hW : WitnessesOK w) {g : Expr} {rs : List Var} {ops : List (Op Expr)} {x : Stmt}
+    (hc : lcommutes false (.ledger g rs ops) x = true) :
+    ∀ g n a o sh, x = .witness g n a o sh → Isolated (oracles H w).witness n := by
+  intro g' n a o sh hx
+  subst hx
+  simp only [lcommutes, Bool.false_and, Bool.or_false, Bool.and_eq_true] at hc
+  apply hW.isolated
+  simpa [isolatedWitness] using hc.1.1
+
+theorem lmergeGo_steps (hW : WitnessesOK w) : ∀ (fuel : Nat) (stmts : List Stmt) (s : Exec.State ω LedgerState), s.ledger.WF →
     Exec.steps p (oracles H w) (lmergeGo fuel stmts) s = Exec.steps p (oracles H w) stmts s
   | 0, stmts, s, _ => rfl
   | _ + 1, [], s, _ => rfl
@@ -756,7 +926,7 @@ theorem lmergeGo_steps : ∀ (fuel : Nat) (stmts : List Stmt) (s : Exec.State ω
         simp only [Exec.steps, Option.bind_eq_bind]
         cases h : Exec.step p (oracles H w) s st with
         | none => rfl
-        | some r => exact lmergeGo_steps fuel rest r (step_wf p H w h hwf)
+        | some r => exact lmergeGo_steps hW fuel rest r (step_wf p H w hW h hwf)
       unfold lmergeGo
       split
       · rename_i g rs ops
@@ -766,11 +936,12 @@ theorem lmergeGo_steps : ∀ (fuel : Nat) (stmts : List Stmt) (s : Exec.State ω
           · rename_i hall
             split
             · rename_i M hm
-              rw [lmergeGo_steps fuel _ s hwf]
+              rw [lmergeGo_steps hW fuel _ s hwf]
               obtain ⟨rs₂, ops₂, rfl, rfl, hne₁, hne₂, -⟩ := mergeInto_spec hm
               obtain ⟨rfl, hgap⟩ := nextLedger_spec hn
-              have hc : ∀ x ∈ gap, x.isLedger = false ∧ lcommutes (.ledger g rs₂ ops₂) x = true :=
-                fun x hx => ⟨hgap x hx, List.all_eq_true.mp hall x hx⟩
+              have hc : ∀ x ∈ gap, x.isLedger = false ∧ lcommutes false (.ledger g rs₂ ops₂) x = true ∧
+                  ∀ g n a o sh, x = .witness g n a o sh → Isolated (oracles H w).witness n :=
+                fun x hx => ⟨hgap x hx, List.all_eq_true.mp hall x hx, gap_iso H w hW (List.all_eq_true.mp hall x hx)⟩
               simp only [Exec.steps, Option.bind_eq_bind]
               have e1 : (Exec.step p (oracles H w) s (.ledger g rs ops)).bind
                   (fun r => Exec.steps p (oracles H w) (gap ++ .ledger g rs₂ ops₂ :: rest') r) =
@@ -797,13 +968,13 @@ end Go
     original circuit (only the grouping of the instructions into requests
     differs, which none of the compared results records). -/
 theorem Circuit.ledgerMerge_soundLedger : Pass.SoundLedger Circuit.ledgerMerge := by
-  refine ⟨fun {ω} H p w c inputs pr σ hσ => ?_⟩
+  refine ⟨fun {ω} H p w hW c inputs pr σ hσ => ?_⟩
   simp only [Exec.run, Circuit.ledgerMerge, List.toList_toArray, Option.bind_eq_bind]
   cases bindInputs (fun _ => 0) c.inputs inputs with
   | none => rfl
   | some env =>
     simp only [Option.bind_some]
-    rw [lmergeGo_steps p H w _ c.body.toList ⟨env, [], [], [], pr, σ⟩ hσ]
+    rw [lmergeGo_steps p H w hW _ c.body.toList ⟨env, [], [], [], pr, σ⟩ hσ]
 
 
 /-! ## Merged statements are well formed -/

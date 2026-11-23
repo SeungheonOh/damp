@@ -34,8 +34,8 @@ def Trouble (p : Prims) (O : Oracles ω σ) (s : State ω σ) : Stmt → Prop
         ((outs.isEmpty = true ∧ g = 1) ∨ (outs.isEmpty = false ∧ asBool g = some true)) ∧
         (Expr.evalList p s.env args = none ∨
           ∃ argVals, Expr.evalList p s.env args = some argVals ∧
-            (O.witness name argVals s.private_ = none ∨
-              ∃ vals ps, O.witness name argVals s.private_ = some (vals, ps) ∧
+            (O.witness name argVals s.private_ s.ledger = none ∨
+              ∃ vals ps ls, O.witness name argVals s.private_ s.ledger = some (vals, ps, ls) ∧
                 vals.length ≠ outs.length))
   | .ledger guard reads ops =>
       ∃ g, guard.eval p s.env = some g ∧ (reads.isEmpty && ops.isEmpty) = false ∧
@@ -59,7 +59,7 @@ def answer (p : Prims) (O : Oracles ω σ) (s : State ω σ) : Stmt → List Fr 
             | some true =>
                 match Expr.evalList p s.env args with
                 | some argVals =>
-                    match O.witness name argVals s.private_ with
+                    match O.witness name argVals s.private_ s.ledger with
                     | some (vals, _) => (vals, [])
                     | none => ([], [])
                 | none => ([], [])
@@ -196,12 +196,12 @@ theorem step_none (p : Prims) (O : Oracles ω σ) (s : State ω σ) (st : Stmt)
               | some argVals =>
                   refine .inr ⟨argVals, rfl, ?_⟩
                   simp only [hargs, Option.bind_some] at h
-                  cases hw : O.witness name argVals s.private_ with
+                  cases hw : O.witness name argVals s.private_ s.ledger with
                   | none => exact .inl rfl
                   | some res =>
-                      obtain ⟨vals, ps'⟩ := res
+                      obtain ⟨vals, ps', ls'⟩ := res
                       simp only [hw, Option.bind_some] at h
-                      refine .inr ⟨vals, ps', rfl, ?_⟩
+                      refine .inr ⟨vals, ps', ls', rfl, ?_⟩
                       have hlen : outs.length = 0 := by
                         cases outs with
                         | nil => rfl
@@ -226,10 +226,10 @@ theorem step_none (p : Prims) (O : Oracles ω σ) (s : State ω σ) (st : Stmt)
                     | none => exact .inl ⟨g, hx, .inr ⟨hne, hb⟩, .inl hargs⟩
                     | some argVals =>
                         simp only [hargs, Option.bind_some] at h
-                        cases hw : O.witness name argVals s.private_ with
+                        cases hw : O.witness name argVals s.private_ s.ledger with
                         | none => exact .inl ⟨g, hx, .inr ⟨hne, hb⟩, .inr ⟨argVals, hargs, .inl hw⟩⟩
                         | some res =>
-                            obtain ⟨vals, ps'⟩ := res
+                            obtain ⟨vals, ps', ls'⟩ := res
                             simp only [hw, Option.bind_some] at h
                             cases ha : assign s.env outs vals with
                             | some env' => simp [ha] at h
@@ -244,7 +244,7 @@ theorem step_none (p : Prims) (O : Oracles ω σ) (s : State ω σ) (st : Stmt)
                                   simp [Stmt.exec, hx, hempty, hb,
                                     assign_none_readAll outs s.env vals ha hlen tp]
                                 · exact .inl ⟨g, hx, .inr ⟨hne, hb⟩,
-                                    .inr ⟨argVals, hargs, .inr ⟨vals, ps', hw, hlen⟩⟩⟩
+                                    .inr ⟨argVals, hargs, .inr ⟨vals, ps', ls', hw, hlen⟩⟩⟩
                 | false =>
                     simp only [Bool.false_eq_true, ite_false] at h
                     cases ha : assign s.env outs (outs.map fun _ => 0) with

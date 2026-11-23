@@ -718,14 +718,14 @@ theorem step_witness_weaken {p : Prims} {F : List (Expr × Nat)} {ω σ β : Typ
                 | none => rfl
                 | some argVals =>
                     simp only [Option.bind_some]
-                    cases O.witness name argVals st.private_ with
+                    cases O.witness name argVals st.private_ st.ledger with
                     | none => rfl
                     | some r =>
-                        obtain ⟨vals, w⟩ := r
+                        obtain ⟨vals, w, l⟩ := r
                         simp only [Option.bind_some, Option.bind_assoc]
                         refine hr_assign_weaken (p := p) _ ?_ outs st.env vals
                         intro env y hy hb
-                        simpa using hK { st with env, private_ := w, priv := st.priv ++ vals } y hy hb
+                        simpa using hK { st with env, private_ := w, ledger := l, priv := st.priv ++ vals } y hy hb
             | false =>
                 simp only [Bool.false_eq_true, ite_false, Option.bind_assoc]
                 refine hr_assign_weaken (p := p) _ ?_ outs st.env _

@@ -45,46 +45,46 @@ theorem askWitness0_run {α : Type} [Value α] (hw0 : Value.width α = 0) (name 
 /-- **A witness call with nothing to read** (`Value.width α = 0`, e.g. `Unit`:
     `createZswapInput`, `createZswapOutput`), under a guard that holds: the
     oracle is asked with the arguments' values; the call completes exactly when
-    it answers with no field elements, and then the private state is the one it
-    returned; the ledger and the environment are unchanged. -/
+    it answers with no field elements, and then the private state and the ledger
+    state are the ones it returned; the environment is unchanged. -/
 theorem XRuns.askWitness0 {α : Type} [Value α] (hw0 : Value.width α = 0) (name : String) {args : List Expr}
     {argVals : List Fr} {s : Build} {st : Exec.State ω σ}
     (hg : GuardIs p s st.runState true) (hargs : Expr.evalList p st.env args = some argVals) :
     XRuns p O (Damp.askWitness name α args) s st
-      (∃ w', O.witness name argVals st.private_ = some ([], w'))
-      (fun _ _ w l => l = st.ledger ∧ O.witness name argVals st.private_ = some ([], w)) := by
+      (∃ w' l', O.witness name argVals st.private_ st.ledger = some ([], w', l'))
+      (fun _ _ w l => O.witness name argVals st.private_ st.ledger = some ([], w, l)) := by
   obtain ⟨h2, h3, h4⟩ := askWitness0_run hw0 name args s
   have hstep : Exec.steps p O [.witness s.guard name args [] (Value.shape α)] st =
-      (O.witness name argVals st.private_).bind fun r =>
-        if r.1.isEmpty then some { st with private_ := r.2 } else none := by
+      (O.witness name argVals st.private_ st.ledger).bind fun r =>
+        if r.1.isEmpty then some { st with private_ := r.2.1, ledger := r.2.2 } else none := by
     rw [steps_single]
     simp only [Exec.step, guard_eval hg, List.isEmpty_nil, ↓reduceIte, Option.bind_eq_bind, Option.bind_some,
       show Fr.ofBool true = 1 from rfl, hargs]
-    cases O.witness name argVals st.private_ with
+    cases O.witness name argVals st.private_ st.ledger with
     | none => rfl
-    | some r => obtain ⟨vals, w'⟩ := r; rfl
+    | some r => obtain ⟨vals, w', l'⟩ := r; rfl
   refine ⟨by rw [h2]; exact Nat.le_refl _, h3, _, h4, ?_, ?_⟩
   · rw [hstep]
-    cases hw : O.witness name argVals st.private_ with
+    cases hw : O.witness name argVals st.private_ st.ledger with
     | none => simp
     | some r =>
-      obtain ⟨vals, w'⟩ := r
+      obtain ⟨vals, w', l'⟩ := r
       cases vals with
       | nil => simp
       | cons v vs => simp
   · intro st' h'
     rw [hstep] at h'
-    cases hw : O.witness name argVals st.private_ with
+    cases hw : O.witness name argVals st.private_ st.ledger with
     | none => rw [hw] at h'; simp at h'
     | some r =>
-      obtain ⟨vals, w'⟩ := r
+      obtain ⟨vals, w', l'⟩ := r
       rw [hw] at h'
       cases vals with
       | cons v vs => simp at h'
       | nil =>
         simp only [Option.bind_some, List.isEmpty_nil, ↓reduceIte, Option.some.injEq] at h'
         subst h'
-        exact ⟨Agree.refl _ _, Stable.const ⟨rfl, rfl⟩⟩
+        exact ⟨Agree.refl _ _, Stable.const rfl⟩
 
 /-- A witness call with nothing to read, under a guard that is off: nothing is
     asked and nothing changes. -/
@@ -108,14 +108,70 @@ theorem XRuns.askWitness0G {α : Type} [Value α] (hw0 : Value.width α = 0) (na
     {argVals : List Fr} {s : Build} {st : Exec.State ω σ} {gb : Bool}
     (hg : GuardIs p s st.runState gb) (hargs : Expr.evalList p st.env args = some argVals) :
     XRuns p O (Damp.askWitness name α args) s st
-      (gb = true → ∃ w', O.witness name argVals st.private_ = some ([], w'))
-      (fun _ _ w l => l = st.ledger ∧
-        (if gb then O.witness name argVals st.private_ = some ([], w) else w = st.private_)) := by
+      (gb = true → ∃ w' l', O.witness name argVals st.private_ st.ledger = some ([], w', l'))
+      (fun _ _ w l => if gb then O.witness name argVals st.private_ st.ledger = some ([], w, l)
+        else w = st.private_ ∧ l = st.ledger) := by
   cases gb with
   | true =>
-    exact (XRuns.askWitness0 hw0 name hg hargs).conseq (by simp) fun _ _ _ _ h => ⟨h.1, by simpa using h.2⟩
+    exact (XRuns.askWitness0 hw0 name hg hargs).conseq (by simp) fun _ _ _ _ h => by simpa using h
+  | false =>
+    exact (XRuns.askWitness0_off hw0 name hg).conseq (by simp) fun _ _ _ _ h => by simpa using h
+
+/-! ### Witnesses that cannot touch the ledger
+
+The rules above for oracles whose witnesses are `liftWitness w`: they see only
+the private state and hand the ledger back unchanged. These are the rules the
+contract theorems were first proved with; they hold, as stated, of isolated
+witnesses (`Exec.Isolated`: `ownPublicKey`, `createZswapInput`, calls), and
+of any witness in an executor whose witness oracle is `liftWitness w`. -/
+
+theorem liftWitness_eq_some {w : String → List Fr → ω → Option (List Fr × ω)} {n : String} {a : List Fr}
+    {x : ω} {l l' : σ} {r : List Fr} {x' : ω} :
+    Exec.liftWitness w n a x l = some (r, x', l') ↔ w n a x = some (r, x') ∧ l' = l := by
+  simp only [Exec.liftWitness, Option.map_eq_some_iff, Prod.mk.injEq]
+  constructor
+  · rintro ⟨⟨r0, x0⟩, h, rfl, rfl, rfl⟩; exact ⟨h, rfl⟩
+  · rintro ⟨h, rfl⟩; exact ⟨(r, x'), h, rfl, rfl, rfl⟩
+
+theorem XRuns.askWitness0_iso {α : Type} [Value α] {w : String → List Fr → ω → Option (List Fr × ω)}
+    (hO : O.witness = Exec.liftWitness w) (hw0 : Value.width α = 0) (name : String) {args : List Expr}
+    {argVals : List Fr} {s : Build} {st : Exec.State ω σ}
+    (hg : GuardIs p s st.runState true) (hargs : Expr.evalList p st.env args = some argVals) :
+    XRuns p O (Damp.askWitness name α args) s st
+      (∃ w', w name argVals st.private_ = some ([], w'))
+      (fun _ _ w' l => l = st.ledger ∧ w name argVals st.private_ = some ([], w')) :=
+  (XRuns.askWitness0 hw0 name hg hargs).conseq
+    (by rw [hO]; simp only [liftWitness_eq_some]; exact ⟨fun ⟨w', _, h, _⟩ => ⟨w', h⟩, fun ⟨w', h⟩ => ⟨w', _, h, rfl⟩⟩)
+    (fun _ _ _ _ h => by rw [hO, liftWitness_eq_some] at h; exact ⟨h.2, h.1⟩)
+
+theorem XRuns.askWitness0G_iso {α : Type} [Value α] {w : String → List Fr → ω → Option (List Fr × ω)}
+    (hO : O.witness = Exec.liftWitness w) (hw0 : Value.width α = 0) (name : String) {args : List Expr}
+    {argVals : List Fr} {s : Build} {st : Exec.State ω σ} {gb : Bool}
+    (hg : GuardIs p s st.runState gb) (hargs : Expr.evalList p st.env args = some argVals) :
+    XRuns p O (Damp.askWitness name α args) s st
+      (gb = true → ∃ w', w name argVals st.private_ = some ([], w'))
+      (fun _ _ w' l => l = st.ledger ∧
+        (if gb then w name argVals st.private_ = some ([], w') else w' = st.private_)) := by
+  cases gb with
+  | true =>
+    exact (XRuns.askWitness0_iso hO hw0 name hg hargs).conseq (by simp) fun _ _ _ _ h => ⟨h.1, by simpa using h.2⟩
   | false =>
     exact (XRuns.askWitness0_off hw0 name hg).conseq (by simp) fun _ _ _ _ h => ⟨h.2, by simpa using h.1⟩
+
+theorem XRuns.askWitness_iso {α : Type} [Value α] {w : String → List Fr → ω → Option (List Fr × ω)}
+    (hO : O.witness = Exec.liftWitness w) (hrt : Value.RoundTrip α) (name : String) {args : List Expr}
+    {argVals : List Fr} {s : Build} {st : Exec.State ω σ} (hw : 0 < Value.width α)
+    (hg : GuardIs p s st.runState true) (hargs : Expr.evalList p st.env args = some argVals) :
+    XRuns p O (Damp.askWitness name α args) s st
+      (∃ ys w', w name argVals st.private_ = some (ys, w') ∧ ys.length = Value.width α ∧
+        rangesHold (Value.ranges α) ys = true)
+      (fun r e w' l => l = st.ledger ∧ ∃ ys, w name argVals st.private_ = some (ys, w') ∧
+        rangesHold (Value.ranges α) ys = true ∧ Value.Is p e r ys) :=
+  (XRuns.askWitness hrt name hw hg hargs).conseq
+    (by
+      rw [hO]; simp only [liftWitness_eq_some]
+      exact ⟨fun ⟨ys, w', _, ⟨h, _⟩, h2⟩ => ⟨ys, w', h, h2⟩, fun ⟨ys, w', h, h2⟩ => ⟨ys, w', _, ⟨h, rfl⟩, h2⟩⟩)
+    (fun _ _ _ _ ⟨ys, h, h2⟩ => by rw [hO, liftWitness_eq_some] at h; exact ⟨h.2, ys, h.1, h2⟩)
 
 theorem Grows.askWitness0 (name : String) (α : Type) [Value α] (args : List Expr) :
     Grows (Damp.askWitness name α args) := Grows.askWitness name α args

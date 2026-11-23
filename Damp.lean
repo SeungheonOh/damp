@@ -41,6 +41,8 @@ import Damp.Compile.Export
 import Damp.Compile.Build
 -- The executor's definition
 import Damp.Executor.Spec
+import Damp.Executor.Isolated
+import Damp.Executor.Witnesses
 -- The language contracts are written in
 import Damp.Lang.Contract
 import Damp.Lang.Ledger
@@ -90,6 +92,7 @@ import Damp.Proofs.Interface.Bytes
 import Damp.Proofs.Interface.Circuit
 import Damp.Proofs.Disclosure
 import Damp.Proofs.ZkirJson
+import Damp.Proofs.Shipped
 import Damp.Proofs.JsonText
 import Damp.Proofs.ZkirText
 import Damp.Proofs.ExportJson
@@ -109,6 +112,7 @@ import Damp.Proofs.Ledger.OptFrame
 import Damp.Proofs.Ledger.OptRead
 import Damp.Proofs.Ledger.Effects
 import Damp.Proofs.Ledger.Calls
+import Damp.Proofs.Ledger.Witnesses
 import Damp.Proofs.Ledger.Tokens
 import Damp.Proofs.Ledger.OptMerge
 import Damp.Proofs.Optimize.LedgerMerge

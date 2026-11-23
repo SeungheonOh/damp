@@ -92,6 +92,9 @@ const witnesses = {
   context_new_coin_info: ({ privateState }) => [privateState, ctx.coinInfo],
   // types
   t17_witness: ({ privateState }, b) => [privateState, 5n],
+  // lo_witness: user witnesses reading the ledger view they are handed
+  peekC: ({ privateState, ledger }) => [privateState, ledger.c],
+  peekD: ({ privateState, ledger }) => [privateState, ledger.d],
 };
 
 // ------------------------------------------------------------------------------- the calls
@@ -256,6 +259,19 @@ const calls = [
   ['lo_barrier', 'peek', [], true],
   ['lo_barrier', 'store', [coin(13, red, 1n << 128n), false], false],
 
+  // The barriers at the other witnesses (test/ledger-opt.sh builds lo_witness): a user's witness reads
+  // the contract state (a write dropped or moved across it changes its answer); `ownPublicKey` and
+  // `createZswapInput` touch no ledger state and are crossed.
+  ['lo_witness', 'control', [], true],
+  ['lo_witness', 'deadstore', [], true],
+  ['lo_witness', 'merge', [10n], true],
+  ['lo_witness', 'merge', [20n], true],
+  ['lo_witness', 'hoistUser', [3n], true],
+  ['lo_witness', 'mergePk', [4n], true],
+  ['lo_witness', 'mergeIn', [qcoin(15, red, 3n, 2n), 5n], true],
+  ['lo_witness', 'deadIn', [qcoin(16, red, 3n, 4n)], true],
+  ['lo_witness', 'deadstore', [], true],
+
   ['zkir_generation', 'increment', [], true],
   ['zkir_generation', 'test1', [range(10, (i) => BigInt(250 - 7 * i))], true],
   ['zkir_generation', 'test1', [[...range(9), 256n]], false],
@@ -397,7 +413,9 @@ for (const [name, circuit, argsOf, shouldSucceed] of calls) {
       report(checked.ok, `${label}: ZKIR check accepts ${l}`, checked.ok ? '' : `${checked.stage}: ${checked.error}`);
     }
   }
-  if (LEVELS.includes('nm') && await mergedCircuit(name, circuit)) {
+  // The barrier contracts (lo_barrier, lo_witness) are tests, not benchmark programs: no gas tallied.
+  const bench = !name.startsWith('lo_');
+  if (bench && LEVELS.includes('nm') && await mergedCircuit(name, circuit)) {
     mergedCalls++;
     const gn = gasOf(runs.nm), gl = gasOf(runs.lo);
     if (gn !== null && gl !== null) {
@@ -405,7 +423,7 @@ for (const [name, circuit, argsOf, shouldSucceed] of calls) {
       mgasRows.push([label, gn, gl]);
     }
   }
-  if (changed) {
+  if (changed && bench) {
     changedCalls++;
     sample ??= runs.lo.value.gasCost;
     const go = gasOf(runs.o2), gl = gasOf(runs.lo);

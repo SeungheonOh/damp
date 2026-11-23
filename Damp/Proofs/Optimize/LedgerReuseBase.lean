@@ -5,6 +5,7 @@ and what the executor sends for a plain read or a cell write.
 -/
 import Damp.Proofs.Optimize.LedgerSound
 import Damp.Proofs.Ledger.OptVm
+import Damp.Proofs.Ledger.Witnesses
 import Damp.Optimize.LedgerReuse
 
 set_option linter.unusedSimpArgs false
@@ -154,7 +155,7 @@ theorem step_norm (p : Prims) (O : Exec.Oracles ω σ) (s : Exec.State ω σ) (s
           cases ha : Expr.evalList p env args with
           | none => simp
           | some xs =>
-            cases hw : O.witness name xs private_ with
+            cases hw : O.witness name xs private_ ledger with
             | none => simp [hw]
             | some res => by_cases he : res.1.isEmpty <;> simp [hw, he]
         · simp [h1]
@@ -169,7 +170,7 @@ theorem step_norm (p : Prims) (O : Exec.Oracles ω σ) (s : Exec.State ω σ) (s
             cases ha : Expr.evalList p env args with
             | none => simp
             | some xs =>
-              cases hw : O.witness name xs private_ with
+              cases hw : O.witness name xs private_ ledger with
               | none => simp [hw]
               | some res => simp [hw]; cases Exec.assign env outs res.1 <;> simp
   | ledger g rs ops =>
@@ -224,7 +225,8 @@ def Stmt.lrBinds : Stmt → List Var
 
 theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ} {st : Stmt}
     (h : Exec.step p O s st = some r) :
-    (∀ w, w ∉ st.lrBinds → r.env w = s.env w) ∧ ((∀ g rs ops, st ≠ .ledger g rs ops) → r.ledger = s.ledger) ∧
+    (∀ w, w ∉ st.lrBinds → r.env w = s.env w) ∧ ((∀ g rs ops, st ≠ .ledger g rs ops) →
+      (∀ g n a o sh, st = .witness g n a o sh → KeepsLedger O.witness n) → r.ledger = s.ledger) ∧
       r.priv.length ≥ 0 := by
   obtain ⟨env, priv, pub, groups, private_, ledger⟩ := s
   refine ⟨?_, ?_, Nat.zero_le _⟩
@@ -238,7 +240,7 @@ theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ}
       simp [he] at h; subst h
       first
       | (intro w hw; simp [Env.set]; intro hh; exact absurd (by simp [Stmt.lrBinds, hh]) hw)
-      | (intro _; rfl)
+      | (intro _ _; rfl)
   | assert c _ =>
     simp only [Exec.step] at h
     cases hc : c.eval p env with
@@ -249,7 +251,7 @@ theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ}
       | some b =>
         cases b <;> simp [hc, hb] at h
         subst h
-        first | (intro w _; rfl) | (intro _; rfl)
+        first | (intro w _; rfl) | (intro _ _; rfl)
   | constrain e rr =>
     simp only [Exec.step] at h
     cases he : e.eval p env with
@@ -257,7 +259,7 @@ theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ}
     | some x =>
       by_cases hr : rr.holds x <;> simp [he, hr] at h
       subst h
-      first | (intro w _; rfl) | (intro _; rfl)
+      first | (intro w _; rfl) | (intro _ _; rfl)
   | witness g name args outs sh =>
     simp only [Exec.step] at h
     cases hg : g.eval p env with
@@ -271,14 +273,14 @@ theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ}
           cases ha : Expr.evalList p env args with
           | none => simp [ha] at h
           | some xs =>
-            cases hw : O.witness name xs private_ with
+            cases hw : O.witness name xs private_ ledger with
             | none => simp [ha, hw] at h
             | some res =>
               by_cases he : res.1 = [] <;> simp [ha, hw, he] at h
               subst h
-              first | (intro w _; rfl) | (intro _; rfl)
+              first | (intro w _; rfl) | (intro _ hk; exact hk _ _ _ _ _ rfl _ _ _ _ _ _ hw)
         · simp [h1] at h; subst h
-          first | (intro w _; rfl) | (intro _; rfl)
+          first | (intro w _; rfl) | (intro _ _; rfl)
       · simp only [ho] at h
         cases hb : asBool gv with
         | none => simp [hb] at h
@@ -289,19 +291,19 @@ theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ}
             | none => simp [ha] at h
             | some env' =>
               simp [ha] at h; subst h
-              first | (intro w hw; exact assign_frame ha w (by simpa [Stmt.lrBinds] using hw)) | (intro _; rfl)
+              first | (intro w hw; exact assign_frame ha w (by simpa [Stmt.lrBinds] using hw)) | (intro _ _; rfl)
           · simp [hb] at h
             cases ha : Expr.evalList p env args with
             | none => simp [ha] at h
             | some xs =>
-              cases hw : O.witness name xs private_ with
+              cases hw : O.witness name xs private_ ledger with
               | none => simp [ha, hw] at h
               | some res =>
                 cases hs : Exec.assign env outs res.1 with
                 | none => simp [ha, hw, hs] at h
                 | some env' =>
                   simp [ha, hw, hs] at h; subst h
-                  first | (intro w hw; exact assign_frame hs w (by simpa [Stmt.lrBinds] using hw)) | (intro _; rfl)
+                  first | (intro w' hw'; exact assign_frame hs w' (by simpa [Stmt.lrBinds] using hw')) | (intro _ hk; exact hk _ _ _ _ _ rfl _ _ _ _ _ _ hw)
   | ledger g rs ops =>
     first
     | (intro hne; exact absurd rfl (hne g rs ops))
@@ -344,11 +346,12 @@ theorem step_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ}
 theorem step_env_frame (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ} {st : Stmt}
     (h : Exec.step p O s st = some r) : ∀ w, w ∉ st.lrBinds → r.env w = s.env w := (step_frame p O h).1
 
-/-- Only a ledger statement changes the ledger state; a witness call (a call
-    of another contract included) changes the private state only. -/
+/-- Only a ledger statement, or a witness that does not keep the ledger
+    (`createZswapOutput`), changes the ledger state. -/
 theorem step_ledger_same (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ} {st : Stmt}
-    (h : Exec.step p O s st = some r) (hst : ∀ g rs ops, st ≠ .ledger g rs ops) : r.ledger = s.ledger :=
-  (step_frame p O h).2.1 hst
+    (h : Exec.step p O s st = some r) (hst : ∀ g rs ops, st ≠ .ledger g rs ops)
+    (hk : ∀ g n a o sh, st = .witness g n a o sh → KeepsLedger O.witness n) : r.ledger = s.ledger :=
+  (step_frame p O h).2.1 hst hk
 
 /-- What a ledger statement's step is, spelled out. -/
 theorem step_ledger_cases (p : Prims) (O : Exec.Oracles ω σ) {s r : Exec.State ω σ} {g : Expr} {rs : List Var}

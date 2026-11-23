@@ -32,6 +32,7 @@ inside a nested map at a constant key other than `π`'s second.
 import Damp.IR.Basic
 import Damp.IR.Impact
 import Damp.Ledger.Vm
+import Damp.Executor.Witnesses
 
 namespace Damp.IR
 open Damp.Impact Damp.Ledger
@@ -159,17 +160,29 @@ def constPrefix : Nat → List (Aligned Expr) → List AV
       | some kv => kv :: constPrefix n ks
       | none => []
 
-/-- The witnesses that are barriers for every ledger pass. The model's witnesses do not touch the
-    ledger (`Exec.Oracles.witness` sees only the private state), but in the runtime the built-in
-    `createZswapOutput` inserts its coin's commitment into the call context's `com_indices`
-    (`insertCommitment`, compact-runtime `zswap.js`), which a later coin-storing write
-    (`writeCoin`, `insertCoin`, ...) reads back; and a cross-contract call (`call:…`) runs another
-    contract (its isolation from the caller's state is the assumption `CallIsolated`,
-    Damp/Proofs/Ledger/Calls.lean). The other built-ins, `createZswapInput` and `ownPublicKey`,
-    work only on the call's Zswap local state, which no ledger statement reads. No ledger pass
-    moves a ledger statement above one of these, merges two statements across one, or keeps a fact
-    about the call context's `com_indices` across one. -/
-def ctxWitness (name : String) : Bool :=
-  name == "createZswapOutput" || name.startsWith "call:"
+/-! ### Witness barriers
+
+What a witness may do to the ledger state is decided by its name
+(`Exec.witnessClass`, `Damp/Executor/Witnesses.lean`; docs/ledger-model.md,
+"What a witness can touch"), and each ledger pass stops exactly where the
+footprint the proofs assume (`WitnessesOK`) lets a witness interfere with
+the rewrite:
+
+* `ledgerReuse` forgets, at a `ctxWitness`, the facts about call-context
+  slot 1 (`keepsAcrossWitness`);
+* `ledgerDeadStore` does not look for the overwriting write past a
+  `stateWitness`, which could read the value the dropped write leaves;
+* `ledgerHoist` moves a context read above every witness but a
+  `ctxWitness`;
+* `ledgerMerge` moves a ledger statement only above an `isolatedWitness`. -/
+
+/-- `createZswapOutput`: writes call-context slot 1 (`com_indices`), sees only the call context. -/
+def ctxWitness (name : String) : Bool := Exec.witnessClass name == .zswapOutput
+
+/-- `ownPublicKey`, `createZswapInput` and cross-contract calls: neither see nor change the ledger. -/
+def isolatedWitness (name : String) : Bool := Exec.witnessClass name == .isolated
+
+/-- A user's witness: sees the contract state and the call context. -/
+def stateWitness (name : String) : Bool := Exec.witnessClass name == .user
 
 end Damp.IR

@@ -37,7 +37,7 @@ set_option linter.unusedSimpArgs false
 theorem shipped_run {c : Contract} {level : OptLevel} {ledgerOpt : Bool} {shipped : Contract}
     {srcs : List (Circuit × Zkir.IrSource)} (hb : c.buildCore level ledgerOpt = .ok (shipped, srcs))
     {p : Zkir.Prims} (hp : level.SoundAt p) {circ : Circuit} (hc : circ ∈ c.allCircuits) {ω : Type} (H : Hooks)
-    (w : String → List Fr → ω → Option (List Fr × ω)) (xs : List Fr) (w₀ : ω) (σ : LedgerState) (hσ : σ.WF) :
+    (w : Damp.Exec.WitnessOracle ω LedgerState) (hw : WitnessesOK w) (xs : List Fr) (w₀ : ω) (σ : LedgerState) (hσ : σ.WF) :
     ∃ src, (buildPassWith level ledgerOpt circ, src) ∈ srcs ∧
       (Exec.run p (oracles H w) (buildPassWith level ledgerOpt circ) xs w₀ σ).map Exec.Result.ledgerObservable =
         (Exec.run p (oracles H w) circ xs w₀ σ).map Exec.Result.ledgerObservable ∧
@@ -54,13 +54,13 @@ theorem shipped_run {c : Contract} {level : OptLevel} {ledgerOpt : Bool} {shippe
         fun x => (x.outputs, x.priv, x.private_, x.ledger) := rfl
     rw [hf]
     simpa [Option.map_map, Function.comp_def, Exec.Result.observable] using e
-  | true => exact hs.exec_ledger p hp H w xs w₀ σ hσ
+  | true => exact hs.exec_ledger p hp H w hw xs w₀ σ hσ
 
 /-- The executor's verdict on a circuit, transferred to what the build ships. -/
 theorem shipped_of {c : Contract} {level : OptLevel} {ledgerOpt : Bool} {shipped : Contract}
     {srcs : List (Circuit × Zkir.IrSource)} (hb : c.buildCore level ledgerOpt = .ok (shipped, srcs))
     {p : Zkir.Prims} (hp : level.SoundAt p) {circ : Circuit} (hc : circ ∈ c.allCircuits) {ω : Type} (H : Hooks)
-    (w : String → List Fr → ω → Option (List Fr × ω)) (xs : List Fr) (w₀ : ω) (σ : LedgerState) (hσ : σ.WF)
+    (w : Damp.Exec.WitnessOracle ω LedgerState) (hw : WitnessesOK w) (xs : List Fr) (w₀ : ω) (σ : LedgerState) (hσ : σ.WF)
     {ok : Prop} {P : List Fr → ω → LedgerState → Prop}
     (h : ((Exec.run p (oracles H w) circ xs w₀ σ).isSome = true ↔ ok) ∧
       ∀ r, Exec.run p (oracles H w) circ xs w₀ σ = some r → P r.outputs r.private_ r.ledger) :
@@ -68,7 +68,7 @@ theorem shipped_of {c : Contract} {level : OptLevel} {ledgerOpt : Bool} {shipped
       ((∃ r, Exec.run p (oracles H w) (buildPassWith level ledgerOpt circ) xs w₀ σ = some r) ↔ ok) ∧
       ∀ r, Exec.run p (oracles H w) (buildPassWith level ledgerOpt circ) xs w₀ σ = some r →
         P r.outputs r.private_ r.ledger ∧ src.run p xs r.priv r.pub = some { outputs := r.outputs, groups := r.groups } := by
-  obtain ⟨src, hm, he, hacc⟩ := shipped_run hb hp hc H w xs w₀ σ hσ
+  obtain ⟨src, hm, he, hacc⟩ := shipped_run hb hp hc H w hw xs w₀ σ hσ
   refine ⟨src, hm, ?_, fun r hr => ⟨?_, hacc r hr⟩⟩
   · rw [← h.1]
     constructor
@@ -127,7 +127,7 @@ theorem deposit_runs (coin : ShieldedCoinInfo) (xs : List Fr) (env : Env) (ω₀
     (cm : List Fr) (hcm : phashFs p coinPreimageAlign (ccPre xs false [0, 0] selfFs) = some cm)
     (x : Nat) (hx : AV.ofFields [.bytes 32] cm = some ⟨[.bytes 32], [x]⟩)
     (v : AV) (hv : AV.ofFields (alignOf ShieldedCoinInfo) xs = some v) :
-    XRuns p (oracles H w) (deposit coin) { next := 5 } (Exec.State.start env ω₀ σ)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (deposit coin) { next := 5 } (Exec.State.start env ω₀ σ)
       (∃ w', w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w'))
       (fun r e w' l => Value.Is p e r [] ∧
         w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w') ∧
@@ -148,12 +148,12 @@ theorem deposit_runs (coin : ShieldedCoinInfo) (xs : List Fr) (env : Env) (ω₀
   obtain ⟨hw₁, hl₁⟩ := hQ
   have hreq : ∀ e, Agree s₁.next st₁.env e → ∃ req, Exec.request p e
       [.push false (fieldKey last.index), .push true (alignedOf (disclose coin)), .ins false 1] = some req ∧
-      (oracles H w).ledger req st₁.ledger = some ([], σ₁.setField 1 (.cell v)) := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st₁.ledger = some ([], σ₁.setField 1 (.cell v)) := by
     intro e he
     rw [hl₁]
     exact op_req' (Cell.write_spec H last p e σ₁ fields (disclose coin) xs v hst₁ hfl (by decide) hwf₁
       ((hd.later ha₁ hn₁) e he) hv)
-  refine (XRuns.ledgerOp (p := p) (O := oracles H w) (s := s₁) (st := st₁) (by simp) (guardIs_top (by rw [hgd₁]))
+  refine (XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₁) (st := st₁) (by simp) (guardIs_top (by rw [hgd₁]))
     hreq).conseq (by simp) fun _ _ w' l h => ⟨rfl, ?_, ?_⟩
   · rw [h.1]; exact hw₁
   · simp only [Option.some.injEq, Prod.mk.injEq, true_and] at h; exact h.2.symm
@@ -172,14 +172,14 @@ theorem deposit_exec (xs : List Fr) (ω₀ : ω) (σ : LedgerState)
     (cm : List Fr) (hcm : phashFs p coinPreimageAlign (ccPre xs false [0, 0] selfFs) = some cm)
     (x : Nat) (hx : AV.ofFields [.bytes 32] cm = some ⟨[.bytes 32], [x]⟩)
     (v : AV) (hv : AV.ofFields (alignOf ShieldedCoinInfo) xs = some v) :
-    ((Exec.run p (oracles H w) deposit.circuit xs ω₀ σ).isSome = true ↔
+    ((Exec.run p (oracles H (Damp.Exec.liftWitness w)) deposit.circuit xs ω₀ σ).isSome = true ↔
       xs.length = 5 ∧ rangesHold (Value.ranges ShieldedCoinInfo) xs = true ∧
       ∃ w', w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w')) ∧
-    ∀ r, Exec.run p (oracles H w) deposit.circuit xs ω₀ σ = some r →
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness w)) deposit.circuit xs ω₀ σ = some r →
       r.outputs = [] ∧ w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], r.private_) ∧
       r.ledger = depositLedger σ es m x v := by
-  show ((Exec.run p (oracles H w) (mkCircuit "deposit" ["coin"] deposit) xs ω₀ σ).isSome = true ↔ _) ∧ ∀ r,
-    Exec.run p (oracles H w) (mkCircuit "deposit" ["coin"] deposit) xs ω₀ σ = some r → _
+  show ((Exec.run p (oracles H (Damp.Exec.liftWitness w)) (mkCircuit "deposit" ["coin"] deposit) xs ω₀ σ).isSome = true ↔ _) ∧ ∀ r,
+    Exec.run p (oracles H (Damp.Exec.liftWitness w)) (mkCircuit "deposit" ["coin"] deposit) xs ω₀ σ = some r → _
   by_cases hin : xs.length = 5 ∧ rangesHold (Value.ranges ShieldedCoinInfo) xs = true
   · let env : Env := fun v => xs.getD v 0
     have hW : Value.width ShieldedCoinInfo = 5 := Value.width_coin
@@ -196,7 +196,7 @@ theorem deposit_exec (xs : List Fr) (ω₀ : ω) (σ : LedgerState)
       rwa [hm] at h
     have hcl : (Value.toExprs (Value.ofExprs (argVars 0 (Value.width ShieldedCoinInfo)) : ShieldedCoinInfo)).length = 5 := by
       rw [← Damp.evalList_length hcoin.holds, hin.1]
-    obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H w) "deposit" ["coin"] deposit
+    obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H (Damp.Exec.liftWitness w)) "deposit" ["coin"] deposit
       (xs := xs) (w := ω₀) (l := σ) (outs := [])
       (ok := ∃ w', w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w'))
       (P := fun w' l => w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w') ∧
@@ -205,7 +205,7 @@ theorem deposit_exec (xs : List Fr) (ω₀ : ω) (σ : LedgerState)
       (by
         have e1 : (CircuitFnSpec.ranges (ShieldedCoinInfo → CircuitM Unit)).length = Value.width ShieldedCoinInfo := by
           rw [deposit_ranges]; rfl
-        show XRuns p (oracles H w) (deposit (Value.ofExprs ((argVars 0 (CircuitFnSpec.ranges
+        show XRuns p (oracles H (Damp.Exec.liftWitness w)) (deposit (Value.ofExprs ((argVars 0 (CircuitFnSpec.ranges
           (ShieldedCoinInfo → CircuitM Unit)).length).take (Value.width ShieldedCoinInfo))))
           { next := (CircuitFnSpec.ranges (ShieldedCoinInfo → CircuitM Unit)).length } _ _ _
         rw [e1, List.take_of_length_le (by simp [argVars])]
@@ -215,7 +215,7 @@ theorem deposit_exec (xs : List Fr) (ω₀ : ω) (σ : LedgerState)
     refine ⟨h1.trans (by simp [hin]), fun r hr => ?_⟩
     obtain ⟨e1, e2, e3⟩ := h2 r hr
     exact ⟨e1, e2, e3⟩
-  · have hnone : Exec.run p (oracles H w) (mkCircuit "deposit" ["coin"] deposit) xs ω₀ σ = none := by
+  · have hnone : Exec.run p (oracles H (Damp.Exec.liftWitness w)) (mkCircuit "deposit" ["coin"] deposit) xs ω₀ σ = none := by
       rw [mkCircuit_exec]; split
       · rename_i h
         rw [deposit_ranges, deposit_ranges_length] at h
@@ -250,15 +250,15 @@ theorem deposit_shipped {level : OptLevel} {ledgerOpt : Bool} {shipped : Contrac
     (x : Nat) (hx : AV.ofFields [.bytes 32] cm = some ⟨[.bytes 32], [x]⟩)
     (v : AV) (hv : AV.ofFields (alignOf ShieldedCoinInfo) xs = some v) :
     ∃ src, (buildPassWith level ledgerOpt deposit.circuit, src) ∈ srcs ∧
-      ((∃ r, Exec.run p (oracles H w) (buildPassWith level ledgerOpt deposit.circuit) xs ω₀ σ = some r) ↔
+      ((∃ r, Exec.run p (oracles H (Damp.Exec.liftWitness w)) (buildPassWith level ledgerOpt deposit.circuit) xs ω₀ σ = some r) ↔
         xs.length = 5 ∧ rangesHold (Value.ranges ShieldedCoinInfo) xs = true ∧
         ∃ w', w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w')) ∧
-      ∀ r, Exec.run p (oracles H w) (buildPassWith level ledgerOpt deposit.circuit) xs ω₀ σ = some r →
+      ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness w)) (buildPassWith level ledgerOpt deposit.circuit) xs ω₀ σ = some r →
         (r.outputs = [] ∧
           w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], r.private_) ∧
           r.ledger = depositLedger σ es m x v) ∧
         src.run p xs r.priv r.pub = some { outputs := r.outputs, groups := r.groups } :=
-  shipped_of hb hp (by simp [Examples.Tokens.contract, Contract.allCircuits]) H w xs ω₀ σ hwf
+  shipped_of hb hp (by simp [Examples.Tokens.contract, Contract.allCircuits]) H (Damp.Exec.liftWitness w) (witnessesOK_lift w) xs ω₀ σ hwf
     (P := fun o w' l => o = [] ∧ w "createZswapOutput" (xs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₀ = some ([], w') ∧
       l = depositLedger σ es m x v)
     (deposit_exec p H w xs ω₀ σ cfs wa selfFs hctx hc0 hself hwf es m heff hm fields hst hfl cm hcm x hx v hv)
@@ -305,13 +305,13 @@ theorem bump_runs (c : String → List Fr → ω → Option (List Fr × ω)) (xv
     (y rand : Fr) (hans : c (callWitnessName "Adder" "addTo") (refFs ++ [xv]) ω₀ = some ([y, rand], ω₁))
     (kv : AV) (hkv : AV.ofFields [.bytes 32, .bytes 32, .field]
       (refFs ++ entryPointFs "addTo" ++ [commFs p rand [xv] [y]]) = some kv) :
-    XRuns p (oracles H (callsBy w c)) (bump (Value.ofExprs [.var 0])) { next := 1 } (Exec.State.start env ω₀ σ)
+    XRuns p (oracles H (Damp.Exec.liftWitness (callsBy w c))) (bump (Value.ofExprs [.var 0])) { next := 1 } (Exec.State.start env ω₀ σ)
       (m.length < 2 ^ 64)
       (fun r e w' l => Value.Is p e r [y] ∧ w' = ω₁ ∧ l = bumpLedger σ es m kv y) := by
   have hrefl := fieldsOf_bytes32_length href
   unfold bump
   -- `(← adder.read)`
-  have h1 := (XRuns.ledgerRead (p := p) (O := oracles H (callsBy w c)) (s := { next := 1 })
+  have h1 := (XRuns.ledgerRead (p := p) (O := oracles H (Damp.Exec.liftWitness (callsBy w c))) (s := { next := 1 })
     (st := Exec.State.start env ω₀ σ) (α := Adder) roundTrip_adder
     (mk := fun es => [.dup 0, .idx false false [fieldKey 0], .popeq false (alignOf Adder) es])
     (ReadOps.popeq_last [.dup 0, .idx false false [fieldKey 0]] false _) (by decide) (guardIs_top rfl)
@@ -331,17 +331,17 @@ theorem bump_runs (c : String → List Fr → ω → Option (List Fr × ω)) (xv
     (hX.later ha₁ hn₁).imp fun e h => by
       simp [disclose, Value.toExprs, Value.ofExprs, Expr.evalList, Expr.eval, h]
   have hcall := XRuns.contractCall (p := p) roundTrip_field "Adder" "addTo" (ref := a.bytes.limbs)
-    (args := Value.toExprs (disclose (Value.ofExprs [.var 0] : Field)) ++ []) (oracles H (callsBy w c)) H rfl
+    (args := Value.toExprs (disclose (Value.ofExprs [.var 0] : Field)) ++ []) (oracles H (Damp.Exec.liftWitness (callsBy w c))) H rfl
     (s := s₁) (st := st₁) hg₁ (refFs := refFs) (hQ₁.imp fun e h => h.2.2) hargs (resFs := [y]) (rand := rand)
     (w' := ω₁) (by
-      rw [hw₁]
-      show callsBy w c (callWitnessName "Adder" "addTo") (refFs ++ [xv]) ω₀ = _
-      simp only [callsBy, isCallName_callWitnessName, ite_true]; exact hans) rfl rfl (kv := kv) hkv es m (by rw [hl₁]; exact hwf)
+      rw [hw₁, hl₁]
+      show Damp.Exec.liftWitness (callsBy w c) (callWitnessName "Adder" "addTo") (refFs ++ [xv]) ω₀ σ = _
+      simp only [Damp.Exec.liftWitness, callsBy, isCallName_callWitnessName, ite_true, hans]; rfl) rfl rfl (kv := kv) hkv es m (by rw [hl₁]; exact hwf)
     (by rw [hl₁]; exact heff) hm
   rw [hl₁] at hcall
   -- `const r ← …`
   refine (XRuns.seq (ok₂ := True) (XRuns.seq (ok₂ := True) hcall (fun _ => Grows.val _ _)
-      fun b s₂ st₂ hn₂ hgd₂ ha₂ hQ₂ => (XRuns.val (p := p) (O := oracles H (callsBy w c)) (s := s₂) (st := st₂)
+      fun b s₂ st₂ hn₂ hgd₂ ha₂ hQ₂ => (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness (callsBy w c))) (s := s₂) (st := st₂)
         roundTrip_field "r" rfl (hQ₂.imp fun e h => h.1)).conseq (ok' := True) Iff.rfl
         (Q' := fun r e w' l => Value.Is p e r [y] ∧ w' = ω₁ ∧ l = claimedCall σ es m kv ∧ m.length < 2 ^ 64)
         fun r e w' l h => ⟨h.1, h.2.1.trans hQ₂.holds.2.1, h.2.2.trans hQ₂.holds.2.2.1, hQ₂.holds.2.2.2⟩)
@@ -356,12 +356,12 @@ theorem bump_runs (c : String → List Fr → ω → Option (List Fr × ω)) (xv
     exact ledgerOracle_wf this
   have hreq : ∀ e, Agree s₃.next st₃.env e → ∃ req, Exec.request p e
       [.push false (fieldKey last.index), .push true (alignedOf r), .ins false 1] = some req ∧
-      (oracles H (callsBy w c)).ledger req st₃.ledger = some ([], bumpLedger σ es m kv y) := by
+      (oracles H (Damp.Exec.liftWitness (callsBy w c))).ledger req st₃.ledger = some ([], bumpLedger σ es m kv y) := by
     intro e he
     rw [hl₃]
     exact op_req' (Cell.write_spec H last p e (claimedCall σ es m kv) fields r [y] ⟨[.field], [y.val]⟩ hst hfl
       (by decide) hwf₁ ((hQ₃ e he).1) (ofFields_field y))
-  refine (XRuns.seq (ok₂ := True) (XRuns.ledgerOp (p := p) (O := oracles H (callsBy w c)) (s := s₃) (st := st₃)
+  refine (XRuns.seq (ok₂ := True) (XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness (callsBy w c))) (s := s₃) (st := st₃)
       (by simp) hg₃ hreq) (fun _ => Grows.pure' _) fun u s₄ st₄ hn₄ hgd₄ ha₄ hQ₄ => ?_).conseq (by simp)
     fun _ _ _ _ h => h
   obtain ⟨hw₄, hl₄⟩ := hQ₄.holds
@@ -377,11 +377,11 @@ theorem bump_exec (c : String → List Fr → ω → Option (List Fr × ω)) (xv
     (y rand : Fr) (hans : c (callWitnessName "Adder" "addTo") (refFs ++ [xv]) ω₀ = some ([y, rand], ω₁))
     (kv : AV) (hkv : AV.ofFields [.bytes 32, .bytes 32, .field]
       (refFs ++ entryPointFs "addTo" ++ [commFs p rand [xv] [y]]) = some kv) :
-    ((Exec.run p (oracles H (callsBy w c)) bump.circuit [xv] ω₀ σ).isSome = true ↔ m.length < 2 ^ 64) ∧
-    ∀ r, Exec.run p (oracles H (callsBy w c)) bump.circuit [xv] ω₀ σ = some r →
+    ((Exec.run p (oracles H (Damp.Exec.liftWitness (callsBy w c))) bump.circuit [xv] ω₀ σ).isSome = true ↔ m.length < 2 ^ 64) ∧
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness (callsBy w c))) bump.circuit [xv] ω₀ σ = some r →
       r.outputs = [y] ∧ r.private_ = ω₁ ∧ r.ledger = bumpLedger σ es m kv y := by
   have hX : Stable 1 (fun v => [xv].getD v 0) (fun e => e 0 = xv) := fun e he => (he 0 (by decide)).symm
-  obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H (callsBy w c)) "bump" ["x"] bump
+  obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H (Damp.Exec.liftWitness (callsBy w c))) "bump" ["x"] bump
     (xs := [xv]) (w := ω₀) (l := σ) (outs := [y]) (ok := m.length < 2 ^ 64)
     (P := fun w' l => w' = ω₁ ∧ l = bumpLedger σ es m kv y) rfl rfl
     (bump_runs p H w c xv _ ω₀ ω₁ σ hX fields aw refFs hst hf0 hfl href hwf es m heff hm y rand hans kv hkv)
@@ -390,7 +390,7 @@ theorem bump_exec (c : String → List Fr → ω → Option (List Fr × ω)) (xv
 /-- **`caller.bump`, as a build ships it, under the call assumption.** For
     any successful build of the `caller` contract (any level the hash
     functions `p` suit, with or without `--ledger-opt`), any call oracle `C`
-    that is isolated (`CallIsolated C c`: the callee neither sees nor changes
+    that is isolated (`CallIsolatedBy C c`: the callee neither sees nor changes
     the caller's ledger state) and answers the call `adder.addTo(x)` with the
     result `y` and opening `rand` (and private state `ω₁`), and any well-formed
     ledger state whose `adder` cell holds an address with limbs `refFs`, `kv`
@@ -405,7 +405,7 @@ theorem bump_exec (c : String → List Fr → ω → Option (List Fr × ω)) (xv
 theorem bump_shipped {level : OptLevel} {ledgerOpt : Bool} {shipped : Contract}
     {srcs : List (Circuit × Zkir.IrSource)} (hb : Examples.Caller.contract.buildCore level ledgerOpt = .ok (shipped, srcs))
     (hp : level.SoundAt p) (C : Exec.CallOracle ω LedgerState) (c : String → List Fr → ω → Option (List Fr × ω))
-    (hC : Exec.CallIsolated C c) (xv : Fr) (ω₀ ω₁ : ω)
+    (hC : Exec.CallIsolatedBy C c) (xv : Fr) (ω₀ ω₁ : ω)
     (σ : LedgerState) (fields : List SV) (aw : AV) (refFs : List Fr)
     (hst : σ.state = .array fields) (hf0 : fields[0]? = some (.cell aw)) (hfl : 2 < fields.length)
     (href : fieldsOf [.bytes 32] aw.atoms = some refFs) (hwf : σ.WF)
@@ -414,13 +414,14 @@ theorem bump_shipped {level : OptLevel} {ledgerOpt : Bool} {shipped : Contract}
     (kv : AV) (hkv : AV.ofFields [.bytes 32, .bytes 32, .field]
       (refFs ++ entryPointFs "addTo" ++ [commFs p rand [xv] [y]]) = some kv) :
     ∃ src, (buildPassWith level ledgerOpt bump.circuit, src) ∈ srcs ∧
-      ((∃ r, Exec.runC p C (oracles H w) (buildPassWith level ledgerOpt bump.circuit) [xv] ω₀ σ = some r) ↔
+      ((∃ r, Exec.runC p C (oracles H (Damp.Exec.liftWitness w)) (buildPassWith level ledgerOpt bump.circuit) [xv] ω₀ σ = some r) ↔
         m.length < 2 ^ 64) ∧
-      ∀ r, Exec.runC p C (oracles H w) (buildPassWith level ledgerOpt bump.circuit) [xv] ω₀ σ = some r →
+      ∀ r, Exec.runC p C (oracles H (Damp.Exec.liftWitness w)) (buildPassWith level ledgerOpt bump.circuit) [xv] ω₀ σ = some r →
         (r.outputs = [y] ∧ r.private_ = ω₁ ∧ r.ledger = bumpLedger σ es m kv y) ∧
         src.run p [xv] r.priv r.pub = some { outputs := r.outputs, groups := r.groups } := by
-  simp only [Exec.runC_eq_run hC, oracles_withCalls]
-  exact shipped_of hb hp (by simp [Examples.Caller.contract, Contract.allCircuits]) H (callsBy w c) [xv] ω₀ σ hwf
+  simp only [Exec.runC_eq_run hC, oracles_withCalls_lift]
+  exact shipped_of hb hp (by simp [Examples.Caller.contract, Contract.allCircuits]) H
+    (Damp.Exec.liftWitness (callsBy w c)) (witnessesOK_lift _) [xv] ω₀ σ hwf
     (P := fun o w' l => o = [y] ∧ w' = ω₁ ∧ l = bumpLedger σ es m kv y)
     (bump_exec p H w c xv ω₀ ω₁ σ fields aw refFs hst hf0 hfl href hwf es m heff hm y rand hans kv hkv)
 

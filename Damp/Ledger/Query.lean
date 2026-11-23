@@ -192,8 +192,10 @@ def ledgerOracle (H : Hooks) (ops : List (Op Fr)) (q : LedgerState) : Option (Li
   pure (vals, q')
 
 /-- Damp's executor run against this model of the ledger: `Exec.run p
-    (oracles H w)` is a concrete instance of the executor's specification. -/
-def oracles {ω : Type} (H : Hooks) (witness : String → List Fr → ω → Option (List Fr × ω)) :
+    (oracles H w)` is a concrete instance of the executor's specification. The
+    witnesses `w` see and may change the ledger state; what they may do is
+    stated where it is assumed (`Damp/Executor/Witnesses.lean`). -/
+def oracles {ω : Type} (H : Hooks) (witness : Exec.WitnessOracle ω LedgerState) :
     Exec.Oracles ω LedgerState where
   witness := witness
   ledger := ledgerOracle H

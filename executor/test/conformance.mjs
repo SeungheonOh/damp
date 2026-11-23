@@ -116,7 +116,7 @@ async function load(name, wits, ctorArgs) {
     world.deploy(addresses[name], name, c.init.currentContractState.data, keys, mod);
     for (const s of Object.values(strangers)) {
       if (s.like !== name) continue;
-      world.deploy(s.address, name, c.init.currentContractState.data, s.keys ? s.keys(keys) : keys, s.bound ? mod : undefined);
+      world.deploy(s.address, name, c.init.currentContractState.data, s.keys ? s.keys(keys) : keys, s.bound ? (s.wrap ? s.wrap(mod) : mod) : undefined);
     }
   }
   return c;
@@ -176,19 +176,27 @@ for (const [name, circuit, argsOf] of [...calls, ...extraCalls]) {
 // The synthetic contract.
 const synthetic = JSON.parse(fs.readFileSync(path.join(dir, 'synthetic.json'), 'utf-8'));
 let script = [];
+// A case with `peek` answers every witness with the ledger cell it names, as the witness context
+// shows it (the ledger as the ledger statements before the witness left it), as a user's witness
+// reading the ledger does; the others answer from their script.
+let peek = null;
 const synWitnesses = new Proxy({}, {
-  get: () => ({ privateState }) => {
+  get: () => ({ privateState, ledger }) => {
+    if (peek !== null) return [privateState, [BigInt(ledger[peek])]];
     if (script.length === 0) throw new Error('no scripted answer left');
     const a = script.shift();
     if (a === null) throw new Error('scripted refusal');
     return [privateState, a.map(BigInt)];
   },
 });
-const syn = await load('synthetic', synWitnesses, []);
+// The synthetic contract as written, and its `levels` circuits as each optimization level ships them.
+const synContracts = new Map();
 for (const s of synthetic) {
+  if (!synContracts.has(s.contract)) synContracts.set(s.contract, await load(s.contract, synWitnesses, []));
   script = s.witness.map((a) => (a === null ? null : [...a]));
+  peek = s.peek ?? null;
   ran++;
-  if (await call(syn, 'synthetic', s.circuit, s.args.map(BigInt), s.label)) completed++;
+  if (await call(synContracts.get(s.contract), s.contract, s.circuit, s.args.map(BigInt), s.label)) completed++;
 }
 
 fs.writeFileSync(path.join(dir, 'traces.json'), JSON.stringify({ calls: results }, null, 1));

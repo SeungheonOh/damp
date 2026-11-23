@@ -1,7 +1,7 @@
 /-
 The token library (`Damp/Lang/Tokens.lean`) end to end: each operation, run by
 the executor (`Exec.steps` via `XRuns`) against the modelled ledger
-(`oracles H w`): when it completes, its result, the private state, and the
+(`oracles H (Damp.Exec.liftWitness w)`): when it completes, its result, the private state, and the
 exact ledger state afterwards. `receiveShielded`, the unshielded operations and
 the balance reads are stated under a guard meaning `gb` (both values in one
 statement); `mintShieldedToken`, `sendShielded`, `mergeCoin` (and their
@@ -16,7 +16,7 @@ from the zeros an inactive ledger read returns (`selfOr`), so a hash must
 evaluate there too.
 
 The built-in witnesses `createZswapInput` / `createZswapOutput` are answered by
-the witness oracle `w` of `oracles H w` (the executor answers them itself); a
+the witness oracle `w` of `oracles H (Damp.Exec.liftWitness w)` (the executor answers them itself); a
 theorem states the answer it needs: no field elements, and the private state
 afterwards.
 -/
@@ -77,10 +77,10 @@ theorem Kernel.self_eq : Kernel.self = ledgerRead ContractAddress (fun es =>
 theorem self_runs {s : Build} {st : Exec.State ω LedgerState} {gb : Bool} (hg : GuardIs p s st.runState gb)
     (cfs : List SV) (wa : AV) (selfFs : List Fr) (hctx : st.ledger.context = .array cfs)
     (hc0 : cfs[0]? = some (.cell wa)) (hself : fieldsOf [.bytes 32] wa.atoms = some selfFs) (hwf : st.ledger.WF) :
-    XRuns p (oracles H w) Kernel.self s st True
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) Kernel.self s st True
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Value.Is p e r (selfOr gb selfFs) ∧ Value.Shaped r) := by
   rw [Kernel.self_eq]
-  have h := XRuns.ledgerReadG (p := p) (O := oracles H w) (s := s) (st := st) (gb := gb) roundTrip_contractAddress
+  have h := XRuns.ledgerReadG (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s) (st := st) (gb := gb) roundTrip_contractAddress
     (ReadOps.popeq_last [.dup 2, .idx true false [fieldKey 0]] true [.bytes 32]) (by decide) hg
     (res := some (selfFs, st.ledger)) (fun e _ =>
       read_req' (Kernel.self_spec H p e st.ledger cfs wa selfFs hctx hc0 hwf hself))
@@ -124,7 +124,7 @@ theorem receiveShielded_runs (coin : ShieldedCoinInfo) {s : Build} {st : Exec.St
     (es : List SV) (m : List (AV × SV)) (heff : st.ledger.effects = .array es) (hm : es[1]? = some (.map m))
     (cm : List Fr) (hcm : phashFs p coinPreimageAlign (ccPre coinFs false [0, 0] (selfOr gb selfFs)) = some cm)
     (x : Nat) (hx : AV.ofFields [.bytes 32] cm = some ⟨[.bytes 32], [x]⟩) :
-    XRuns p (oracles H w) (receiveShielded coin) s st
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (receiveShielded coin) s st
       (gb = true → ∃ w', w "createZswapOutput" (coinFs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) st.private_ =
         some ([], w'))
       (fun _ _ w' l => if gb then
@@ -142,7 +142,7 @@ theorem receiveShielded_runs (coin : ShieldedCoinInfo) {s : Build} {st : Exec.St
   -- `const recipient := right self`
   have hlen := right_toExprs_length hsh₁
   refine (XRuns.seq (ok₂ := gb = true → ∃ w', w "createZswapOutput"
-      (coinFs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) st.private_ = some ([], w')) ((XRuns.val (p := p) (O := oracles H w) (s := s₁) (st := st₁) (roundTrip_either roundTrip_zswapKey
+      (coinFs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) st.private_ = some ([], w')) ((XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₁) (st := st₁) (roundTrip_either roundTrip_zswapKey
       roundTrip_contractAddress) (x := (right a : Either ZswapCoinPublicKey ContractAddress)) "recipient"
       hlen (hQ₁.imp fun e h => right_self_is p h.2.2.1)).addResult (val_shaped _ "recipient" s₁ hlen))
     (fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.ledgerOp _ _)
@@ -158,7 +158,7 @@ theorem receiveShielded_runs (coin : ShieldedCoinInfo) {s : Build} {st : Exec.St
   have hargs : Expr.evalList p st₂.env (Value.toExprs coin ++ Value.toExprs r) =
       some (coinFs ++ (Fr.ofBool false :: [0, 0] ++ selfOr gb selfFs)) :=
     evalList_append_some hcoin₂.holds hrecip.holds
-  refine (XRuns.seq (ok₂ := True) (XRuns.askWitness0G (p := p) (O := oracles H w) (α := Unit) rfl "createZswapOutput" hg₂ hargs)
+  refine (XRuns.seq (ok₂ := True) (XRuns.askWitness0G_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapOutput" hg₂ hargs)
     (fun _ => Grows.ledgerOp _ _) fun u s₃ st₃ hn₃ hgd₃ ha₃ hQ₃ => ?_).conseq (ok' := gb = true → ∃ w',
       w "createZswapOutput" (coinFs ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) st.private_ = some ([], w'))
     (by
@@ -171,14 +171,14 @@ theorem receiveShielded_runs (coin : ShieldedCoinInfo) {s : Build} {st : Exec.St
   let σ' : LedgerState := { st.ledger with effects := .array (es.set 1 (.map (assocSet ⟨[.bytes 32], [x]⟩ .null m))) }
   have hreq : ∀ e, Agree s₃.next st₃.env e → ∃ req, Exec.request p e
       [.swap 0, .idx true true [fieldKey 1], .push false (alignedOf (coinCommitment coin r)), .pushNull false,
-        .ins true 2, .swap 0] = some req ∧ (oracles H w).ledger req st₃.ledger = some ([], σ') := by
+        .ins true 2, .swap 0] = some req ∧ (oracles H (Damp.Exec.liftWitness w)).ledger req st₃.ledger = some ([], σ') := by
     intro e he
     have hc := (hcoin₂.later ha₃ hn₃) e he
     have hre := (hrecip.later ha₃ hn₃) e he
     have hcm' := coinCommitment_is hc (Either.shaped_parts hshr) rfl hre hcm
     rw [hl₃, hl₂, hl₁]
     exact op_req' (Kernel.claimZswapCoinReceive_spec H p e st.ledger es m _ cm _ hwf heff hm hcm' hx)
-  refine (XRuns.ledgerOpG (p := p) (O := oracles H w) (s := s₃) (st := st₃) (gb := gb) (by simp) hg₃ hreq).conseq
+  refine (XRuns.ledgerOpG (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₃) (st := st₃) (gb := gb) (by simp) hg₃ hreq).conseq
     (by simp) fun _ _ w' l h => ?_
   obtain ⟨hw', hl'⟩ := h
   cases gb with
@@ -358,7 +358,7 @@ theorem isSelfU_runs (recipient : Either ContractAddress UserAddress) {s : Build
     (hr : Stable s.next st.env (fun e => Value.Is p e recipient (Fr.ofBool u :: rl ++ ru)))
     (cfs : List SV) (wa : AV) (selfFs : List Fr) (hctx : st.ledger.context = .array cfs)
     (hc0 : cfs[0]? = some (.cell wa)) (hself : fieldsOf [.bytes 32] wa.atoms = some selfFs) (hwf : st.ledger.WF) :
-    XRuns p (oracles H w) (cond recipient.isLeft (do return recipient.left.bytes ==. (← Kernel.self).bytes)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (cond recipient.isLeft (do return recipient.left.bytes ==. (← Kernel.self).bytes)
       (pure Boolean.false)) s st True
       (fun b e w' l => w' = st.private_ ∧ l = st.ledger ∧ Boolean.Is p e b (isSelfFs u rl (selfOr (gb && u) selfFs))) := by
   have hparts : ∀ e, Value.Is p e recipient (Fr.ofBool u :: rl ++ ru) →
@@ -437,7 +437,7 @@ theorem sendUnshielded_runs (color : Bytes 32) (amount : Uint128) (recipient : E
     (hc0 : cfs[0]? = some (.cell wa)) (hself : fieldsOf [.bytes 32] wa.atoms = some selfFs) (hwf : st.ledger.WF)
     (es : List SV) (m6 m7 m8 : List (AV × SV)) (heff : st.ledger.effects = .array es)
     (hm6 : es[6]? = some (.map m6)) (hm7 : es[7]? = some (.map m7)) (hm8 : es[8]? = some (.map m8)) :
-    XRuns p (oracles H w) (sendUnshielded color amount recipient) s st
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (sendUnshielded color amount recipient) s st
       (gb = true → sendUOk m6 m7 m8 (leftKey c) kv8 a.val (isSelfFs u rl selfFs))
       (fun _ _ w' l => w' = st.private_ ∧ l = if gb then
         { st.ledger with effects := .array (sendUEffects es m6 m7 m8 (leftKey c) kv8 a.val (isSelfFs u rl selfFs)) }
@@ -449,7 +449,7 @@ theorem sendUnshielded_runs (color : Bytes 32) (amount : Uint128) (recipient : E
   -- 1. `Kernel.incUnshieldedOutputs (left color) amount`
   have hreq₁ : ∀ e, Agree s.next st.env e → ∃ req,
       (emitted (Kernel.incUnshieldedOutputs (left color) amount)).bind (Exec.request p e) = some req ∧
-      (oracles H w).ledger req st.ledger = if addOk m7 k a.val then some ([], σ₁) else none := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st.ledger = if addOk m7 k a.val then some ([], σ₁) else none := by
     intro e he
     obtain ⟨ks, hks, hkv, hok⟩ := tokenKey_left p e color cs c (hcs e he) hcl hc
     exact Kernel.incUnshieldedOutputs_spec H p e st.ledger es m7 (left color) amount ks (leftKey c) a hwf heff hm7
@@ -490,7 +490,7 @@ theorem sendUnshielded_runs (color : Bytes 32) (amount : Uint128) (recipient : E
   let σ₂ : LedgerState := { l₁ with effects := .array es₂ }
   have hreq₂ : ∀ e, Agree s₁.next st₁.env e → ∃ req,
       (emitted (Kernel.claimUnshieldedCoinSpend (left color) recipient amount)).bind (Exec.request p e) = some req ∧
-      (oracles H w).ledger req st₁.ledger = if addOk m8 kv8 a.val then some ([], σ₂) else none := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st₁.ledger = if addOk m8 kv8 a.val then some ([], σ₂) else none := by
     intro e he
     have hA : Agree s.next st.env e := hA₁.trans (he.mono hn₁)
     have hk : Expr.evalList p e (Value.toExprs (left color, recipient)) = some (leftFs cs ++ (Fr.ofBool u :: rl ++ ru)) :=
@@ -531,7 +531,7 @@ theorem sendUnshielded_runs (color : Bytes 32) (amount : Uint128) (recipient : E
   let σ₃ : LedgerState := { l₂ with effects := .array (es₂'.set 6 (addMap 6 m6 k a.val)) }
   have hreq₃ : ∀ e, Agree s₃.next st₃.env e → ∃ req,
       (emitted (Kernel.incUnshieldedInputs (left color) amount)).bind (Exec.request p e) = some req ∧
-      (oracles H w).ledger req st₃.ledger = if addOk m6 k a.val then some ([], σ₃) else none := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st₃.ledger = if addOk m6 k a.val then some ([], σ₃) else none := by
     intro e he
     have hA : Agree s.next st.env e := hA₃.trans (he.mono (Nat.le_trans hn₁ (Nat.le_trans hn₂ hn₃)))
     obtain ⟨ks, hks, hkv, hok⟩ := tokenKey_left p e color cs c (hcs e hA) hcl hc
@@ -593,7 +593,7 @@ theorem mintUnshieldedToken_runs (domainSep : Bytes 32) (amount : Uint64) (recip
       some kv8) (hok8 : spendKeyOk kv8.atoms = true)
     (es : List SV) (m5 m6 m8 : List (AV × SV)) (heff : st.ledger.effects = .array es)
     (hm5 : es[5]? = some (.map m5)) (hm6 : es[6]? = some (.map m6)) (hm8 : es[8]? = some (.map m8)) :
-    XRuns p (oracles H w) (mintUnshieldedToken domainSep amount recipient) s st
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (mintUnshieldedToken domainSep amount recipient) s st
       (gb = true → mintUOk m5 m6 m8 ⟨[.bytes 32], [d]⟩ (leftKey t) kv8 a.val (isSelfFs u rl selfFs))
       (fun r e w' l => Value.Is p e r ts ∧ w' = st.private_ ∧ l = if gb then
         { st.ledger with effects := .array (mintUEffects es m5 m6 m8 ⟨[.bytes 32], [d]⟩ (leftKey t) kv8 a.val
@@ -613,7 +613,7 @@ theorem mintUnshieldedToken_runs (domainSep : Bytes 32) (amount : Uint64) (recip
   -- 1. `Kernel.mintUnshielded domainSep amount`
   have hreq₁ : ∀ e, Agree s.next st.env e → ∃ req,
       (emitted (Kernel.mintUnshielded domainSep amount)).bind (Exec.request p e) = some req ∧
-      (oracles H w).ledger req st.ledger = if addOk m5 dk a.val then some ([], σ₁) else none := fun e he =>
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st.ledger = if addOk m5 dk a.val then some ([], σ₁) else none := fun e he =>
     Kernel.mintUnshielded_spec H p e st.ledger es m5 domainSep amount dsFs dk a hwf heff hm5 (hds e he) hd (ha e he) ha64
   unfold mintUnshieldedToken
   refine (XRuns.seq (ok₂ := True ∧ (True ∧ ((gb = true → addOk m8 kv8 a.val) ∧ (True ∧
@@ -662,7 +662,7 @@ theorem mintUnshieldedToken_runs (domainSep : Bytes 32) (amount : Uint64) (recip
     tokenType_is ((hds.later hA₂ (Nat.le_trans hn₁ hn₂)) e he) (hQ₂ e he).2.2.1 htt
   refine (XRuns.seq (ok₂ := (gb = true → addOk m8 kv8 a.val) ∧ (True ∧
       (((gb && cb') = true → addOk m6 k a.val) ∧ True)))
-    ((XRuns.val (p := p) (O := oracles H w) (s := s₂) (st := st₂) roundTrip_bytes "color"
+    ((XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₂) (st := st₂) roundTrip_bytes "color"
       (by rw [← Damp.evalList_length hcol.holds, htl]; rfl) hcol).addResult
       (val_shaped _ "color" s₂ (by rw [← Damp.evalList_length hcol.holds, htl]; rfl)))
     (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.cond _ (Grows.bind (Grows.ledgerRead _ _)
@@ -681,7 +681,7 @@ theorem mintUnshieldedToken_runs (domainSep : Bytes 32) (amount : Uint64) (recip
   have hreq₂ : ∀ e, Agree s₃.next st₃.env e → ∃ req,
       (emitted (Kernel.claimUnshieldedCoinSpend (left color) recipient amount.widen)).bind (Exec.request p e) =
         some req ∧
-      (oracles H w).ledger req st₃.ledger = if addOk m8 kv8 a.val then some ([], σ₂) else none := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st₃.ledger = if addOk m8 kv8 a.val then some ([], σ₂) else none := by
     intro e he
     have hA : Agree s.next st.env e := hA₃.trans (he.mono hn₀₃)
     have hk : Expr.evalList p e (Value.toExprs (left color, recipient)) = some (leftFs ts ++ (Fr.ofBool u :: rl ++ ru)) :=
@@ -726,7 +726,7 @@ theorem mintUnshieldedToken_runs (domainSep : Bytes 32) (amount : Uint64) (recip
   let σ₃ : LedgerState := { l₂ with effects := .array (es₂'.set 6 (addMap 6 m6 k a.val)) }
   have hreq₃ : ∀ e, Agree s₅.next st₅.env e → ∃ req,
       (emitted (Kernel.incUnshieldedInputs (left color) amount.widen)).bind (Exec.request p e) = some req ∧
-      (oracles H w).ledger req st₅.ledger = if addOk m6 k a.val then some ([], σ₃) else none := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st₅.ledger = if addOk m6 k a.val then some ([], σ₃) else none := by
     intro e he
     have hA : Agree s.next st.env e := hA₅.trans (he.mono hn₀₅)
     obtain ⟨ks, hks, hkv, hok⟩ := tokenKey_left p e color ts t (((hcolor.later ha₄ hn₄).later ha₅ hn₅) e he) htl ht
@@ -767,10 +767,10 @@ theorem fieldsOf_small' {k X : Nat} (hk : k ≤ 31) (hX : X < 2 ^ (8 * k)) :
 theorem boolRead_runs {mk : List Expr → List (Op Expr)} (hmk : ReadOps mk) {s : Build}
     {st : Exec.State ω LedgerState} {gb : Bool} (hg : GuardIs p s st.runState gb) {P : Prop} [Decidable P] {b : Bool}
     (hreq : ∀ e, Agree s.next st.env e → ∃ req, Exec.request p e (mk (readVars Boolean)) = some req ∧
-      (oracles H w).ledger req st.ledger = if P then some ([Fr.ofBool b], st.ledger) else none) :
-    XRuns p (oracles H w) (ledgerRead Boolean mk) s st (gb = true → P)
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st.ledger = if P then some ([Fr.ofBool b], st.ledger) else none) :
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (ledgerRead Boolean mk) s st (gb = true → P)
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Boolean.Is p e r (gb && b)) := by
-  refine (XRuns.ledgerReadG (p := p) (O := oracles H w) roundTrip_boolean hmk (by decide) hg hreq).conseq ?_ ?_
+  refine (XRuns.ledgerReadG (p := p) (O := oracles H (Damp.Exec.liftWitness w)) roundTrip_boolean hmk (by decide) hg hreq).conseq ?_ ?_
   · cases gb with
     | false => simp
     | true => by_cases hP : P <;> simp [hP]; rfl
@@ -807,13 +807,13 @@ theorem unshieldedBalance_runs (color : Bytes 32) {s : Build} {st : Exec.State �
     (c : Nat) (hc : AV.ofFields [.bytes 32] cs = some ⟨[.bytes 32], [c]⟩)
     (cfs : List SV) (bal : List (AV × SV)) (hctx : st.ledger.context = .array cfs) (hb : cfs[5]? = some (.map bal))
     (hwf : st.ledger.WF) (B : Nat) (hB : balAtom bal (leftKey c) = some B) (hB128 : B < 2 ^ 128) :
-    XRuns p (oracles H w) (unshieldedBalance color) s st True
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (unshieldedBalance color) s st True
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Value.Is p e r [Fr.ofNat (if gb then B else 0)]) := by
   have hres : ∀ e, Agree s.next st.env e → ∃ req, Exec.request p e
       ((fun es => [.dup 2, .idx true false [fieldKey 5], .dup 0, .push false (alignedOf (left color : TokenType)),
         .member, .branch 3, .pop, .push false ⟨[.bytes 16], [.const 0]⟩, .jmp 1,
         .idx true false [alignedOf (left color : TokenType)], .popeq true [.bytes 16] es]) (readVars Uint128)) =
-          some req ∧ (oracles H w).ledger req st.ledger = some ([Fr.ofNat B], st.ledger) := by
+          some req ∧ (oracles H (Damp.Exec.liftWitness w)).ledger req st.ledger = some ([Fr.ofNat B], st.ledger) := by
     intro e he
     obtain ⟨ks, hks, hkv, -⟩ := tokenKey_left p e color cs c (hcs e he) hcl hc
     obtain ⟨req, h1, h2⟩ := read_req' (Kernel.balance_spec H p e st.ledger (left color) ks (leftKey c) hks hkv cfs bal
@@ -830,7 +830,7 @@ theorem unshieldedBalance_runs (color : Bytes 32) {s : Build} {st : Exec.State �
       | .cell ⟨al, [B']⟩, hB =>
         simp at hB; subst hB
         simp [fieldsOf_small' (k := 16) (by decide) (by simpa using hB128)]
-  refine (XRuns.ledgerReadG (p := p) (O := oracles H w) (s := s) (st := st) (gb := gb) (roundTrip_uint uint128_bound)
+  refine (XRuns.ledgerReadG (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s) (st := st) (gb := gb) (roundTrip_uint uint128_bound)
     (ReadOps.popeq_last _ true [.bytes 16]) (by rw [Value.width_uint]; decide) hg hres).conseq
     ⟨fun _ => trivial, fun _ _ => ⟨_, _, rfl, by rw [Value.width_uint]; rfl⟩⟩ ?_
   intro r e w' l ⟨hw, hq⟩
@@ -858,7 +858,7 @@ theorem unshieldedBalanceLt_runs (color : Bytes 32) (amount : Uint128) {s : Buil
     (av : Fr) (hav : Stable s.next st.env (fun e => amount.expr.eval p e = some av))
     (cfs : List SV) (bal : List (AV × SV)) (hctx : st.ledger.context = .array cfs) (hb : cfs[5]? = some (.map bal))
     (hwf : st.ledger.WF) (B : Nat) (hB : balAtom bal (leftKey c) = some B) :
-    XRuns p (oracles H w) (unshieldedBalanceLt color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (unshieldedBalanceLt color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Boolean.Is p e r (gb && decide (B < av.val))) := by
   let pre : List (Op Expr) :=
       [.dup 2, .idx true false [fieldKey 5], .dup 0, .push false (alignedOf (left color : TokenType)), .member,
@@ -879,7 +879,7 @@ theorem unshieldedBalanceGte_runs (color : Bytes 32) (amount : Uint128) {s : Bui
     (av : Fr) (hav : Stable s.next st.env (fun e => amount.expr.eval p e = some av))
     (cfs : List SV) (bal : List (AV × SV)) (hctx : st.ledger.context = .array cfs) (hb : cfs[5]? = some (.map bal))
     (hwf : st.ledger.WF) (B : Nat) (hB : balAtom bal (leftKey c) = some B) :
-    XRuns p (oracles H w) (unshieldedBalanceGte color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (unshieldedBalanceGte color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Boolean.Is p e r (!(gb && decide (B < av.val)))) := by
   unfold unshieldedBalanceGte
   refine (XRuns.seq (ok₂ := True) (unshieldedBalanceLt_runs H p w color amount hg cs hcl hcs c hc av hav cfs bal hctx hb
@@ -895,7 +895,7 @@ theorem unshieldedBalanceGt_runs (color : Bytes 32) (amount : Uint128) {s : Buil
     (av : Fr) (hav : Stable s.next st.env (fun e => amount.expr.eval p e = some av))
     (cfs : List SV) (bal : List (AV × SV)) (hctx : st.ledger.context = .array cfs) (hb : cfs[5]? = some (.map bal))
     (hwf : st.ledger.WF) (B : Nat) (hB : balAtom bal (leftKey c) = some B) :
-    XRuns p (oracles H w) (unshieldedBalanceGt color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (unshieldedBalanceGt color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Boolean.Is p e r (gb && decide (av.val < B))) := by
   let pre : List (Op Expr) :=
       [.push false ⟨[.bytes 16], [amount.expr]⟩, .dup 3, .idx true false [fieldKey 5], .dup 0,
@@ -916,7 +916,7 @@ theorem unshieldedBalanceLte_runs (color : Bytes 32) (amount : Uint128) {s : Bui
     (av : Fr) (hav : Stable s.next st.env (fun e => amount.expr.eval p e = some av))
     (cfs : List SV) (bal : List (AV × SV)) (hctx : st.ledger.context = .array cfs) (hb : cfs[5]? = some (.map bal))
     (hwf : st.ledger.WF) (B : Nat) (hB : balAtom bal (leftKey c) = some B) :
-    XRuns p (oracles H w) (unshieldedBalanceLte color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (unshieldedBalanceLte color amount) s st (gb = true → B < 2 ^ 64 ∧ av.val < 2 ^ 64)
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧ Boolean.Is p e r (!(gb && decide (av.val < B)))) := by
   unfold unshieldedBalanceLte
   refine (XRuns.seq (ok₂ := True) (unshieldedBalanceGt_runs H p w color amount hg cs hcl hcs c hc av hav cfs bal hctx hb
@@ -934,7 +934,7 @@ theorem receiveUnshielded_runsG (color : Bytes 32) (amount : Uint128) {s : Build
     (a : Fr) (ha : Stable s.next st.env (fun e => amount.expr.eval p e = some a)) (ha128 : a.val < 2 ^ 128)
     (es : List SV) (m : List (AV × SV)) (hwf : st.ledger.WF) (heff : st.ledger.effects = .array es)
     (hm : es[6]? = some (.map m)) :
-    XRuns p (oracles H w) (receiveUnshielded color amount) s st (gb = true → addOk m (leftKey c) a.val)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (receiveUnshielded color amount) s st (gb = true → addOk m (leftKey c) a.val)
       (fun _ _ w' l => w' = st.private_ ∧ l = if gb then
         { st.ledger with effects := .array (es.set 6 (addMap 6 m (leftKey c) a.val)) } else st.ledger) :=
   (XRuns.condOp rfl (by simp [receiveUnshieldedOps]) hg fun e he => by
@@ -1021,7 +1021,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
     (hw₂ : w "createZswapInput" (bn ++ bc ++ [bv, bi]) ω₁ = some ([], ω₂))
     (hw₃ : w "createZswapOutput" ((derivedNonceFs p "midnight:kernel:nonce_evolve" an ++ ac ++
       [Fr.ofNat (av.val + bv.val)]) ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₂ = some ([], ω₃)) :
-    XRuns p (oracles H w) (mergeCoin a b) s st (ac = bc ∧ av.val + bv.val < 2 ^ 128)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (mergeCoin a b) s st (ac = bc ∧ av.val + bv.val < 2 ^ 128)
       (fun r e w' l => Value.Is p e r (derivedNonceFs p "midnight:kernel:nonce_evolve" an ++ ac ++
           [Fr.ofNat (av.val + bv.val)]) ∧ w' = ω₃ ∧
         l = { st.ledger with effects := .array (mergeEffects es m0 m1 m2 xa xb y) }) := by
@@ -1042,14 +1042,14 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hwf₂ : (L es₂).WF := claimed_wf H (σ := L es₁) (by decide) hxb hwf₁ rfl hmA
   have hwf₃ : (L es₃).WF := claimed_wf H (σ := L es₂) (by decide) hy hwf₂ rfl hm2'
   -- 1. `const selfAddr ← Kernel.self`
-  have h1 : XRuns p (oracles H w) (valM Kernel.self "selfAddr") s st True
+  have h1 : XRuns p (oracles H (Damp.Exec.liftWitness w)) (valM Kernel.self "selfAddr") s st True
       (fun r e w' l => Value.Is p e r selfFs ∧ w' = st.private_ ∧ l = σ ∧ Value.Shaped r) := by
     unfold valM
     refine (XRuns.seq (ok₂ := True) (self_runs H p w hg cfs wa selfFs hctx hc0 hself hwf)
       (fun _ => Grows.val _ _) fun x s₁ st₁ hn₁ hgd₁ ha₁ hQ₁ => ?_).conseq (by simp) fun _ _ _ _ h => h
     obtain ⟨hw₁, hl₁, -, hsh₁⟩ := hQ₁.holds
     have hlen : (Value.toExprs x).length = Value.width ContractAddress := ContractAddress.shaped_len hsh₁
-    exact ((XRuns.val (p := p) (O := oracles H w) roundTrip_contractAddress "selfAddr" hlen
+    exact ((XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) roundTrip_contractAddress "selfAddr" hlen
       (hQ₁.imp fun e h => h.2.2.1)).addResult (val_shaped x "selfAddr" s₁ hlen)).conseq Iff.rfl
       fun r e w' l h => ⟨h.1.1, h.1.2.1.trans hw₁, h.1.2.2.trans hl₁, h.2⟩
   unfold mergeCoin
@@ -1064,7 +1064,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hb₁' := hb.later ha₁ hn₁
   -- 2. `createZswapInput a`
   refine (XRuns.seq (ok₂ := ac = bc ∧ vv < 2 ^ 128)
-    ((XRuns.askWitness0 (p := p) (O := oracles H w) (α := Unit) rfl "createZswapInput" hg₁ ha₁'.holds.is).conseq
+    ((XRuns.askWitness0_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapInput" hg₁ ha₁'.holds.is).conseq
       (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ω₁, by rw [hP₁]; exact hw₁⟩⟩
       (Q' := fun _ _ w' l => l = st₁.ledger ∧ w' = ω₁) fun _ _ w' l h => ⟨h.1, by
         have h2 := h.2; rw [hP₁] at h2; change w _ _ _ = _ at h2; rw [hw₁] at h2; simp at h2; exact h2.symm⟩)
@@ -1077,7 +1077,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hb₂' := hb₁'.later ha₂ hn₂
   -- 3. `claimZswapNullifier (coinNullifier a selfAddr)`
   refine (XRuns.seq (ok₂ := ac = bc ∧ vv < 2 ^ 128)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₁) rfl (by simp) hg₂ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₁) rfl (by simp) hg₂ fun e he => by
       rw [hL₂, hL₁]
       exact Kernel.claimZswapNullifier_spec H p e σ es m0 _ nfa (hkey xa) hwf heff hm0
         (coinNullifier_is (ha₂' e he).down (hS₂ e he) hnfa) hxa)
@@ -1091,7 +1091,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hb₃' := hb₂'.later ha₃ hn₃
   -- 4. `createZswapInput b`
   refine (XRuns.seq (ok₂ := ac = bc ∧ vv < 2 ^ 128)
-    ((XRuns.askWitness0 (p := p) (O := oracles H w) (α := Unit) rfl "createZswapInput" hg₃ hb₃'.holds.is).conseq
+    ((XRuns.askWitness0_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapInput" hg₃ hb₃'.holds.is).conseq
       (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ω₂, by rw [hP₃, hP₂]; exact hw₂⟩⟩
       (Q' := fun _ _ w' l => l = st₃.ledger ∧ w' = ω₂) fun _ _ w' l h => ⟨h.1, by
         have h2 := h.2; rw [hP₃, hP₂] at h2; change w _ _ _ = _ at h2; rw [hw₂] at h2; simp at h2; exact h2.symm⟩)
@@ -1104,7 +1104,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hb₄' := hb₃'.later ha₄ hn₄
   -- 5. `claimZswapNullifier (coinNullifier b selfAddr)`
   refine (XRuns.seq (ok₂ := ac = bc ∧ vv < 2 ^ 128)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₂) rfl (by simp) hg₄ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₂) rfl (by simp) hg₄ fun e he => by
       rw [hL₄, hL₃]
       exact Kernel.claimZswapNullifier_spec H p e (L es₁) es₁ mA _ nfb (hkey xb) hwf₁ rfl hmA
         (coinNullifier_is (hb₄' e he).down (hS₄ e he) hnfb) hxb)
@@ -1120,7 +1120,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hcolor : Stable s₅.next st₅.env (fun e => Boolean.Is p e (a.color ==. b.color) (decide (ac = bc))) :=
     fun e he => valueEq_is (p := p) (ha₅' e he).color (hb₅' e he).color (by rw [hacl, hbcl])
   refine (XRuns.seq (ok₂ := vv < 2 ^ 128)
-    (XRuns.lift (O := oracles H w) (st := st₅) (Runs.require (p := p) (st := st₅.runState) _ hg₅ hcolor)
+    (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₅) (Runs.require (p := p) (st := st₅.runState) _ hg₅ hcolor)
       (Quiet.require _ _))
     (fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.castTo _ _) fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
     fun _ s₆ st₆ hn₆ hgd₆ ha₆ hQ₆ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1131,7 +1131,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hb₆' := hb₅'.later ha₆ hn₆
   -- 7. `const nonce := derivedNonce … a.nonce`
   refine (XRuns.seq (ok₂ := vv < 2 ^ 128)
-    (XRuns.val (p := p) (O := oracles H w) (s := s₆) (st := st₆) roundTrip_bytes (xs := nn) "nonce" rfl
+    (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₆) (st := st₆) roundTrip_bytes (xs := nn) "nonce" rfl
       fun e he => derivedNonce_is "midnight:kernel:nonce_evolve" hanl (ha₆' e he).nonce)
     (fun _ => Grows.bind (Grows.castTo _ _) fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
     fun nonce s₇ st₇ hn₇ hgd₇ ha₇ hQ₇ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1145,7 +1145,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hsum : Stable s₇.next st₇.env (fun e => Uint.Means p e (a.value + b.value) vv) := fun e he =>
     Uint.add_means (by decide) (uint128_means p (ha₇' e he).value hav) (uint128_means p (hb₇' e he).value hbv)
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.lift (O := oracles H w) (st := st₇) (Runs.castTo (p := p) (st := st₇.runState) uint128_bound hg₇ hsum)
+    (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₇) (Runs.castTo (p := p) (st := st₇.runState) uint128_bound hg₇ hsum)
       (Quiet.castTo _ _))
     (fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
     fun value s₈ st₈ hn₈ hgd₈ ha₈ hQ₈ => ?_).conseq
@@ -1169,7 +1169,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
       (Fr.ofBool false :: [0, 0] ++ selfFs)) := fun e he => right_self_is p (hS₈ e he)
   -- 9. `createZswapOutput newCoin (right selfAddr)`
   refine (XRuns.seq (ok₂ := True)
-    ((XRuns.askWitness0 (p := p) (O := oracles H w) (α := Unit) rfl "createZswapOutput" hg₈
+    ((XRuns.askWitness0_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapOutput" hg₈
       (evalList_append_some hcoin.holds hrecip.holds)).conseq
       (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ω₃, by rw [hP₈, hP₇, hP₆, hP₅, hP₄]; exact hw₃⟩⟩
       (Q' := fun _ _ w' l => l = st₈.ledger ∧ w' = ω₃) fun _ _ w' l h => ⟨h.1, by
@@ -1186,7 +1186,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
     ⟨rfl, ContractAddress.shaped_len hshS⟩
   -- 10. `const cm := coinCommitment newCoin (right selfAddr)`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.val (p := p) (O := oracles H w) (s := s₉) (st := st₉) roundTrip_bytes (xs := cm) "cm" rfl
+    (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₉) (st := st₉) roundTrip_bytes (xs := cm) "cm" rfl
       fun e he => coinCommitment_is (hcoin₉ e he) hshR rfl (hrecip₉ e he) hcm)
     (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
     fun cmv s₁₀ st₁₀ hn₁₀ hgd₁₀ ha₁₀ hQ₁₀ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1197,7 +1197,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hLs : st₁₀.ledger = L es₂ := by rw [hL₁₀, hL₉, hL₈, hL₇, hL₆, hL₅]
   -- 11. `claimZswapCoinSpend cm`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₃) rfl (by simp) hg₁₀ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₃) rfl (by simp) hg₁₀ fun e he => by
       rw [hLs]
       exact Kernel.claimZswapCoinSpend_spec H p e (L es₂) es₂ m2 cmv cm (hkey y) hwf₂ rfl hm2' (hC₁₀ e he) hy)
     (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
@@ -1207,7 +1207,7 @@ theorem mergeCoin_runs (a b : QualifiedShieldedCoinInfo) {s : Build} {st : Exec.
   have hg₁₁ := GuardIs.later hg₁₀ ha₁₁ hn₁₁ hgd₁₁
   -- 12. `claimZswapCoinReceive cm`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₄) rfl (by simp) hg₁₁ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₄) rfl (by simp) hg₁₁ fun e he => by
       rw [hL₁₁]
       exact Kernel.claimZswapCoinReceive_spec H p e (L es₃) es₃ m1 cmv cm (hkey y) hwf₃ rfl hm1'
         ((hC₁₀.later ha₁₁ hn₁₁) e he) hy)
@@ -1252,7 +1252,7 @@ theorem mergeCoinImmediate_runs (a : QualifiedShieldedCoinInfo) (b : ShieldedCoi
     (hw₂ : w "createZswapInput" (bn ++ bc ++ [bv, 0]) ω₁ = some ([], ω₂))
     (hw₃ : w "createZswapOutput" ((derivedNonceFs p "midnight:kernel:nonce_evolve" an ++ ac ++
       [Fr.ofNat (av.val + bv.val)]) ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₂ = some ([], ω₃)) :
-    XRuns p (oracles H w) (mergeCoinImmediate a b) s st (ac = bc ∧ av.val + bv.val < 2 ^ 128)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (mergeCoinImmediate a b) s st (ac = bc ∧ av.val + bv.val < 2 ^ 128)
       (fun r e w' l => Value.Is p e r (derivedNonceFs p "midnight:kernel:nonce_evolve" an ++ ac ++
           [Fr.ofNat (av.val + bv.val)]) ∧ w' = ω₃ ∧
         l = { st.ledger with effects := .array (mergeEffects es m0 m1 m2 xa xb y) }) :=
@@ -1302,7 +1302,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
     (hy : AV.ofFields [.bytes 32] cm = some (hkey y))
     (ω₁ : ω) (hw₁ : w "createZswapOutput" ((nFs ++ ts ++ [a]) ++ (Fr.ofBool u :: rl ++ rr)) st.private_ =
       some ([], ω₁)) :
-    XRuns p (oracles H w) (mintShieldedToken domainSep value nonce recipient) s st (addOk m4 (hkey d) a.val)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (mintShieldedToken domainSep value nonce recipient) s st (addOk m4 (hkey d) a.val)
       (fun r e w' l => Value.Is p e r (nFs ++ ts ++ [a]) ∧ w' = ω₁ ∧
         l = { st.ledger with effects := .array (mintSEffects es m1 m2 m4 (hkey d) a.val y
           (!u && decide (rr = selfFs))) }) := by
@@ -1318,7 +1318,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   have hm1₂ : es₂[1]? = some (.map m1) := by simp [es₂, es₁, List.getElem?_set_ne, hm1]
   have hreq₁ : ∀ e, Agree s.next st.env e → ∃ req,
       (emitted (Kernel.mintShielded domainSep value)).bind (Exec.request p e) = some req ∧
-      (oracles H w).ledger req st.ledger = if addOk m4 (hkey d) a.val then some ([], L es₁) else none := fun e he =>
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st.ledger = if addOk m4 (hkey d) a.val then some ([], L es₁) else none := fun e he =>
     Kernel.mintShielded_spec H p e st.ledger es m4 domainSep value dsFs (hkey d) a hwf heff hm4 (hds e he) hd (ha e he)
       ha64
   unfold mintShieldedToken
@@ -1345,7 +1345,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
     show (nonce.limbs ++ ((tokenType domainSep x).limbs ++ ([(value.widen : Uint128).expr] ++ []))).length = 5
     simp [hnl]; rfl
   refine (XRuns.seq (ok₂ := addOk m4 (hkey d) a.val)
-    (XRuns.val (p := p) (O := oracles H w) (s := s₁) (st := st₁) roundTrip_coin "coin" hlen hcoinE)
+    (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₁) (st := st₁) roundTrip_coin "coin" hlen hcoinE)
     (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind Grows.currentGuard fun _ => Grows.bind (Grows.nameGuard _) fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
     fun coin s₂ st₂ hn₂ hgd₂ ha₂ hQ₂ => ?_).conseq (by simp) fun _ _ _ _ h => h
   obtain ⟨-, hP₂, hL₂⟩ := hQ₂.holds
@@ -1355,7 +1355,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   have hn₀₂ : s.next ≤ s₂.next := Nat.le_trans hn₁ hn₂
   -- 3. `Kernel.mintShielded domainSep value`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.condOp (p := p) (O := oracles H w) rfl (by simp) hg₂ fun e he => by
+    (XRuns.condOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) rfl (by simp) hg₂ fun e he => by
       rw [hL₂, hL₁]; exact hreq₁ e (hA₂.trans (he.mono hn₀₂)))
     (fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind Grows.currentGuard fun _ => Grows.bind (Grows.nameGuard _) fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
     fun _ s₃ st₃ hn₃ hgd₃ ha₃ hQ₃ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1372,7 +1372,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   have hR₃ := hr.later hA₃ hn₀₃
   -- 4. `createZswapOutput coin recipient`
   refine (XRuns.seq (ok₂ := True)
-    ((XRuns.askWitness0 (p := p) (O := oracles H w) (α := Unit) rfl "createZswapOutput" hg₃
+    ((XRuns.askWitness0_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapOutput" hg₃
       (evalList_append_some hC₃.holds hR₃.holds)).conseq
       (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ω₁, by rw [hP₃, hP₂, hP₁]; exact hw₁⟩⟩
       (Q' := fun _ _ w' l => l = st₃.ledger ∧ w' = ω₁) fun _ _ w' l h => ⟨h.1, by
@@ -1389,7 +1389,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
         Value.Is p e recipient.right rr := fun e h => either_is (by rw [hsh.1, hrl]) h
   -- 5. `const notLeft := !. recipient.isLeft`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.lift (O := oracles H w) (st := st₄) (Runs.val_boolean (p := p) (st := st₄.runState) (u := !u) "notLeft"
+    (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₄) (Runs.val_boolean (p := p) (st := st₄.runState) (u := !u) "notLeft"
       (hR₄.imp fun e h => Boolean.not_is (hparts e h).1)) (Quiet.val _ _))
     (fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind Grows.currentGuard fun _ => Grows.bind (Grows.nameGuard _) fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
     fun notLeft s₅ st₅ hn₅ hgd₅ ha₅ hQ₅ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1400,7 +1400,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   have hR₅ := hR₄.later ha₅ hn₅
   -- 6. `const cm := coinCommitment coin recipient`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.val (p := p) (O := oracles H w) (s := s₅) (st := st₅) roundTrip_bytes (xs := cm) "cm" rfl
+    (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₅) (st := st₅) roundTrip_bytes (xs := cm) "cm" rfl
       fun e he => coinCommitment_is (hC₅ e he) hsh hrl (hR₅ e he) hcm)
     (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind Grows.currentGuard fun _ => Grows.bind (Grows.nameGuard _) fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
     fun cmv s₆ st₆ hn₆ hgd₆ ha₆ hQ₆ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1411,7 +1411,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   -- 7. `Kernel.claimZswapCoinSpend cm`
   have hwf₂ : (L es₂).WF := claimed_wf H (σ := L es₁) (by decide) hy hwf₁ rfl hm2₁
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₂) rfl (by simp) hg₆ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₂) rfl (by simp) hg₆ fun e he => by
       rw [hLs₆]
       exact Kernel.claimZswapCoinSpend_spec H p e (L es₁) es₁ m2 cmv cm (hkey y) hwf₁ rfl hm2₁ (hCM₆ e he) hy)
     (fun _ => Grows.bind Grows.currentGuard fun _ => Grows.bind (Grows.nameGuard _) fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
@@ -1421,7 +1421,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   have hg₇ := GuardIs.later hg₆ ha₇ hn₇ hgd₇
   -- 8. `currentGuard`, `nameGuard (guardAnd g notLeft)`, `underGuard g' Kernel.self`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.lift (O := oracles H w) (st := st₇) (Runs.currentGuard (p := p) (s := s₇) (st := st₇.runState))
+    (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₇) (Runs.currentGuard (p := p) (s := s₇) (st := st₇.runState))
       Quiet.currentGuard)
     (fun _ => Grows.bind (Grows.nameGuard _) fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
     fun g s₈ st₈ hn₈ hgd₈ ha₈ hQ₈ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1431,7 +1431,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   have hgv : Stable s₈.next st₈.env (fun e => (guardAnd g notLeft.expr).eval p e = some (Fr.ofBool (true && !u))) :=
     fun e he => guardAnd_eval (by rw [hgg, ← hgd₈]; exact hg₈ e he) (hNL₈ e he)
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.lift (O := oracles H w) (st := st₈) (Runs.nameGuard (p := p) (st := st₈.runState) hgv) (Quiet.nameGuard _))
+    (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₈) (Runs.nameGuard (p := p) (st := st₈.runState) hgv) (Quiet.nameGuard _))
     (fun _ => Grows.bind (Grows.underGuard _ (Grows.ledgerRead _ _)) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.pure' _)
     fun g' s₉ st₉ hn₉ hgd₉ ha₉ hQ₉ => ?_).conseq (by simp) fun _ _ _ _ h => h
   obtain ⟨-, hP₉, hL₉⟩ := hQ₉.holds
@@ -1460,7 +1460,7 @@ theorem mintShieldedToken_runs (domainSep : Bytes 32) (value : Uint64) (nonce : 
   -- 9. `if% … then Kernel.claimZswapCoinReceive cm`
   have hwf₂' := hwf₂
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.when_someOp (p := p) (O := oracles H w) (cb := cbv) (σ₁ := L es₃) rfl (by simp) hg₁₀ hcond fun e he => by
+    (XRuns.when_someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (cb := cbv) (σ₁ := L es₃) rfl (by simp) hg₁₀ hcond fun e he => by
       rw [hLs₁₀]
       exact Kernel.claimZswapCoinReceive_spec H p e (L es₂) es₂ m1 cmv cm (hkey y) hwf₂' rfl hm1₂ (hCM₁₀ e he) hy)
     (fun _ => Grows.pure' _)
@@ -1526,7 +1526,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
       (Fr.ofBool u :: rl ++ rr)) ω₁ = some ([], ω₂))
     (hw₃ : v.val - k ≠ 0 → w "createZswapOutput" ((derivedNonceFs p "midnight:kernel:nonce_evolve/2" n ++ c ++
       [Fr.ofNat (v.val - k)]) ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₂ = some ([], ω₃)) :
-    XRuns p (oracles H w) (sendShielded input recipient value) s st (k ≤ v.val)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (sendShielded input recipient value) s st (k ≤ v.val)
       (fun r e w' l => Value.Is p e r (if v.val - k = 0
           then (Fr.ofBool false :: List.replicate (Value.width ShieldedCoinInfo) 0) ++
             (derivedNonceFs p "midnight:kernel:nonce_evolve" n ++ c ++ [Fr.ofNat k])
@@ -1568,14 +1568,14 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
       simpa [es₉, m1', hs] using this
   have hwfA : (L esA).WF := claimed_wf H (σ := L es₉) (by decide) hz hwf₉ rfl hm2₉
   -- 1. `const selfAddr ← Kernel.self`
-  have h1 : XRuns p (oracles H w) (valM Kernel.self "selfAddr") s st True
+  have h1 : XRuns p (oracles H (Damp.Exec.liftWitness w)) (valM Kernel.self "selfAddr") s st True
       (fun r e w' l => Value.Is p e r selfFs ∧ w' = st.private_ ∧ l = σ ∧ Value.Shaped r) := by
     unfold valM
     refine (XRuns.seq (ok₂ := True) (self_runs H p w hg cfs wa selfFs hctx hc0 hself hwf)
       (fun _ => Grows.val _ _) fun x s₁ st₁ hn₁ hgd₁ ha₁ hQ₁ => ?_).conseq (by simp) fun _ _ _ _ h => h
     obtain ⟨hw₁, hl₁, -, hsh₁⟩ := hQ₁.holds
     have hlen : (Value.toExprs x).length = Value.width ContractAddress := ContractAddress.shaped_len hsh₁
-    exact ((XRuns.val (p := p) (O := oracles H w) roundTrip_contractAddress "selfAddr" hlen
+    exact ((XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) roundTrip_contractAddress "selfAddr" hlen
       (hQ₁.imp fun e h => h.2.2.1)).addResult (val_shaped x "selfAddr" s₁ hlen)).conseq Iff.rfl
       fun r e w' l h => ⟨h.1.1, h.1.2.1.trans hw₁, h.1.2.2.trans hl₁, h.2⟩
   unfold sendShielded
@@ -1588,7 +1588,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hin₁ := hin.later ha₁ hn₁
   -- 2. `createZswapInput input`
   refine (XRuns.seq (ok₂ := k ≤ v.val)
-    ((XRuns.askWitness0 (p := p) (O := oracles H w) (α := Unit) rfl "createZswapInput" hg₁ hin₁.holds.is).conseq
+    ((XRuns.askWitness0_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapInput" hg₁ hin₁.holds.is).conseq
       (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ω₁, by rw [hP₁]; exact hw₁⟩⟩
       (Q' := fun _ _ w' l => l = st₁.ledger ∧ w' = ω₁) fun _ _ w' l h => ⟨h.1, by
         have h2 := h.2; rw [hP₁] at h2; change w _ _ _ = _ at h2; rw [hw₁] at h2; simp at h2; exact h2.symm⟩)
@@ -1600,7 +1600,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hin₂ := hin₁.later ha₂ hn₂
   -- 3. `claimZswapNullifier (coinNullifier input selfAddr)`
   refine (XRuns.seq (ok₂ := k ≤ v.val)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₁) rfl (by simp) hg₂ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₁) rfl (by simp) hg₂ fun e he => by
       rw [hL₂, hL₁]
       exact Kernel.claimZswapNullifier_spec H p e σ es m0 _ nf (hkey x) hwf heff hm0
         (coinNullifier_is (hin₂ e he).down (hS₂ e he) hnf) hx)
@@ -1614,15 +1614,15 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hin₃ := hin₂.later ha₃ hn₃
   have hk₃ := hk.later hA₃ hn₀₃
   -- 4. `const change ← input.value.sub value`
-  have h4 : XRuns p (oracles H w) (valM (input.value.sub value) "change") s₃ st₃ (k ≤ v.val)
+  have h4 : XRuns p (oracles H (Damp.Exec.liftWitness w)) (valM (input.value.sub value) "change") s₃ st₃ (k ≤ v.val)
       (fun r e w' l => Uint.Means p e r chg ∧ w' = st₃.private_ ∧ l = st₃.ledger) := by
     unfold valM
     refine (XRuns.seq (ok₂ := True)
-      (XRuns.lift (O := oracles H w) (st := st₃) (Runs.sub (p := p) (st := st₃.runState) hg₃
+      (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₃) (Runs.sub (p := p) (st := st₃.runState) hg₃
         (fun e he => uint128_means p (hin₃ e he).value hv) hk₃) (Quiet.sub _ _))
       (fun _ => Grows.val _ _) fun d s₄ st₄ hn₄ hgd₄ ha₄ hQ₄ => ?_).conseq (by simp) fun _ _ _ _ h => h
     obtain ⟨-, hP₄, hL₄⟩ := hQ₄.holds
-    exact (XRuns.lift (O := oracles H w) (st := st₄) (Runs.val_uint (p := p) (st := st₄.runState) "change"
+    exact (XRuns.lift (O := oracles H (Damp.Exec.liftWitness w)) (st := st₄) (Runs.val_uint (p := p) (st := st₄.runState) "change"
       (hQ₄.imp fun e h => by simpa using h.1)) (Quiet.val _ _)).conseq Iff.rfl
       fun r e w' l h => ⟨h.1, h.2.1.trans hP₄, h.2.2.trans hL₄⟩
   refine (XRuns.seq (ok₂ := True) h4
@@ -1645,7 +1645,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
     exact evalList_append_some (derivedNonce_is "midnight:kernel:nonce_evolve" hnl (hin₄ e he).nonce)
       (evalList_append_some (hin₄ e he).color (by simp [Expr.evalList, (hk₄ e he).eval]))
   refine (XRuns.seq (ok₂ := True)
-    ((XRuns.val (p := p) (O := oracles H w) (s := s₄) (st := st₄) roundTrip_coin (xs := outFs) "output"
+    ((XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₄) (st := st₄) roundTrip_coin (xs := outFs) "output"
       (by rw [← Damp.evalList_length hout.holds]; simp [outFs, derivedNonceFs, hcl]; rfl) hout).addResult
       (val_shaped _ "output" s₄ (by rw [← Damp.evalList_length hout.holds]; simp [outFs, derivedNonceFs, hcl]; rfl)))
     (fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.cond _ (Grows.pure' _) (Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _))
@@ -1658,7 +1658,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hR₅ := hr.later hA₅ hn₀₅
   -- 6. `createZswapOutput output recipient`
   refine (XRuns.seq (ok₂ := True)
-    ((XRuns.askWitness0 (p := p) (O := oracles H w) (α := Unit) rfl "createZswapOutput" hg₅
+    ((XRuns.askWitness0_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapOutput" hg₅
       (evalList_append_some hO₅.holds hR₅.holds)).conseq
       (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ω₂, by rw [hP₅, hP₄, hP₃, hP₂]; exact hw₂⟩⟩
       (Q' := fun _ _ w' l => l = st₅.ledger ∧ w' = ω₂) fun _ _ w' l h => ⟨h.1, by
@@ -1672,7 +1672,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hR₆ := hR₅.later ha₆ hn₆
   -- 7. `const cm := coinCommitment output recipient`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.val (p := p) (O := oracles H w) (s := s₆) (st := st₆) roundTrip_bytes (xs := cm) "cm" rfl
+    (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₆) (st := st₆) roundTrip_bytes (xs := cm) "cm" rfl
       fun e he => coinCommitment_is (hO₆ e he) hsh hrl (hR₆ e he) hcm)
     (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.cond _ (Grows.pure' _) (Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _))
     fun cmv s₇ st₇ hn₇ hgd₇ ha₇ hQ₇ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1682,7 +1682,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hLs₇ : st₇.ledger = L es₁ := by rw [hL₇, hL₆, hL₅, hL₄, hL₃]
   -- 8. `Kernel.claimZswapCoinSpend cm`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L es₈) rfl (by simp) hg₇ fun e he => by
+    (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L es₈) rfl (by simp) hg₇ fun e he => by
       rw [hLs₇]
       exact Kernel.claimZswapCoinSpend_spec H p e (L es₁) es₁ m2 cmv cm (hkey y) hwf₁ rfl hm2₁ (hCM₇ e he) hy)
     (fun _ => Grows.bind (Grows.when_ _ (Grows.ledgerOp _ _)) fun _ => Grows.cond _ (Grows.pure' _) (Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _))
@@ -1705,7 +1705,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
   have hCM₈ := hCM₇.later ha₈ hn₈
   -- 9. `if% … then Kernel.claimZswapCoinReceive cm`
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.when_someOp (p := p) (O := oracles H w) (cb := selfR) (σ₁ := L (es₈.set 1 (.map (assocSet (hkey y) .null m1))))
+    (XRuns.when_someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (cb := selfR) (σ₁ := L (es₈.set 1 (.map (assocSet (hkey y) .null m1))))
       rfl (by simp) hg₈ hcond fun e he => by
       rw [hL₈]
       exact Kernel.claimZswapCoinReceive_spec H p e (L es₈) es₈ m1 cmv cm (hkey y) hwf₈ rfl hm1₈ (hCM₈ e he) hy)
@@ -1764,7 +1764,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
       exact evalList_append_some (derivedNonce_is "midnight:kernel:nonce_evolve/2" hnl (hin' e he).nonce)
         (evalList_append_some (hin' e he).color (by simp [Expr.evalList, (hCh' e he).eval]))
     refine (XRuns.seq (ok₂ := True)
-      (XRuns.val (p := p) (O := oracles H w) (s := s') (st := st') roundTrip_coin (xs := chFs) "changeCoin"
+      (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s') (st := st') roundTrip_coin (xs := chFs) "changeCoin"
         (by rw [← Damp.evalList_length hcc.holds]; simp [chFs, derivedNonceFs, hcl]; rfl) hcc)
       (fun _ => Grows.bind (Grows.askWitness _ _ _) fun _ => Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
       fun cc t₁ u₁ hm₁ hgt₁ hb₁ hR₁ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1775,7 +1775,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
     have hO₁' := hO'.later hb₁ hm₁
     -- e2. `createZswapOutput changeCoin (right selfAddr)`
     refine (XRuns.seq (ok₂ := True)
-      ((XRuns.askWitness0G (p := p) (O := oracles H w) (α := Unit) rfl "createZswapOutput" hgu₁
+      ((XRuns.askWitness0G_iso (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (α := Unit) rfl rfl "createZswapOutput" hgu₁
         (evalList_append_some hCC₁.holds (right_self_is p hS₁'.holds))).conseq (ok' := True)
         ⟨fun _ => trivial, fun _ h => ⟨ω₃, by
           rw [hQP₁, hPt]; exact hw₃ (by simpa [gb'] using h)⟩⟩ (fun _ _ _ _ h => h))
@@ -1787,7 +1787,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
     have hS₂' := hS₁'.later hb₂ hm₂
     -- e3. `const cm := coinCommitment changeCoin (right selfAddr)`
     refine (XRuns.seq (ok₂ := True)
-      (XRuns.val (p := p) (O := oracles H w) (s := t₂) (st := u₂) roundTrip_bytes (xs := cm₂) "cm" rfl
+      (XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := t₂) (st := u₂) roundTrip_bytes (xs := cm₂) "cm" rfl
         fun e he => coinCommitment_is (hCC₂ e he) hshR rfl (right_self_is p (hS₂' e he)) hcm₂)
       (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
       fun cmv₂ t₃ u₃ hm₃ hgt₃ hb₃ hR₃ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -1797,7 +1797,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
     have hLu₃ : u₃.ledger = L es₉ := by rw [hQL₃, hQL₂, hQL₁, hLt]
     -- e4. `Kernel.claimZswapCoinSpend cm`
     refine (XRuns.seq (ok₂ := True)
-      (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L esA) rfl (by simp) hgu₃ fun e he => by
+      (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L esA) rfl (by simp) hgu₃ fun e he => by
         rw [hLu₃]
         exact Kernel.claimZswapCoinSpend_spec H p e (L es₉) es₉ _ cmv₂ cm₂ (hkey z) hwf₉ rfl hm2₉ (hCM₃ e he) hz)
       (fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
@@ -1808,7 +1808,7 @@ theorem sendShielded_runs (input : QualifiedShieldedCoinInfo) (recipient : Eithe
     have hCM₄ := hCM₃.later hb₄ hm₄
     -- e5. `Kernel.claimZswapCoinReceive cm`
     refine (XRuns.seq (ok₂ := True)
-      (XRuns.someOp (p := p) (O := oracles H w) (σ₁ := L (es'.set 1 (.map (assocSet (hkey z) .null m1'))))
+      (XRuns.someOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (σ₁ := L (es'.set 1 (.map (assocSet (hkey z) .null m1'))))
         rfl (by simp) hgu₄ fun e he => by
         rw [hLu₄]
         exact Kernel.claimZswapCoinReceive_spec H p e (L es') es' m1' cmv₂ cm₂ (hkey z) hwf' rfl hm1' (hCM₄ e he) hz)
@@ -1904,7 +1904,7 @@ theorem sendImmediateShielded_runs (input : ShieldedCoinInfo) (recipient : Eithe
       (Fr.ofBool u :: rl ++ rr)) ω₁ = some ([], ω₂))
     (hw₃ : v.val - k ≠ 0 → w "createZswapOutput" ((derivedNonceFs p "midnight:kernel:nonce_evolve/2" n ++ c ++
       [Fr.ofNat (v.val - k)]) ++ (Fr.ofBool false :: [0, 0] ++ selfFs)) ω₂ = some ([], ω₃)) :
-    XRuns p (oracles H w) (sendImmediateShielded input recipient value) s st (k ≤ v.val)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (sendImmediateShielded input recipient value) s st (k ≤ v.val)
       (fun r e w' l => Value.Is p e r (if v.val - k = 0
           then (Fr.ofBool false :: List.replicate (Value.width ShieldedCoinInfo) 0) ++
             (derivedNonceFs p "midnight:kernel:nonce_evolve" n ++ c ++ [Fr.ofNat k])

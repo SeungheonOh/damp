@@ -19,6 +19,11 @@ program leaves the part of the state at the fact's constant prefix as it was
 (`frame_ledgerOracle`, `readSpec_frame`); the facts a cell write or a map
 insert establish hold by `ledgerOracle_cellWrite_read` and
 `ledgerOracle_mapInsert_read` (`write_holds`).
+
+At a witness the facts survive what `WitnessesOK` allows it to do
+(`inv_witness`): every witness but `createZswapOutput` keeps the ledger, and
+`createZswapOutput` changes only call-context slot 1, so the facts the pass
+keeps there (`keepsAcrossWitness`) are unaffected (`readSpec_ctx_frame`).
 -/
 import Damp.Proofs.Optimize.LedgerReuseBase
 import Damp.Proofs.Ledger.Cell
@@ -400,9 +405,11 @@ theorem emit_case {ω : Type} (O : Exec.Oracles ω LedgerState) (st : Stmt) (res
 
 theorem inv_quiet {ω : Type} (O : Exec.Oracles ω LedgerState) {st : Stmt} {s r : Exec.State ω LedgerState}
     {fs fs' : List LFact} (hinv : LInv p fs s.env s.ledger) (h : Exec.step p O s st = some r)
-    (hst : ∀ g rs ops, st ≠ .ledger g rs ops) (hfs : ∀ f ∈ fs', f ∈ fs ∧ ∀ w ∈ f.vars, w ∉ st.lrBinds) :
+    (hst : ∀ g rs ops, st ≠ .ledger g rs ops)
+    (hk : ∀ g n a o sh, st = .witness g n a o sh → KeepsLedger O.witness n)
+    (hfs : ∀ f ∈ fs', f ∈ fs ∧ ∀ w ∈ f.vars, w ∉ st.lrBinds) :
     LInv p fs' r.env r.ledger := by
-  have hl := step_ledger_same p O h hst
+  have hl := step_ledger_same p O h hst hk
   have he := step_env_frame p O h
   refine ⟨hl ▸ hinv.1, fun f hf => ?_⟩
   obtain ⟨hf1, hf2⟩ := hfs f hf
@@ -414,7 +421,7 @@ end
 /-! ## The scan -/
 
 section Scan
-variable (p : Prims) (H : Hooks) {ω : Type} (wit : String → List Fr → ω → Option (List Fr × ω))
+variable (p : Prims) (H : Hooks) {ω : Type} (wit : Damp.Exec.WitnessOracle ω LedgerState)
 
 
 theorem request_plain2 (env : Env) (p₁ p₂ : List (Aligned Expr)) (c : Bool) (a : List Zkir.AlignAtom)
@@ -787,34 +794,81 @@ theorem go_other_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : Lis
               exact ⟨[k₁', k₂'], v', vv, by simp [List.mapM_cons, h1, h2], rfl, hvv, hrd⟩
       · exact hold f' hf'
 
-theorem go_sound : ∀ (stmts : List Stmt) (fs : List LFact) (s t : Exec.State ω LedgerState),
+/-- **The facts survive a witness**: every witness but `createZswapOutput`
+    keeps the ledger (`WitnessesOK.keepsLedger`); `createZswapOutput` changes
+    only call-context slot 1, and the facts kept across it
+    (`keepsAcrossWitness`) are about the contract state, the effects, or a
+    constant context slot other than 1 (`readSpec_ctx_frame`). Without the
+    filter at `ctxWitness`, a fact about slot 1 would have to survive a change
+    of slot 1: `readSpec 2 path' a q' = readSpec 2 path' a q` with `q'.context`
+    differing from `q.context` at slot 1 is not provable (and false of the
+    runtime: `com_indices` gains the commitment). -/
+theorem inv_witness (hW : WitnessesOK wit) {g : Expr} {name : String} {args : List Expr}
+    {outs : List (Var × Option Range)} {sh : Shape} {s r : Exec.State ω LedgerState} {fs : List LFact}
+    (hinv : LInv p fs s.env s.ledger) (h : Exec.step p (oracles H wit) s (.witness g name args outs sh) = some r) :
+    LInv p (forgetVars (outs.map Prod.fst) (if ctxWitness name then fs.filter keepsAcrossWitness else fs))
+      r.env r.ledger := by
+  have he := step_env_frame p _ h
+  have henv : ∀ f ∈ forgetVars (outs.map Prod.fst) (if ctxWitness name then fs.filter keepsAcrossWitness else fs),
+      ∀ w ∈ f.vars, r.env w = s.env w := fun f hf w hw => he w (by
+        have := (mem_forgetVars hf).2 w hw; simpa [Stmt.lrBinds] using this)
+  have hmem : ∀ f ∈ forgetVars (outs.map Prod.fst) (if ctxWitness name then fs.filter keepsAcrossWitness else fs),
+      f ∈ fs ∧ (ctxWitness name = true → keepsAcrossWitness f = true) := fun f hf => by
+    have h1 := (mem_forgetVars hf).1
+    by_cases hc : ctxWitness name = true
+    · rw [if_pos hc] at h1; exact ⟨(List.mem_filter.mp h1).1, fun _ => (List.mem_filter.mp h1).2⟩
+    · rw [if_neg hc] at h1; exact ⟨h1, fun h' => absurd h' hc⟩
+  by_cases hz : witnessClass name = .zswapOutput
+  · have hc : ctxWitness name = true := by simp [ctxWitness, hz]
+    have hstep := step_witness_ctx p (hW.zswapOutput hz) h
+    refine ⟨hstep.wf hinv.1, fun f hf => ?_⟩
+    obtain ⟨hf1, hf2⟩ := hmem f hf
+    have hold := (hinv.2 f hf1).env p fun w hw => henv f hf w hw
+    have hkeep := hf2 hc
+    unfold keepsAcrossWitness at hkeep
+    by_cases hn : f.n = 2
+    · simp only [hn, bne_self_eq_false, Bool.false_or] at hkeep
+      split at hkeep
+      · rename_i kv hkv
+        have hk1 : kv.atoms ≠ [1] := by simpa using hkeep
+        obtain ⟨hn2, gv, b, hg, hb, hpath, hon, hoff⟩ := hold
+        refine ⟨hn2, gv, b, hg, hb, hpath, fun hb1 => ?_, hoff⟩
+        obtain ⟨path', xs, h1, h2, h3⟩ := hon hb1
+        refine ⟨path', xs, h1, ?_, h3⟩
+        rw [hn] at h2 ⊢
+        rw [readSpec_ctx_frame h1 f.align hkv hk1 hstep.2.2]; exact h2
+      · simp at hkeep
+    · apply hold.ledger
+      have hle := hold.1
+      have : f.n = 0 ∨ f.n = 1 := by omega
+      rcases this with h0 | h0 <;> rw [h0] <;> simp [LedgerState.comp, hstep.1, hstep.2.1]
+  · have hk := hW.keepsLedger hz
+    have hl := step_witness_keeps p _ hk h
+    refine ⟨hl ▸ hinv.1, fun f hf => ?_⟩
+    rw [hl]
+    exact (hinv.2 f (hmem f hf).1).env p fun w hw => henv f hf w hw
+
+theorem go_sound (hW : WitnessesOK wit) : ∀ (stmts : List Stmt) (fs : List LFact) (s t : Exec.State ω LedgerState),
     s.obs = t.obs → LInv p fs s.env s.ledger →
     (Exec.steps p (oracles H wit) (ledgerReuseGo fs stmts) t).map Exec.State.obs =
       (Exec.steps p (oracles H wit) stmts s).map Exec.State.obs
   | [], fs, s, t, hobs, _ => by simp [ledgerReuseGo, Exec.steps, hobs]
   | st :: rest, fs, s, t, hobs, hinv => by
-    have ih := fun fs => go_sound rest fs
+    have ih := fun fs => go_sound hW rest fs
     cases st with
     | bind v hint e =>
       exact emit_case p _ _ rest _ _ s t hobs
-        (fun r h => inv_quiet p _ hinv h (by intros; simp) (fun f hf => by
+        (fun r h => inv_quiet p _ hinv h (by intros; simp) (by intros; simp_all) (fun f hf => by
           obtain ⟨h1, h2⟩ := mem_forgetVars hf; exact ⟨h1, by simpa [Stmt.lrBinds] using h2⟩))
         (ih _)
     | assert c msg =>
       exact emit_case p _ _ rest _ _ s t hobs
-        (fun r h => inv_quiet p _ hinv h (by intros; simp) (fun f hf => ⟨hf, by simp [Stmt.lrBinds]⟩)) (ih _)
+        (fun r h => inv_quiet p _ hinv h (by intros; simp) (by intros; simp_all) (fun f hf => ⟨hf, by simp [Stmt.lrBinds]⟩)) (ih _)
     | constrain e rr =>
       exact emit_case p _ _ rest _ _ s t hobs
-        (fun r h => inv_quiet p _ hinv h (by intros; simp) (fun f hf => ⟨hf, by simp [Stmt.lrBinds]⟩)) (ih _)
+        (fun r h => inv_quiet p _ hinv h (by intros; simp) (by intros; simp_all) (fun f hf => ⟨hf, by simp [Stmt.lrBinds]⟩)) (ih _)
     | witness g name args outs sh =>
-      exact emit_case p _ _ rest _ _ s t hobs
-        (fun r h => inv_quiet p _ hinv h (by intros; simp) (fun f hf => by
-          obtain ⟨h1, h2⟩ := mem_forgetVars hf
-          refine ⟨?_, by simpa [Stmt.lrBinds] using h2⟩
-          split at h1
-          · exact (List.mem_filter.mp h1).1
-          · exact h1))
-        (ih _)
+      exact emit_case p _ _ rest _ _ s t hobs (fun r h => inv_witness p H wit hW hinv h) (ih _)
     | ledger g rs ops =>
       cases hpr : plainRead? rs ops with
       | some x =>
@@ -844,13 +898,13 @@ end Scan
 
 /-- `Circuit.ledgerReuse` is sound against the modelled ledger. -/
 theorem Circuit.ledgerReuse_soundLedger : Pass.SoundLedger Circuit.ledgerReuse := by
-  refine ⟨fun {ω} H p w c inputs pr σ hσ => ?_⟩
+  refine ⟨fun {ω} H p w hW c inputs pr σ hσ => ?_⟩
   simp only [Exec.run, Circuit.ledgerReuse, List.toList_toArray, Option.bind_eq_bind]
   cases hb : bindInputs (fun _ => 0) c.inputs inputs with
   | none => simp
   | some env =>
     simp only [Option.bind_some]
-    have e := go_sound p H w c.body.toList [] ⟨env, [], [], [], pr, σ⟩ ⟨env, [], [], [], pr, σ⟩ rfl
+    have e := go_sound p H w hW c.body.toList [] ⟨env, [], [], [], pr, σ⟩ ⟨env, [], [], [], pr, σ⟩ rfl
       ⟨hσ, by simp⟩
     cases h1 : Exec.steps p (oracles H w) (ledgerReuseGo [] c.body.toList) ⟨env, [], [], [], pr, σ⟩ <;>
       cases h2 : Exec.steps p (oracles H w) c.body.toList ⟨env, [], [], [], pr, σ⟩ <;>

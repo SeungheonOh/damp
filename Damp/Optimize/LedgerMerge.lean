@@ -16,9 +16,10 @@ the instructions of a ledger statement `L₂` at the end of an earlier one `L₁
   (`widthOk`);
 * only statements that are not ledger statements (at most `mergeWindow`) lie
   between them, and `L₂` can move above them: it does not read what they
-  bind, they neither read nor bind what it reads, and none is a witness that
-  changes the query context in the runtime (`ctxWitness`: `createZswapOutput`
-  inserts its commitment into the call context) (`lcommutes`);
+  bind, they neither read nor bind what it reads, and every witness among them
+  is isolated (`isolatedWitness`: it neither sees nor changes the ledger; a
+  user's witness may read the contract state `L₂` writes, and
+  `createZswapOutput` writes the call context `L₂` may read) (`lcommutes`);
 * the two programs pass `mergeable`, below.
 
 One request is not two requests in a row. Between two requests the runtime
@@ -271,10 +272,13 @@ def Stmt.isLedger : Stmt → Bool
   | .ledger .. => true
   | _ => false
 
-/-- The ledger statement `s` may move above `x`. -/
-def lcommutes (s x : Stmt) : Bool :=
+/-- The ledger statement `s` may move above `x`. A witness `x` must be
+    isolated, or, when `ctxOnly` (`s` is a read of the call context, which
+    changes no ledger state), at least not write the call context
+    (`ctxWitness`). -/
+def lcommutes (ctxOnly : Bool) (s x : Stmt) : Bool :=
   (match x with
-    | .witness _ name _ _ _ => !ctxWitness name
+    | .witness _ name _ _ _ => isolatedWitness name || (ctxOnly && !ctxWitness name)
     | _ => true) &&
   !(s.mUses.any x.mBinds.contains) && !(s.mBinds.any fun v => x.mUses.contains v || x.mBinds.contains v)
 
@@ -308,7 +312,7 @@ def lmergeGo : Nat → List Stmt → List Stmt
       | .ledger g rs ops =>
           match nextLedger mergeWindow rest with
           | some (gap, l, rest') =>
-              if gap.all (lcommutes l) then
+              if gap.all (lcommutes false l) then
                 match mergeInto g rs ops l with
                 | some m => lmergeGo fuel (m :: gap ++ rest')
                 | none => s :: lmergeGo fuel rest

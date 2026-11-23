@@ -59,9 +59,12 @@ def main (args : List String) : IO UInt32 := do
   return 0
 LEAN
 lake env lean --run "$out/NoMerge.lean" "$out/nm" >/dev/null
-# A program for the witness barrier: a ledger statement that reads the call context never moves
-# above `createZswapOutput` (which changes the context in the runtime, not in the model), built
-# at o2, nm and lo by its own driver (it is not a benchmark program).
+# Programs for the witness barriers (Damp/Optimize/LedgerFrame.lean), built at o2, nm and lo by their
+# own driver (they are not benchmark programs): `lo_barrier`, a ledger statement that reads the call
+# context never moves above `createZswapOutput` (which writes call-context slot 1); `lo_witness`, no
+# write is dropped or moved across a user's witness (which reads the contract state), while
+# `ownPublicKey` and `createZswapInput` (isolated) are crossed. Then the rewrites the barriers must
+# allow and forbid are checked on the built circuits.
 cat > "$out/Barrier.lean" <<'LEAN'
 import Bench
 open Damp
@@ -103,6 +106,68 @@ circuit peek : Uint64 := do
 contract lo_barrier
 end LoBarrier
 
+/-! A contract for the barriers at the other witnesses (`stateWitness`, `isolatedWitness`,
+Damp/Optimize/LedgerFrame.lean; the footprints of Damp/Executor/Witnesses.lean). A user's witness
+is handed the contract's current state (`WitnessContext.ledger`): `ledgerDeadStore` must not drop a
+write it could read, `ledgerMerge` must not move a write above it (`deadstore`, `merge`, from the
+audit's repro, test/audit/LedgerWitness.lean). A context read may move above it (`hoistUser`).
+`ownPublicKey` and `createZswapInput` neither see nor change the ledger: the passes cross them
+(`mergePk`, `mergeIn`, `deadIn`), and the runtime agrees. -/
+namespace LoWitness
+
+ledger
+  c : Cell Field
+  d : Cell Field
+
+witness peekC : Field
+witness peekD : Field
+
+circuit deadstore : Field := do
+  c.write 1
+  const x ← peekC
+  c.write 2
+  return disclose x
+
+circuit merge (v : Field) : Field := do
+  c.write (disclose v)
+  const x ← peekD
+  d.write (disclose v + 7)
+  return disclose x
+
+circuit control : Field := do
+  c.write 3
+  const x ← peekC
+  return disclose x
+
+/-- The address read moves above the user's witness, into the write's request. -/
+circuit hoistUser (v : Field) : ContractAddress := do
+  c.write (disclose v)
+  const x ← peekC
+  const me ← Kernel.self
+  d.write (disclose x)
+  return me
+
+circuit mergePk (v : Field) : ZswapCoinPublicKey := do
+  c.write (disclose v)
+  const k ← ownPublicKey
+  d.write (disclose v + 1)
+  return k
+
+circuit mergeIn (coin : QualifiedShieldedCoinInfo) (v : Field) : Field := do
+  c.write (disclose v)
+  createZswapInput (disclose coin)
+  d.write (disclose v + 2)
+  return (← d.read)
+
+circuit deadIn (coin : QualifiedShieldedCoinInfo) : Field := do
+  c.write 4
+  createZswapInput (disclose coin)
+  c.write 5
+  return (← c.read)
+
+contract lo_witness
+end LoWitness
+
 /-- `IR.ledgerPasses` minus `ledgerHoist` and `ledgerMerge`, as in NoMerge.lean. -/
 def noMerge (c : Contract) : Contract :=
   let f : IR.Pass := fun circ => IR.runPasses (IR.ledgerPasses.take 3) circ.optimizeFull
@@ -110,15 +175,37 @@ def noMerge (c : Contract) : Contract :=
 
 def main (args : List String) : IO UInt32 := do
   let out := System.FilePath.mk (args.headD "build")
-  let c := LoBarrier.contract
-  for (dir, m) in [("o2", c.optimize .full false), ("nm", noMerge c), ("lo", c.optimize .full true)] do
-    for circ in m.circuits ++ m.«constructor».toList do
-      if let .error e := circ.checkLedger then throw (IO.userError s!"{c.name}: {e}")
-    let srcs ← IO.ofExcept m.emitAll
-    m.writeFiles (out / dir / c.name) srcs
+  for c in [LoBarrier.contract, LoWitness.contract] do
+    for (dir, m) in [("o2", c.optimize .full false), ("nm", noMerge c), ("lo", c.optimize .full true)] do
+      for circ in m.circuits ++ m.«constructor».toList do
+        if let .error e := circ.checkLedger then throw (IO.userError s!"{c.name}: {e}")
+      let srcs ← IO.ofExcept m.emitAll
+      m.writeFiles (out / dir / c.name) srcs
   return 0
 LEAN
 lake env lean --run "$out/Barrier.lean" "$out" >/dev/null
+python3 -I - "$out" <<'PYEOF'
+import json, os, sys
+root = sys.argv[1]
+sh = lambda bd: ''.join({'ledger': 'L', 'witness': 'W', 'bind': 'B'}.get(s['kind'], 'A') for s in bd if s['kind'] != 'ledger' or s['ops'])
+def body(level, circ):
+    return next(c for c in json.load(open(os.path.join(root, level, 'lo_witness', 'contract.json')))['circuits'] if c['name'] == circ)['body']
+bad = 0
+def want(circ, cond, what):
+    global bad
+    a, b = sh(body('o2', circ)), sh(body('lo', circ))
+    ok = cond(a, b)
+    print(f'{"ok  " if ok else "FAIL"} lo_witness.{circ}: {a} -> {b}  ({what})')
+    bad += not ok
+nl = lambda s: s.count('L')
+want('deadstore', lambda a, b: nl(b) == nl(a), 'no write dropped across a user witness')
+want('merge', lambda a, b: nl(b) == nl(a), 'no write moved above a user witness')
+want('hoistUser', lambda a, b: nl(b) < nl(a), 'the address read moved above the user witness and merged')
+want('mergePk', lambda a, b: nl(b) < nl(a), 'merged across ownPublicKey')
+want('mergeIn', lambda a, b: nl(b) < nl(a), 'merged across createZswapInput')
+want('deadIn', lambda a, b: nl(b) < nl(a), 'a write dropped across createZswapInput')
+sys.exit(1 if bad else 0)
+PYEOF
 mkdir -p "$out/compact"
 compactc.bin --skip-zk bench/compact/zerocash_core.compact "$out/compact/zerocash_core" >/dev/null
 
@@ -148,7 +235,11 @@ PY
 # a fact answers and every dead store the pass handles must be gone. Left: forwarding blocked by the
 # operand size cap or a multi-limb value, and dead stores across writes of other fields at the top
 # level (unsound in the model when the contract state is a map, see docs/benchmarks.md).
-python3 -I bench/ledger_headroom.py "$out/lo" --classes --json "$out/classes.json" >/dev/null
+# (The barrier contracts lo_* are left out: the classifier does not know the witness barriers, and
+# lo_witness.deadstore is a dead store across a user's witness, which must stay.)
+rm -rf "$out/lo-bench"; mkdir -p "$out/lo-bench"
+for d in "$out/lo"/*/; do case "$(basename "$d")" in lo_*) ;; *) ln -s "$(cd "$d" && pwd)" "$out/lo-bench/$(basename "$d")" ;; esac; done
+python3 -I bench/ledger_headroom.py "$out/lo-bench" --classes --json "$out/classes.json" >/dev/null
 python3 -I - "$out/classes.json" <<'PY'
 import json, sys
 tot = json.load(open(sys.argv[1]))['total']

@@ -12,8 +12,13 @@ statement that neither reads nor binds those variables and whose own
 variables it does not bind (`step_commute_ctx`): the executor's states after
 the two orders agree on everything but the public transcript and the public
 inputs (`Exec.State.obs`). With `step_commute` (statements that are not
-ledger statements) the read moves above every statement between
-(`steps_mid`), and `hoistGo_steps` follows by induction.
+ledger statements, isolated witnesses) and `step_commute_keep` (a user's
+witness, which keeps the ledger: the read leaves it as it was,
+`step_ctx_ledger`) the read moves above every statement between
+(`steps_mid`), and `hoistGo_steps` follows by induction. It never moves above
+`createZswapOutput` (`lcommutes true` refuses `ctxWitness`): that witness
+changes the call context the read reads, and `step_ctx_patch`'s hypothesis
+`t.ledger.context = s.ledger.context` fails after it.
 -/
 import Damp.Optimize.LedgerHoist
 import Damp.Proofs.Optimize.LedgerMerge
@@ -25,7 +30,7 @@ open Damp.Zkir (Prims Group)
 set_option linter.unusedSimpArgs false
 
 section Hoist
-variable {ω : Type} (p : Prims) (H : Hooks) (w : String → List Fr → ω → Option (List Fr × ω))
+variable {ω : Type} (p : Prims) (H : Hooks) (w : Damp.Exec.WitnessOracle ω LedgerState)
 
 theorem request_ctx {env : Env} {ci c : Bool} {path : List (Aligned Expr)} {a : List Zkir.AlignAtom}
     {res : List Expr} {req : List (Op Fr)}
@@ -166,6 +171,30 @@ theorem step_ctx_patch (g : Expr) (rs : List Var) (ci c : Bool) (path : List (Al
                 | some gs =>
                   simp [Exec.State.obs, Patch.apply, mk, htp, hr2]
 
+/-- A ledger statement keeps a well-formed state well formed. -/
+theorem step_wf_ledger {s r : Exec.State ω LedgerState} {g : Expr} {rs : List Var} {ops : List (Op Expr)}
+    (h : Exec.step p (oracles H w) s (.ledger g rs ops) = some r) (hwf : s.ledger.WF) : r.ledger.WF := by
+  rcases step_ledger_cases p _ h with ⟨_, rfl⟩ | ⟨gv, _, h⟩
+  · exact hwf
+  · rcases h with ⟨_, hl, _⟩ | ⟨_, req, xs, _, ho, _⟩
+    · rw [hl]; exact hwf
+    · exact ledgerOracle_wf ho
+
+/-- A context read leaves a well-formed ledger state exactly as it was. -/
+theorem step_ctx_ledger {g : Expr} {rs : List Var} {ci c : Bool} {path : List (Aligned Expr)}
+    {a : List Zkir.AlignAtom} {res : List Expr} {s r : Exec.State ω LedgerState} (hs : s.ledger.WF)
+    (h : Exec.step p (oracles H w) s (.ledger g rs [.dup 2, .idx ci false path, .popeq c a res]) = some r) :
+    r.ledger = s.ledger := by
+  rcases step_ledger_cases p _ h with ⟨_, rfl⟩ | ⟨gv, _, h⟩
+  · rfl
+  · rcases h with ⟨_, hl, _⟩ | ⟨_, req, xs, hreq, ho, _⟩
+    · exact hl
+    · obtain ⟨path', -, hq⟩ := oracle_ctx p H s.ledger hs hreq
+      change ledgerOracle H req s.ledger = _ at ho
+      rw [hq] at ho
+      cases hr : readSpec 2 path' a s.ledger <;> simp [hr] at ho
+      exact ho.2.symm
+
 /-- A ledger statement leaves the call context as it was. -/
 theorem step_ledger_context {s r : Exec.State ω LedgerState} {g : Expr} {rs : List Var} {ops : List (Op Expr)}
     (h : Exec.step p (oracles H w) s (.ledger g rs ops) = some r) : r.ledger.context = s.ledger.context := by
@@ -181,7 +210,7 @@ theorem step_ledger_context {s r : Exec.State ω LedgerState} {g : Expr} {rs : L
 theorem step_commute_ctx (g : Expr) (rs : List Var) (ci c : Bool) (path : List (Aligned Expr))
     (a : List Zkir.AlignAtom) (res : List Expr) (g' : Expr) (rs' : List Var) (ops' : List (Op Expr))
     (hne' : ops' ≠ [])
-    (hc : lcommutes (.ledger g rs [.dup 2, .idx ci false path, .popeq c a res]) (.ledger g' rs' ops') = true)
+    (hc : lcommutes true (.ledger g rs [.dup 2, .idx ci false path, .popeq c a res]) (.ledger g' rs' ops') = true)
     (s : Exec.State ω LedgerState) (hs : s.ledger.WF) :
     ((Exec.step p (oracles H w) s (.ledger g' rs' ops')).bind fun r =>
         Exec.step p (oracles H w) r (.ledger g rs [.dup 2, .idx ci false path, .popeq c a res])).map Exec.State.obs =
@@ -203,7 +232,7 @@ theorem step_commute_ctx (g : Expr) (rs : List Var) (ci c : Bool) (path : List (
       simp [Stmt.mBinds, Stmt.lrBinds] at this hvr
       exact this hvr
     · exact ledger_step_private p _ hr
-    · exact step_wf p H w hr hs
+    · exact step_wf_ledger p H w hr hs
     · exact step_ledger_context p H w hr
   cases o with
   | none =>
@@ -250,7 +279,7 @@ theorem ctxRead_spec {r : Stmt} (h : r.ctxRead = true) :
 
 theorem findCtxRead_spec {g : Expr} {rs : List Var} {ops : List (Op Expr)} :
     ∀ {n : Nat} {l mid rest : List Stmt} {r : Stmt}, findCtxRead g rs ops n l = some (mid, r, rest) →
-      l = mid ++ r :: rest ∧ r.ctxRead = true ∧ ∀ x ∈ mid, lcommutes r x = true ∧ x.emptyLedger = false
+      l = mid ++ r :: rest ∧ r.ctxRead = true ∧ ∀ x ∈ mid, lcommutes true r x = true ∧ x.emptyLedger = false
   | 0, _, _, _, _, h => by simp [findCtxRead] at h
   | _ + 1, [], _, _, _, h => by simp [findCtxRead] at h
   | n + 1, x :: l, mid, rest, r, h => by
@@ -267,7 +296,7 @@ theorem findCtxRead_spec {g : Expr} {rs : List Var} {ops : List (Op Expr)} :
         | some t =>
           obtain ⟨mid', r', rest'⟩ := t
           simp only [h', Option.bind_some] at h
-          by_cases hc : (lcommutes r' x && !x.emptyLedger) = true
+          by_cases hc : (lcommutes true r' x && !x.emptyLedger) = true
           · rw [if_pos hc] at h
             simp only [Bool.and_eq_true, Bool.not_eq_true'] at hc
             simp only [Option.some.injEq, Prod.mk.injEq] at h
@@ -288,8 +317,8 @@ theorem bind_steps_obs {A A' : Option (Exec.State ω LedgerState)} (h : A.map Ex
   exact steps_obs p _ L h
 
 /-- The context read `r` moves above the statements it commutes with. -/
-theorem steps_mid {r : Stmt} (hr : r.ctxRead = true) :
-    ∀ (mid rest : List Stmt), (∀ x ∈ mid, lcommutes r x = true ∧ x.emptyLedger = false) →
+theorem steps_mid (hW : WitnessesOK w) {r : Stmt} (hr : r.ctxRead = true) :
+    ∀ (mid rest : List Stmt), (∀ x ∈ mid, lcommutes true r x = true ∧ x.emptyLedger = false) →
       ∀ s : Exec.State ω LedgerState, s.ledger.WF →
         (Exec.steps p (oracles H w) (mid ++ r :: rest) s).map Exec.State.obs =
           (Exec.steps p (oracles H w) (r :: mid ++ rest) s).map Exec.State.obs
@@ -297,7 +326,7 @@ theorem steps_mid {r : Stmt} (hr : r.ctxRead = true) :
   | x :: mid, rest, h, s, hs => by
       obtain ⟨g, rs, ci, c, path, a, res, rfl⟩ := ctxRead_spec hr
       have hx := h x (by simp)
-      have ih := steps_mid hr mid rest (fun y hy => h y (by simp [hy]))
+      have ih := steps_mid hW hr mid rest (fun y hy => h y (by simp [hy]))
       -- after `x`, the read moves above `mid`
       have e1 : (Exec.steps p (oracles H w) (x :: mid ++ .ledger g rs [.dup 2, .idx ci false path, .popeq c a res] ::
             rest) s).map Exec.State.obs =
@@ -309,7 +338,7 @@ theorem steps_mid {r : Stmt} (hr : r.ctxRead = true) :
         | none => rfl
         | some r1 =>
           simp only [Option.bind_some]
-          rw [ih r1 (step_wf p H w hx1 hs)]
+          rw [ih r1 (step_wf p H w hW hx1 hs)]
           simp only [List.cons_append, Exec.steps, Option.bind_eq_bind]
       rw [e1]
       have e2 : (Exec.steps p (oracles H w)
@@ -329,11 +358,22 @@ theorem steps_mid {r : Stmt} (hr : r.ctxRead = true) :
         have hne' : ops' ≠ [] := by
           intro h0; subst h0; simp [Stmt.emptyLedger] at hx
         exact step_commute_ctx p H w g rs ci c path a res g' rs' ops' hne' hx.1 s hs
+      | witness g' name args outs sh =>
+        -- the barrier: `lcommutes true` refuses `createZswapOutput`, which writes the context the read reads
+        have hcls : witnessClass name ≠ .zswapOutput := by
+          intro hz
+          have := hx.1
+          simp [lcommutes, isolatedWitness, ctxWitness, hz] at this
+        by_cases hi : witnessClass name = .isolated
+        · rw [step_commute p _ _ (by rfl) (fun _ _ _ _ _ he => by cases he; exact hW.isolated hi) g rs _ (by simp)
+            true hx.1 s]
+        · rw [step_commute_keep p _ g' name args outs sh (hW.keepsLedger hcls) g rs _ (by simp) true hx.1 s
+            (fun r h => step_ctx_ledger p H w hs h)]
       | _ =>
-        rw [step_commute p _ _ (by rfl) g rs _ (by simp) hx.1 s]
+        rw [step_commute p _ _ (by rfl) (by intros; simp_all) g rs _ (by simp) true hx.1 s]
   termination_by mid => mid.length
 
-theorem hoistGo_steps : ∀ (fuel : Nat) (l : List Stmt) (s t : Exec.State ω LedgerState), s.obs = t.obs →
+theorem hoistGo_steps (hW : WitnessesOK w) : ∀ (fuel : Nat) (l : List Stmt) (s t : Exec.State ω LedgerState), s.obs = t.obs →
     s.ledger.WF →
     (Exec.steps p (oracles H w) (hoistGo fuel l) t).map Exec.State.obs =
       (Exec.steps p (oracles H w) l s).map Exec.State.obs
@@ -347,7 +387,7 @@ theorem hoistGo_steps : ∀ (fuel : Nat) (l : List Stmt) (s t : Exec.State ω Le
         cases h1 : Exec.step p (oracles H w) s st <;> cases h2 : Exec.step p (oracles H w) t st <;>
           rw [h1, h2] at e <;> simp at e ⊢
         rename_i r1 r2
-        exact hoistGo_steps fuel rest r1 r2 e (step_wf p H w h1 hs)
+        exact hoistGo_steps hW fuel rest r1 r2 e (step_wf p H w hW h1 hs)
       unfold hoistGo
       split
       · rename_i g rs ops
@@ -359,14 +399,14 @@ theorem hoistGo_steps : ∀ (fuel : Nat) (l : List Stmt) (s t : Exec.State ω Le
           cases h1 : Exec.step p (oracles H w) s (.ledger g rs ops) <;>
             cases h2 : Exec.step p (oracles H w) t (.ledger g rs ops) <;> rw [h1, h2] at e <;> simp at e ⊢
           rename_i u1 u2
-          have hu1 := step_wf p H w h1 hs
-          rw [steps_mid p H w hr mid rest' hm u1 hu1]
+          have hu1 := step_wf p H w hW h1 hs
+          rw [steps_mid p H w hW hr mid rest' hm u1 hu1]
           simp only [List.cons_append, Exec.steps, Option.bind_eq_bind]
           have e2 := step_obs p (oracles H w) e r
           cases h3 : Exec.step p (oracles H w) u1 r <;> cases h4 : Exec.step p (oracles H w) u2 r <;>
             rw [h3, h4] at e2 <;> simp at e2 ⊢
           rename_i v1 v2
-          exact hoistGo_steps fuel (mid ++ rest') v1 v2 e2 (step_wf p H w h3 hu1)
+          exact hoistGo_steps hW fuel (mid ++ rest') v1 v2 e2 (step_wf p H w hW h3 hu1)
         · exact keep
       · exact keep
 
@@ -374,13 +414,13 @@ end Hoist
 
 /-- `Circuit.ledgerHoist` is sound against the modelled ledger. -/
 theorem Circuit.ledgerHoist_soundLedger : Pass.SoundLedger Circuit.ledgerHoist := by
-  refine ⟨fun {ω} H p w c inputs pr σ hσ => ?_⟩
+  refine ⟨fun {ω} H p w hW c inputs pr σ hσ => ?_⟩
   simp only [Exec.run, Circuit.ledgerHoist, List.toList_toArray, Option.bind_eq_bind]
   cases hb : bindInputs (fun _ => 0) c.inputs inputs with
   | none => simp
   | some env =>
     simp only [Option.bind_some]
-    have e := hoistGo_steps p H w (c.body.size + 1) c.body.toList ⟨env, [], [], [], pr, σ⟩ ⟨env, [], [], [], pr, σ⟩
+    have e := hoistGo_steps p H w hW (c.body.size + 1) c.body.toList ⟨env, [], [], [], pr, σ⟩ ⟨env, [], [], [], pr, σ⟩
       rfl hσ
     cases h1 : Exec.steps p (oracles H w) (hoistGo (c.body.size + 1) c.body.toList) ⟨env, [], [], [], pr, σ⟩ <;>
       cases h2 : Exec.steps p (oracles H w) c.body.toList ⟨env, [], [], [], pr, σ⟩ <;>

@@ -35,16 +35,19 @@ private def after (c : Circuit) : String := shape c.ledgerDeadStore
 /-! ### The rewrite fires -/
 
 #guard after (mk 1 [wr 1 (.var 0), wr 1 (.add (.var 0) (.var 0))] []) == "L"
--- bindings, assertions and witness calls between
+-- bindings, assertions and witnesses that do not see the contract state between
 #guard after (mk 1 [wr 1 (.var 0), .bind 5 "t" (.lt 8 (.var 0) (.const 3)), .assert (.var 5) "a",
-    .witness one "w" [] [] (.tuple []), wr 1 (.var 0)] []) == "BAWL"
+    .witness one "createZswapInput" [] [] (.tuple []), wr 1 (.var 0)] []) == "BAWL"
+-- across `createZswapOutput` (it sees and changes only the call context) and a contract call (isolated)
+#guard after (mk 1 [wr 1 (.var 0), .witness one "createZswapOutput" [] [] (.tuple []), wr 1 (.var 0)] []) == "WL"
+#guard after (mk 1 [wr 1 (.var 0), .witness one "call:I.c" [] [] (.tuple []), wr 1 (.var 0)] []) == "WL"
 -- the second write may hold any value of any alignment
 #guard after (mk 1 [wr 1 (.var 0), wrA one (fieldKey 1) [.bytes 40] [.var 0, .var 0]] []) == "L"
 -- a run of writes keeps the last
 #guard after (mk 1 [wr 1 (.var 0), wr 1 (.var 0), wr 1 (.var 0)] []) == "L"
--- not across `createZswapOutput` or a contract call (`ctxWitness`)
-#guard after (mk 1 [wr 1 (.var 0), .witness one "createZswapOutput" [] [] (.tuple []), wr 1 (.var 0)] []) == "LWL"
-#guard after (mk 1 [wr 1 (.var 0), .witness one "call:I.c" [] [] (.tuple []), wr 1 (.var 0)] []) == "LWL"
+-- not across a user's witness (`stateWitness`): it may read the value the first write leaves
+#guard after (mk 1 [wr 1 (.var 0), .witness one "w" [] [] (.tuple []), wr 1 (.var 0)] []) == "LWL"
+#guard after (mk 1 [wr 1 (.var 0), .witness one "peek" [] [(5, none)] (.prim .field), wr 1 (.var 0)] []) == "LWL"
 
 /-! ### The side conditions stop it -/
 
@@ -82,7 +85,7 @@ private def σ₀ : LedgerState where
 private def noWitness : String → List Fr → Unit → Option (List Fr × Unit) := fun _ _ _ => none
 
 private def run (c : Circuit) (inputs : List Nat) : String :=
-  match Exec.run Crypto.prims (oracles merkleHooks noWitness) c (inputs.map Fr.ofNat) () σ₀ with
+  match Exec.run Crypto.prims (oracles merkleHooks (Exec.liftWitness noWitness)) c (inputs.map Fr.ofNat) () σ₀ with
   | none => "fails"
   | some r => reprStr (r.outputs.map (·.val), r.priv.map (·.val), r.ledger.state, r.ledger.context, r.ledger.effects)
 

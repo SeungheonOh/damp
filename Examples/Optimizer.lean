@@ -197,7 +197,7 @@ something else. The pass now gives up on such a circuit (`Facts.knows`). -/
 /-- A ledger that writes down the immediates of the `addi` instructions it is
     sent, and answers every read with 7. -/
 def logLedger : Exec.Oracles Unit (List Nat) :=
-  ⟨fun _ _ _ => none,
+  ⟨fun _ _ _ _ => none,
    fun req log => some ([7], log ++ req.filterMap fun | .addi i => some i.val | _ => none)⟩
 
 /-- What the executor leaves: outputs and the ledger's log. -/

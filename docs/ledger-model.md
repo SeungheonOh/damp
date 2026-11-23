@@ -426,7 +426,8 @@ executor's `Prims`; the theorems take their field elements as given.
 **End to end through the executor** (`Damp/Proofs/Ledger/TokensRuns.lean`,
 values in `TokensValues.lean`, rules in `Damp/Proofs/Interface/TokenLogic.lean`
 and `CallLogic.lean`). Each theorem is an `XRuns` description of the
-operation run by `Exec.steps` with `oracles H w`: when it completes, its result,
+operation run by `Exec.steps` with `oracles H (liftWitness w)` (witnesses that
+see only the private state, "What a witness can touch"): when it completes, its result,
 the private state, and the exact ledger state afterwards. The hash results
 are taken as given, as functions of the field elements the circuit hashes:
 `phashFs p align xs` (the persistent hash's two limbs, as the IR evaluates
@@ -441,7 +442,7 @@ gives, `selfOr`), so they must evaluate there too.
 
 * New `XRuns` rules (`TokenLogic.lean`): `XRuns.askWitness0` (zero-width
   witness, guard on: completes iff the oracle answers no field elements; the
-  private state is the one it returns), `XRuns.askWitness0_off`,
+  private state and the ledger state are the ones it returns), `XRuns.askWitness0_off`,
   `XRuns.askWitness0G`; `XRuns.ledgerOpG`, `XRuns.ledgerReadG` (either guard
   value); `XRuns.when_ledgerOp` (`if% c then op`: the operation runs iff
   `gb && cb`); `XRuns.ledgerOpE`, `XRuns.when_ledgerOpE` (operation given by
@@ -505,9 +506,10 @@ inputs pass their range checks, the value is at most the held coin's, and,
 with change, the change's commitment has an index in the context and the
 qualified coin fits the bound; the ledger is `sendShielded`'s effects, `last`
 the coin sent, and with change `held` the qualified change (`SpendOutcome`).
-To Damp's executor a witness cannot change the ledger, so the index the real
-runtime inserts when `createZswapOutput` commits is, to the theorem, part of
-the context the call starts with.
+These theorems are stated for witnesses that see only the private state
+(`oracles H (liftWitness w)`, "What a witness can touch"), so the index the
+real runtime inserts when `createZswapOutput` commits is, to the theorem, part
+of the context the call starts with.
 
 
 `Calls.lean`, the call assumption: see "Cross-contract calls" below.
@@ -545,8 +547,12 @@ state `w` and the ledger state `l` afterwards. Rules:
   oracle is not asked (`Exec.step`'s inactive branch), the ledger is unchanged
   and the reads are zero.
 * `XRuns.askWitness`, `XRuns.askWitness_off`: a witness call, parameterized by
-  the oracle's answer to the arguments: it completes exactly when the answer has
-  the type's width and passes its range checks; the result means the answer.
+  the oracle's answer to the arguments, the private state and the ledger state:
+  it completes exactly when the answer has the type's width and passes its range
+  checks; the result means the answer, and the private and ledger states are
+  the ones the oracle returned. `XRuns.askWitness_iso`, `askWitness0_iso`,
+  `askWitness0G_iso` (`TokenLogic.lean`): the same for an oracle `liftWitness
+  w`, in the form the contract theorems use (the ledger unchanged).
 * `XRuns.underGuard`, `XRuns.when_`, `XRuns.cond` (`if%`, branches with
   effects, each described in every state it may be built in, `XBranchCtx`; the
   `else` branch from the state the `then` branch left, for each `then` result).
@@ -601,42 +607,107 @@ uniform. `Bytes 0` takes no field element in a circuit but one in the executor's
 conversion (`atomWidth` is at least 1), so a ledger cell of `Bytes 0` (or a
 structure containing one) cannot be written.
 
+## What a witness can touch
+
+The executor's definition (`Exec.step`, `Damp/Executor/Spec.lean`) gives a
+witness the private state *and* the ledger state, and takes both back:
+`Exec.WitnessOracle ω σ = String → List Fr → ω → σ → Option (List Fr × ω × σ)`.
+`ω` is everything the call carries off the contract's ledger: the user's
+private state, the call's Zswap local state, and (for a call) the other
+contracts. What the runtime's witnesses actually do with the ledger state, by
+name, as the executor dispatches (`oracles` in `executor/src/executor.mjs`:
+built-ins first, then `call:…`, then the user's), established from the
+runtime's code (compact-runtime 0.21.0 `zswap.js`, `witness.js`;
+`callWitness` in the executor) and by experiment:
+
+| witness | reads | changes | answer depends on the ledger? | class (`witnessClass`) | evidence |
+|---|---|---|---|---|---|
+| `createZswapOutput` | its arguments; Zswap local state (`currentIndex`) | call-context slot 1 (`com_indices`: `insertCommitment(commitment, currentIndex)`, a new entry); Zswap local state (`currentIndex + 1`, the output appended) | no (only the index it inserts is the Zswap state's) | `zswapOutput`: `CtxSlotWriter 1` | `witness-effects.mjs`: between the two queries of `outC` only `context[1]` differs; the entry is the current index; twice, at the next index |
+| `createZswapInput` | its argument | Zswap local state (the input appended) | no | `isolated`: `Isolated` | `inC`: no part of the VM stack differs |
+| `ownPublicKey` | Zswap local state (`coinPublicKey`) | nothing | no (same answer from two ledger states) | `isolated` | `pkC` |
+| `call:I.c` | its arguments; the callee's own state | the callee's state, the Zswap local states, the caller's private transcript; the caller's query context is restored (`callWitness`) | no (re-entry, which could let it, is refused by the runtime) | `isolated`: `CallIsolated` | `calls-isolation.sh`: every contract's queries thread, now including the call context; re-entrant calls refused; the `--ledger-opt` callers give the same results and states |
+| a user's witness | `WitnessContext { ledger, privateState, contractAddress }`: the contract's current state (as the ledger statements before it left it) and its address (context slot 0); not the effects, not the rest of the context | its private state only; assigning to the ledger view throws | **yes**: it may read the contract state | `user`: `ReadsLedger` | `userC` sees the value just written; `tamperC`: the assignment throws, state unchanged; `test/ledger-opt.sh` `lo_witness` |
+
+`Damp/Executor/Witnesses.lean` states each footprint as a predicate on the
+witness oracle and `WitnessesOK W : ∀ n, WitnessFootprint (witnessClass n) W n`
+as their conjunction; it is the only hypothesis `Pass.SoundLedger` makes about
+witnesses. The footprints:
+
+```lean
+def Isolated (W : WitnessOracle ω σ) (n : String) : Prop :=
+  ∃ g, ∀ args x l, W n args x l = (g args x).map fun (r, x') => (r, x', l)
+def CtxSlotWriter (k : Nat) (W : WitnessOracle ω LedgerState) (n : String) : Prop :=
+  ∃ g, (∀ args x l, W n args x l = (g args x l.context).map fun (r, x', c) => (r, x', { l with context := c })) ∧
+    ∀ args x c r x' c', g args x c = some (r, x', c') → CtxAgreeExcept k c c'
+def ReadsLedger (W : WitnessOracle ω LedgerState) (n : String) : Prop :=
+  ∃ g, ∀ args x l, W n args x l = (g args x l.context l.state).map fun (r, x') => (r, x', l)
+```
+
+(`ReadsLedger` lets a user's witness also read the call context, which is more
+than the runtime hands it; a weaker hypothesis, so a stronger theorem.)
+
+Each ledger pass stops exactly where a footprint can interfere with its
+rewrite (`Damp/Optimize/LedgerFrame.lean`), and its proof uses that:
+
+* `ledgerReuse` keeps every fact across a witness, except at a `ctxWitness`
+  (`createZswapOutput`) the facts about context slot 1 (`inv_witness`,
+  `readSpec_ctx_frame`);
+* `ledgerDeadStore` looks for the overwriting write past every witness but a
+  user's (`stateWitness`): the others see and change only the call context
+  (`CtxOnly`, `steps_ctxmap`), which a cell write does not touch;
+* `ledgerHoist` moves a context read above every witness but
+  `createZswapOutput` (`lcommutes true`): isolated witnesses are patches
+  (`step_commute`), a user's witness keeps the ledger and the read leaves it as
+  it was (`step_commute_keep`);
+* `ledgerMerge` moves a ledger statement only above isolated witnesses
+  (`lcommutes false`, `gap_iso`, `step_commute`).
+
+`Examples/WitnessBarrier.lean` has an oracle meeting `WitnessesOK`
+(`demoW_ok`) for which each pass with its barrier removed changes what a
+circuit does, and names the proof step that fails without it. Before this,
+`Exec.Oracles.witness` could not see the ledger at all, and the barrier was a
+syntactic check outside the proof that missed user witnesses: `ledgerDeadStore`
+dropped a write a user's witness read, and `ledgerMerge` moved a write above
+one (audit finding F1; `lo_witness.deadstore` and `lo_witness.merge` in
+`test/ledger-opt.sh` fail on that build).
+
+The old interface is the special case `liftWitness w` (the witness sees only
+the private state; `Damp/Executor/Isolated.lean`, `Exec.run_lift`:
+`Exec.run p O.lift = Exec.Iso.run p O`, the old executor word for word), and
+`witnessesOK_lift`: such witnesses meet `WitnessesOK`.
+
 ## Cross-contract calls
 
 To the executor's definition a call of another contract is a witness
-(`docs/calls.md`): `Exec.step` asks `O.witness`, whose type
-(`String → List Fr → ω → Option (List Fr × ω)`) gives it neither the caller's
-ledger state nor a way to return one, so `Exec.run` threads the caller's
-ledger state unchanged across the call (`step_witness_ledger`,
-`step_bind_ledger`; the claim that follows changes only effects slot 3,
-`Kernel.claimContractCall_spec`). `--ledger-opt`'s theorem
-(`Pass.SoundLedger`) is about that executor. The real executor runs the
-callee (`callWitness` in `executor/src/executor.mjs`).
+(`docs/calls.md`): `Exec.step` asks `O.witness`, which is given the caller's
+ledger state and returns one (`Exec.WitnessOracle`), so the definition lets a
+call see and change it. The real executor runs the callee (`callWitness` in
+`executor/src/executor.mjs`) against the callee's own query context and
+restores the caller's afterwards. The assumption that this is all a call does
+is `CallIsolated W` (`Damp/Executor/Witnesses.lean`): every `call:…` witness
+is `Isolated`, its answer and private state independent of the caller's
+ledger state, which comes back unchanged (contract state, effects and call
+context). It is part of `WitnessesOK`, the hypothesis of `Pass.SoundLedger`
+(`WitnessesOK.callIsolated`); a call is an isolated witness, which no ledger
+pass treats as a barrier. Under it a witness statement leaves the ledger as
+it was (`step_witness_ledger`, `Damp/Proofs/Ledger/Calls.lean`; the claim
+that follows changes only effects slot 3, `Kernel.claimContractCall_spec`).
 
-`Damp/Proofs/Ledger/Calls.lean` states the assumption. `runC` is the executor
-whose calls are answered by the most general call oracle
-`C : String → List Fr → ω → σ → Option (List Fr × ω × σ)`, given the caller's
-ledger state and returning one (every other statement as `Exec.step`). The
-assumption:
-
-```lean
-def CallIsolated (C : CallOracle ω σ) (c : String → List Fr → ω → Option (List Fr × ω)) : Prop :=
-  ∀ n args w l, C n args w l = (c n args w).map fun (r, w') => (r, w', l)
-```
-
-the answer and the private state do not depend on the caller's ledger state,
-and it comes back unchanged (contract state, effects and call context). Under
-it, `runC_eq_run`: `runC p C O = Exec.run p (O.withCalls c)`, so every theorem
-about `Exec.run` applies; in particular `Pass.SoundLedger.runC`: a pass sound
-against the ledger keeps outputs, private transcript, private state and
-ledger state of `runC`, against the modelled ledger, from a well-formed state,
-for every isolated call oracle.
+`Damp/Proofs/Ledger/Calls.lean` also keeps the executor with a separate call
+oracle: `runC p C O = Exec.run p (O.withCalls C)`, the calls answered by
+`C : CallOracle ω σ` (a witness oracle). `CallIsolatedBy C c` says `C` is `c`,
+an oracle of calls that sees only the private state, lifted; under it
+`runC_eq_run`: `runC p C O = Exec.run p (O.withCalls (liftWitness c))`, and
+`Pass.SoundLedger.runC`: a pass sound against the ledger keeps outputs,
+private transcript, private state and ledger state of `runC`, against the
+modelled ledger, from a well-formed state, for every such call oracle and every
+other witness meeting `WitnessesOK` (`WitnessesOK.withCalls`).
 
 `test/calls-isolation.sh` tests the assumption on the runtime. It logs every
 query of every contract taking part in a call (`QueryContext.prototype.query`
-wrapped: address, instructions, contract state and effects before and
-after) and checks that each contract's queries thread: each starts from the
-contract state and effects its previous query left. The one exception is the
+wrapped: address, instructions, contract state, effects and call context
+before and after) and checks that each contract's queries thread: each starts
+from the contract state, effects and call context its previous query left. The one exception is the
 runtime's own claim of a call made by a Damp caller, which the executor
 undoes and the caller's circuit makes again from the same state with the same
 instructions; the check recognises it and counts it. Contracts of
@@ -672,11 +743,19 @@ proof; and it says nothing of a runtime that would allow re-entry.
   `HistoricMerkleTree.insertHashIndex`, have no theorem yet.
 * The coin-storing operations are proved on top-level fields (and `Map` /
   `Set` / `LedgerList` at their default path); `insertCoin` on a nested map is not.
-* Damp's executor cannot model the commitment index `createZswapOutput`
-  inserts into the query context (a witness, to `Exec.step`, cannot change the
-  ledger state): the coin-storing theorems take the context's index map as
-  given, which is the state a real call reaches only after its own
-  `createZswapOutput` committed.
+* The contract-level and token-library theorems (`TokensRuns.lean`,
+  `CoinsRuns.lean`, `Examples/{CoinProofs,TokenProofs,LedgerProofs}.lean`) are
+  stated, as before the witness oracle saw the ledger, for oracles
+  `oracles H (liftWitness w)`: every witness, `createZswapOutput` included,
+  leaves the ledger state alone. They are true statements about that executor,
+  but for `createZswapOutput` weaker than the runtime: the runtime inserts the
+  commitment into call-context slot 1, which `CtxSlotWriter 1` now lets the
+  oracle do, and the coin-storing theorems still take the context's index map
+  as given (the state a real call reaches only after its own
+  `createZswapOutput` committed) instead of deriving it from the witness's
+  stated effect. Restating them with a `createZswapOutput` that inserts the
+  index (the rules `XRuns.askWitness0`, `askWitness0G` already give the ledger
+  state the oracle returns) is the next step.
 * `sendUnshielded` and `mintUnshieldedToken` with a recipient whose `Either`
   has both sides set fail (`sendUnshielded_badRecipient`); the end-to-end
   theorems assume a well-formed spend key.

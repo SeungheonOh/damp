@@ -1,15 +1,17 @@
 /-
 Dropping unused bindings preserves every accepted run.
 
-The emitter does not compile a `bind` whose variable nothing later reads
-(`Emit.pruneDeadBinds`). This file proves that a run the original circuit
-accepts is accepted by the pruned circuit with the same outcome.
+The emitter does not compile a `bind` whose variable nothing later reads and
+whose expression cannot fail (`Emit.pruneDeadBinds`). This file proves that a
+run the original circuit accepts is accepted by the pruned circuit with the
+same outcome (`pruned_run`). It holds whatever the flags say, since a dropped
+binding only ever set a variable nothing reads.
 
-The converse is false, and deliberately so: an unused binding whose expression
-fails (say, a comparison of a value too wide for its stated width) fails the
-original circuit under `Circuit.run`, which evaluates every statement, but
-places no constraint in the emitted circuit. What a contract means is therefore
-the run of the pruned circuit; this theorem says pruning never loses a run.
+The converse needs the flags: an unused binding whose expression fails fails
+`Circuit.run`, which evaluates every statement, so it may be dropped only when
+it cannot fail. That direction, and with it `(pruned c).run = c.run`, is
+`pruned_run_eq` in `Damp/Proofs/Shipped.lean`, from the soundness of the
+facts `Bounds.totalB` reasons with.
 -/
 import Damp.Compile.Emit
 import Damp.IR.Semantics
@@ -258,50 +260,57 @@ theorem stmt_congr (p : Prims) {L : List Var} (st : Stmt) (e₁ e₂ : Env) (pri
 
 /-! ## Pruning -/
 
-/-- One step of the backward pass: keep a statement unless it is a `bind` of a
-    variable that nothing later reads. The second component is what is read from
-    here on. -/
-def pruneStep (s : Stmt) (acc : List Stmt × List Var) : List Stmt × List Var :=
-  match s with
-  | .bind v _ _ => if acc.2.contains v then (s :: acc.1, uses s ++ acc.2) else acc
-  | _ => (s :: acc.1, uses s ++ acc.2)
-
-/-- The backward pass over a list of statements, given what is read afterwards. -/
-def pruneList (ss : List Stmt) (out : List Var) : List Stmt × List Var :=
-  ss.foldr pruneStep ([], out)
-
 theorem pruneDeadBinds_eq (c : Circuit) :
-    (pruneDeadBinds c).toList = (pruneList c.body.toList (c.outputs.flatMap Expr.vars)).1 := by
-  simp only [pruneDeadBinds, pruneList, Array.foldr_toList]
-  first
-    | rfl
-    | (congr 2; funext s acc; cases s <;> rfl)
+    (pruneDeadBinds c).toList = (pruneList (annotate [] c.body.toList) (c.outputs.flatMap Expr.vars)).kept := by
+  simp [pruneDeadBinds]
+
+/-- Either a step keeps the statement, or it drops a `bind` of a variable
+    nothing later reads. -/
+theorem pruneStep_cases (s : Stmt × Bounds.UB) (acc : Acc) :
+    pruneStep s acc = acc.keep s.1 ∨
+      ∃ v hint e, s.1 = .bind v hint e ∧ acc.live.contains v = false ∧
+        Bounds.totalB (acc.bools.map (·, 1) ++ s.2) e = true ∧ pruneStep s acc = acc := by
+  obtain ⟨st, f⟩ := s
+  cases st with
+  | bind v hint e =>
+      simp only [pruneStep]
+      split
+      · left; rfl
+      · next hc =>
+        right
+        simp only [Bool.or_eq_true, Bool.not_eq_true', not_or, Bool.not_eq_false] at hc
+        exact ⟨v, hint, e, rfl, by simpa using hc.1, hc.2, rfl⟩
+  | _ => left; rfl
 
 /-- Running the kept statements from an environment that agrees on everything
     read from here on reaches a state that agrees on everything read afterwards. -/
 theorem pruneList_run (p : Prims) (out : List Var) :
-    ∀ (ss : List Stmt) (e₁ e₂ : Env) (priv pub : List Fr) (groups : List Group) (s₁ : RunState),
-      Agree (pruneList ss out).2 e₁ e₂ →
-      execAll p ss { env := e₁, priv, pub, groups } = some s₁ →
-      ∃ e₂', execAll p (pruneList ss out).1 { env := e₂, priv, pub, groups }
+    ∀ (ss : List (Stmt × Bounds.UB)) (e₁ e₂ : Env) (priv pub : List Fr) (groups : List Group) (s₁ : RunState),
+      Agree (pruneList ss out).live e₁ e₂ →
+      execAll p (ss.map (·.1)) { env := e₁, priv, pub, groups } = some s₁ →
+      ∃ e₂', execAll p (pruneList ss out).kept { env := e₂, priv, pub, groups }
           = some { env := e₂', priv := s₁.priv, pub := s₁.pub, groups := s₁.groups } ∧
         Agree out s₁.env e₂'
   | [], e₁, e₂, priv, pub, groups, s₁, h, hrun => by
-      simp only [execAll, Option.some.injEq] at hrun
+      simp only [List.map_nil, execAll, Option.some.injEq] at hrun
       subst hrun
       exact ⟨e₂, rfl, h⟩
-  | st :: rest, e₁, e₂, priv, pub, groups, s₁, h, hrun => by
-      simp only [execAll] at hrun
+  | (st, f) :: rest, e₁, e₂, priv, pub, groups, s₁, h, hrun => by
+      simp only [List.map_cons, execAll] at hrun
       cases hst : st.exec p { env := e₁, priv, pub, groups } with
       | none => simp [hst] at hrun
       | some mid =>
           simp only [hst, Option.bind_eq_bind, Option.bind_some] at hrun
-          have hfold : pruneList (st :: rest) out = pruneStep st (pruneList rest out) := rfl
+          have hfold : pruneList ((st, f) :: rest) out = pruneStep (st, f) (pruneList rest out) := rfl
           rw [hfold] at h ⊢
-          -- Either the statement is kept, or it is a dead `bind`.
-          by_cases hdead : ∃ v hint e, st = .bind v hint e ∧ (pruneList rest out).2.contains v = false
-          · obtain ⟨v, hint, e, rfl, hv⟩ := hdead
-            simp only [pruneStep, hv, Bool.false_eq_true, ite_false] at h ⊢
+          rcases pruneStep_cases (st, f) (pruneList rest out) with hkeep | ⟨v, hint, e, hst', hv, _, hdrop⟩
+          · rw [hkeep] at h ⊢
+            obtain ⟨e₂m, hst₂, hag⟩ := stmt_congr p st e₁ e₂ priv pub groups mid h hst
+            simp only [Acc.keep, execAll, hst₂, Option.bind_eq_bind, Option.bind_some]
+            exact pruneList_run p out rest mid.env e₂m mid.priv mid.pub mid.groups s₁ hag.right hrun
+          · simp only at hst'
+            subst hst'
+            rw [hdrop] at h ⊢
             simp only [Stmt.exec] at hst
             cases hx : e.eval p e₁ with
             | none => simp [hx] at hst
@@ -309,26 +318,17 @@ theorem pruneList_run (p : Prims) (out : List Var) :
                 simp only [hx, Option.bind_eq_bind, Option.bind_some, Option.pure_def,
                   Option.some.injEq] at hst
                 subst hst
-                have hnot : v ∉ (pruneList rest out).2 := by
+                have hnot : v ∉ (pruneList rest out).live := by
                   intro hmem
-                  have : (pruneList rest out).2.contains v = true := by simpa using hmem
+                  have : (pruneList rest out).live.contains v = true := by simpa using hmem
                   rw [hv] at this
                   exact absurd this (by simp)
                 exact pruneList_run p out rest _ e₂ priv pub groups s₁ (h.set_left v x hnot) hrun
-          · have hkeep : pruneStep st (pruneList rest out)
-                = (st :: (pruneList rest out).1, uses st ++ (pruneList rest out).2) := by
-              cases st with
-              | bind v hint e =>
-                  simp only [pruneStep]
-                  split
-                  · rfl
-                  · next hc =>
-                      exact absurd ⟨v, hint, e, rfl, by simpa using hc⟩ hdead
-              | _ => rfl
-            rw [hkeep] at h ⊢
-            obtain ⟨e₂m, hst₂, hag⟩ := stmt_congr p st e₁ e₂ priv pub groups mid h hst
-            simp only [execAll, hst₂, Option.bind_eq_bind, Option.bind_some]
-            exact pruneList_run p out rest mid.env e₂m mid.priv mid.pub mid.groups s₁ hag.right hrun
+
+/-- The annotations only annotate: the statements are the circuit's. -/
+theorem annotate_map : ∀ (f : Bounds.UB) (ss : List Stmt), (annotate f ss).map (·.1) = ss
+  | _, [] => rfl
+  | f, s :: rest => by simp only [annotate, List.map_cons, annotate_map _ rest]
 
 /-- **Pruning preserves accepted runs.** If the circuit accepts a run, the
     circuit without its unused bindings accepts it with the same outcome. -/
@@ -340,15 +340,17 @@ theorem pruned_run (p : Prims) (c : Circuit) (inputs priv pub : List Fr) (o : Ou
   | some env =>
       have hin : (pruned c).inputs = c.inputs := rfl
       have hout : (pruned c).outputs = c.outputs := rfl
-      have hbody : (pruned c).body.toList = (pruneList c.body.toList (c.outputs.flatMap Expr.vars)).1 :=
+      have hbody : (pruned c).body.toList =
+          (pruneList (annotate [] c.body.toList) (c.outputs.flatMap Expr.vars)).kept :=
         pruneDeadBinds_eq c
       simp only [henv, Option.bind_eq_bind, Option.bind_some, hin, hout, hbody] at h ⊢
       cases hrun : execAll p c.body.toList { env, priv, pub } with
       | none => simp [hrun] at h
       | some s₁ =>
           simp only [hrun, Option.bind_some] at h
-          obtain ⟨e₂', hrun₂, hag⟩ := pruneList_run p (c.outputs.flatMap Expr.vars) c.body.toList
-            env env priv pub [] s₁ (fun _ _ => rfl) hrun
+          obtain ⟨e₂', hrun₂, hag⟩ := pruneList_run p (c.outputs.flatMap Expr.vars)
+            (annotate [] c.body.toList) env env priv pub [] s₁ (fun _ _ => rfl)
+            (by rw [annotate_map]; exact hrun)
           have hgroups : ({ env, priv, pub } : RunState) = { env, priv, pub, groups := [] } := rfl
           rw [hgroups, hrun₂]
           simp only [Option.bind_some]

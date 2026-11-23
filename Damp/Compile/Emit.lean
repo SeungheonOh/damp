@@ -12,6 +12,7 @@ state and returns the instructions it adds and the new state. That is what
 import Damp.IR.Basic
 import Damp.IR.Disclosure
 import Damp.Zkir.Checks
+import Damp.Optimize.Bounds
 
 namespace Damp.Emit
 open Damp.IR Damp.Zkir
@@ -297,17 +298,88 @@ def uses : Stmt → List Var
   | .ledger g _ ops =>
       g.vars ++ ops.flatMap fun op => (op.encode Expr.const).flatMap Expr.vars
 
-/-- Drop `bind`s whose variable nothing later reads, so that guards which were
-    named but never needed stay out of the circuit. -/
-def pruneDeadBinds (c : Circuit) : Array Stmt :=
-  let step (acc : List Stmt × List Var) (s : Stmt) : List Stmt × List Var :=
-    let (kept, live) := acc
-    match s with
-    | .bind v _ _ => if live.contains v then (s :: kept, uses s ++ live) else (kept, live)
-    | _ => (s :: kept, uses s ++ live)
-  (c.body.foldr (fun s acc => step acc s) ([], c.outputs.flatMap Expr.vars)).1.toArray
+/-- Each statement with the facts known when control reaches it: the upper
+    bounds `Bounds.stmt` establishes from the statements before it (range
+    checks, witness result ranges, bounds of bindings, asserted comparisons). -/
+def annotate (f : IR.Bounds.UB) : List Stmt → List (Stmt × IR.Bounds.UB)
+  | [] => []
+  | s :: rest => (s, f) :: annotate (IR.Bounds.stmt f s).2 rest
 
-/-- The circuit that is emitted: `c` without its unused bindings. -/
+/-- The variable a guard or condition is, if it is one. -/
+def varOf : Expr → List Var
+  | .var u => [u]
+  | _ => []
+
+mutual
+/-- Variables whose value must be 0 or 1 for the expression to have one: the
+    conditions of its `select`s that are variables. -/
+def needsBool : Expr → List Var
+  | .select c a b => varOf c ++ needsBool c ++ needsBool a ++ needsBool b
+  | .add a b | .mul a b | .eq a b | .lt _ a b => needsBool a ++ needsBool b
+  | .neg a | .disclose a | .divmod _ _ a => needsBool a
+  | .hash xs | .phash _ _ xs => needsBoolList xs
+  | .var _ | .const _ | .invalid _ => []
+def needsBoolList : List Expr → List Var
+  | [] => []
+  | x :: xs => needsBool x ++ needsBoolList xs
+end
+
+/-- Variables whose value must be 0 or 1 for the statement to run: those of its
+    expressions, an asserted variable, and the guard of a witness call or
+    ledger statement that reads or runs something. -/
+def stmtNeedsBool : Stmt → List Var
+  | .bind _ _ e => needsBool e
+  | .assert c _ => varOf c ++ needsBool c
+  | .constrain e _ => needsBool e
+  | .witness g _ _ outs _ => (if outs.isEmpty then [] else varOf g) ++ needsBool g
+  | .ledger g reads ops => (if reads.isEmpty && ops.isEmpty then [] else varOf g) ++ needsBool g
+
+/-- Variables a statement may change. -/
+def defs : Stmt → List Var
+  | .bind v _ _ => [v]
+  | .witness _ _ _ outs _ => outs.map (·.1)
+  | .ledger _ reads _ => reads
+  | _ => []
+
+/-- The state of the backward pass at a point: the statements kept from here
+    on, the variables they (and the outputs) read, and variables every run of
+    the kept statements that succeeds finds 0 or 1 here. -/
+structure Acc where
+  kept : List Stmt
+  live : List Var
+  bools : List Var
+
+/-- Keep a statement. -/
+def Acc.keep (s : Stmt) (acc : Acc) : Acc :=
+  { kept := s :: acc.kept, live := uses s ++ acc.live,
+    bools := stmtNeedsBool s ++ acc.bools.filter fun u => !(defs s).contains u }
+
+/-- One step of the backward pass: keep a statement unless it is a `bind` of a
+    variable that nothing later reads and whose expression certainly has a
+    value: `Bounds.totalB` with the facts known when control reaches it, and
+    with the variables that the statements after it need to be 0 or 1 taken
+    as 0 or 1 (if one is not, the pruned circuit fails later anyway). -/
+def pruneStep (s : Stmt × IR.Bounds.UB) (acc : Acc) : Acc :=
+  match s.1 with
+  | .bind v _ e =>
+      if acc.live.contains v || !IR.Bounds.totalB (acc.bools.map (·, 1) ++ s.2) e then acc.keep s.1
+      else acc
+  | _ => acc.keep s.1
+
+/-- The backward pass over a list of statements, given what is read afterwards. -/
+def pruneList (ss : List (Stmt × IR.Bounds.UB)) (out : List Var) : Acc :=
+  ss.foldr pruneStep { kept := [], live := out, bools := [] }
+
+/-- Drop `bind`s whose variable nothing later reads, so that guards which were
+    named but never needed stay out of the circuit. A binding whose expression
+    might fail is kept even when unused: `Circuit.run` (and the executor)
+    evaluate every binding, so dropping it would make the ZKIR accept what the
+    circuit rejects. With this, the pruned circuit means exactly the circuit
+    (`Emit.pruned_run_eq`, `Damp/Proofs/Shipped.lean`). -/
+def pruneDeadBinds (c : Circuit) : Array Stmt :=
+  (pruneList (annotate [] c.body.toList) (c.outputs.flatMap Expr.vars)).kept.toArray
+
+/-- The circuit that is emitted: `c` without its unused bindings that cannot fail. -/
 def pruned (c : Circuit) : Circuit := { c with body := pruneDeadBinds c }
 
 def circuit (c : Circuit) : Except String IrSource := do

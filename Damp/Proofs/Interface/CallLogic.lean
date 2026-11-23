@@ -7,9 +7,9 @@ whose answer is the callee's results and a random opening, the communication
 commitment (a transient hash of the opening, the arguments and the results), and
 the kernel claim `Kernel.claimContractCall`, which records the call in effects
 slot 3. `XRuns.contractCall` takes the call oracle's answer as given (the
-oracle `O`'s witness function at the call's name: under the call assumption
-`CallIsolated C c` of `Damp/Proofs/Ledger/Calls.lean` that is `c`, via
-`runC_eq_run` and `Oracles.withCalls`), and says: the call completes exactly when
+oracle `O`'s witness function at the call's name, which, as the call
+assumption `CallIsolated` of `Damp/Executor/Witnesses.lean` has it, hands the
+caller's ledger state back unchanged), and says: the call completes exactly when
 the claimed-calls set has fewer than `2^64` entries; the result means the
 callee's results; the private state is the one the oracle returned; and the
 ledger differs from the one before only in effects slot 3, which gets the key
@@ -42,7 +42,7 @@ theorem isCallName_callWitnessName (iface circuit : String) :
   exact List.prefix_append _ _
 
 /-- The witness oracle with calls answered by `c` answers a call's name with `c`. -/
-theorem withCalls_witness_call {ω σ : Type} (O : Exec.Oracles ω σ) (c : String → List Fr → ω → Option (List Fr × ω))
+theorem withCalls_witness_call {ω σ : Type} (O : Exec.Oracles ω σ) (c : Exec.WitnessOracle ω σ)
     (iface circuit : String) :
     (O.withCalls c).witness (callWitnessName iface circuit) = c (callWitnessName iface circuit) := by
   simp [Exec.Oracles.withCalls, isCallName_callWitnessName]
@@ -89,7 +89,8 @@ theorem XRuns.contractCall {ρ : Type} [Value ρ] (hrt : Value.RoundTrip ρ) (if
     {refFs argFs : List Fr} (href : Stable s.next st.env (fun e => Expr.evalList p e ref = some refFs))
     (hargs : Stable s.next st.env (fun e => Expr.evalList p e args = some argFs))
     {resFs : List Fr} {rand : Fr} {w' : ω}
-    (hans : O.witness (callWitnessName iface circuit) (refFs ++ argFs) st.private_ = some (resFs ++ [rand], w'))
+    (hans : O.witness (callWitnessName iface circuit) (refFs ++ argFs) st.private_ st.ledger =
+      some (resFs ++ [rand], w', st.ledger))
     (hlen : resFs.length = Value.width ρ) (hrng : rangesHold (Value.ranges (ρ × Field)) (resFs ++ [rand]) = true)
     {kv : AV} (hkv : AV.ofFields [.bytes 32, .bytes 32, .field]
       (refFs ++ entryPointFs circuit ++ [commFs p rand argFs resFs]) = some kv)
@@ -110,16 +111,17 @@ theorem XRuns.contractCall {ρ : Type} [Value ρ] (hrt : Value.RoundTrip ρ) (if
       obtain ⟨r, rd⟩ := a
       exact Grows.bind (Grows.val _ _) fun _ => Grows.bind (Grows.ledgerOp _ _) fun _ => Grows.pure' _)
     fun a s₁ st₁ hn₁ hgd₁ ha₁ hQ₁ => ?_).conseq
-    ⟨fun h => h.2, fun h => ⟨⟨_, _, hans, by simp [hlen, hwp], hrng⟩, h⟩⟩ fun _ _ _ _ h => h
+    ⟨fun h => h.2, fun h => ⟨⟨_, _, _, hans, by simp [hlen, hwp], hrng⟩, h⟩⟩ fun _ _ _ _ h => h
   obtain ⟨r, rd⟩ := a
-  obtain ⟨⟨hl₁, ys, hy, -, -⟩, es₀, hes₀, hpair⟩ := hQ₁.holds
+  obtain ⟨⟨ys, hy, -, -⟩, es₀, hes₀, hpair⟩ := hQ₁.holds
   rw [hans] at hy
   simp only [Option.some.injEq, Prod.mk.injEq] at hy
-  obtain ⟨rfl, rfl⟩ := hy
+  obtain ⟨rfl, rfl, hl₁⟩ := hy
+  replace hl₁ := hl₁.symm
   have hg₁ := GuardIs.later hg ha₁ hn₁ hgd₁
   have hA₁ : Stable s₁.next st₁.env (fun e => Expr.evalList p e es₀ = some (resFs ++ [rand])) :=
     hQ₁.imp fun e h => by
-      obtain ⟨⟨-, ys, hy, -, hi⟩, -⟩ := h
+      obtain ⟨⟨ys, hy, -, hi⟩, -⟩ := h
       rw [hans] at hy
       simp only [Option.some.injEq, Prod.mk.injEq] at hy
       obtain ⟨rfl, -⟩ := hy

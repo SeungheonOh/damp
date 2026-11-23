@@ -9,7 +9,7 @@ import Damp.Proofs.Optimize.Pipeline
 /-!
 Contract-level theorems about two real ledger circuits, written in the surface
 syntax, run by the executor (`Exec.run`) against the validated model of
-Midnight's ledger VM (`oracles H w`, `Damp/Ledger/`), proved about the circuit
+Midnight's ledger VM (`oracles H (Damp.Exec.liftWitness w)`, `Damp/Ledger/`), proved about the circuit
 the build ships (`c.circuit.optimize`), and ending with the ZKIR emitted for it
 accepting the proof data the executor recorded.
 
@@ -154,13 +154,13 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
     (σ : LedgerState) (ow lw : AV) (sa : List Zkir.AlignAtom) (X L n : Nat)
     (hst : σ.state = .array [.cell ow, .cell lw, .cell ⟨sa, [n]⟩]) (hwf : σ.WF)
     (how : ow.atoms = [X]) (hX : X < 2 ^ 256) (hlw : lw.atoms = [L]) (hL : L < 2 ^ 32) (hn : n < 2 ^ 64) :
-    XRuns p (oracles H wit) (spend (Value.ofExprs [.var 0])) { next := 1 }
+    XRuns p (oracles H (Damp.Exec.liftWitness wit)) (spend (Value.ofExprs [.var 0])) { next := 1 }
       (Exec.State.start (fun v => [amt].getD v 0) ω₀ σ)
       (hk = Bytes.limbVals 2 X ∧ n + amt.val < 2 ^ 64 ∧ n + amt.val ≤ L)
       (fun r e w l => Value.Is p e r [] ∧ w = ω₁ ∧ l = σ.setField 2 (.cell (AV.ofU64 (n + amt.val)))) := by
   have hA : Stable 1 (fun v => [amt].getD v 0) (fun e => e 0 = amt) := fun e he => (he 0 (by decide)).symm
   -- 1. `(← key)`
-  have h1 := (XRuns.askWitness (p := p) (O := oracles H wit) (s := { next := 1 })
+  have h1 := (XRuns.askWitness_iso (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) rfl (s := { next := 1 })
     (st := (Exec.State.start (fun v => [amt].getD v 0) ω₀ σ))
     roundTrip_bytes "key" (α := Bytes 32) (args := []) (argVals := []) (by decide) (guardIs_top rfl) rfl).conseq
     (ok' := True) ⟨fun _ => trivial, fun _ => ⟨ks, ω₁, by simp [oracles, Exec.State.start, hw],
@@ -182,7 +182,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
   obtain ⟨hl1, hw1, -⟩ := hQ₁.holds
   have hA1 : Stable s₁.next st₁.env (fun e => e 0 = amt) := (hA.transfer ha₁).mono hn1
   -- 2. `const h := disclose (persistentHash k)`
-  have h2 := XRuns.lift (O := oracles H wit) (st := st₁)
+  have h2 := XRuns.lift (O := oracles H (Damp.Exec.liftWitness wit)) (st := st₁)
     (Runs.val (p := p) (s := s₁) (st := st₁.runState) roundTrip_bytes (x := disclose (persistentHash k)) (xs := hk) "h"
       rfl (hQ₁.imp fun e h => disclose_persistentHash_is h.2.2 hh)) (Quiet.val _ _)
   refine XRuns.bind' h2 (Grows.bind (Grows.ledgerRead _ _) fun _ =>
@@ -197,7 +197,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
   obtain ⟨-, hw2, hl2⟩ := hQ₂.holds
   have hA2 := (hA1.transfer ha₂).mono hn2
   -- 3. `(← owner.read)`
-  have h3 := (XRuns.ledgerRead (p := p) (O := oracles H wit) (s := s₂) (st := st₂) (α := Bytes 32) roundTrip_bytes
+  have h3 := (XRuns.ledgerRead (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₂) (st := st₂) (α := Bytes 32) roundTrip_bytes
     (mk := fun es => [.dup 0, .idx false false [fieldKey 0], .popeq false (alignOf (Bytes 32)) es])
     (ReadOps.popeq_last [.dup 0, .idx false false [fieldKey 0]] false _) (by decide) (guardIs_top (by rw [hgd2, hgd1]))
     (res := some (Bytes.limbVals 2 X, σ)) (fun e _ => by
@@ -225,7 +225,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
     (hh3.and (hQ₃.imp fun e h => h.2.2)).imp fun e hh =>
       valueEq_means (by rw [← _root_.Damp.evalList_length hh.1, hkl2]; rfl)
         (by rw [← _root_.Damp.evalList_length hh.2]; simp [Bytes.limbVals]; rfl) hh.1 hh.2
-  have h4 := XRuns.lift (O := oracles H wit) (st := st₃)
+  have h4 := XRuns.lift (O := oracles H (Damp.Exec.liftWitness wit)) (st := st₃)
     (Runs.require_top (p := p) (st := st₃.runState) "not owner" (by rw [hgd3, hgd2, hgd1]) hc4) (Quiet.require _ _)
   refine (XRuns.bind (ok₂ := n + amt.val < 2 ^ 64 ∧ n + amt.val ≤ L) h4
     (Grows.bind (Grows.ledgerOp _ _) fun _ =>
@@ -240,7 +240,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
   have hA4 := (hA3.transfer ha₄).mono hn4
   -- 5. `spent.increment (disclose amount)`
   let σ' := σ.setField 2 (.cell (AV.ofU64 (n + amt.val)))
-  have h5 := XRuns.ledgerOp (p := p) (O := oracles H wit) (s := s₄) (st := st₄)
+  have h5 := XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₄) (st := st₄)
     (ops := [.idx false true spent.path, .addi (disclose (Value.ofExprs [.var 0] : Uint16)).expr,
       .ins true spent.path.length]) (by simp) (guardIs_top (by rw [hgd4, hgd3, hgd2, hgd1]))
     (res := if n + amt.val < 2 ^ 64 then some ([], σ') else none) (fun e he => by
@@ -269,7 +269,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
     simp [σ', LedgerState.setField, hst]
   have hwf' : σ'.WF := LedgerState.setField_WF hst hwf _ _
   -- 6. `(← spent.read)`
-  have h6 := (XRuns.ledgerRead (p := p) (O := oracles H wit) (s := s₅) (st := st₅) (α := Uint64)
+  have h6 := (XRuns.ledgerRead (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₅) (st := st₅) (α := Uint64)
     (roundTrip_uint (by decide))
     (mk := fun es => [.dup 0, .idx false false spent.path, .popeq true [.bytes 8] es])
     (ReadOps.popeq_last [.dup 0, .idx false false spent.path] true _) (by decide) (guardIs_top (by rw [hgd5, hgd4, hgd3, hgd2, hgd1]))
@@ -288,7 +288,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
   simp only at hQ₆ hn6 hgd6 ⊢
   obtain ⟨hw6, hl6, -⟩ := hQ₆.holds
   -- 7. `(← limit.read)`
-  have h7 := (XRuns.ledgerRead (p := p) (O := oracles H wit) (s := s₆) (st := st₆) (α := Uint32)
+  have h7 := (XRuns.ledgerRead (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₆) (st := st₆) (α := Uint32)
     (roundTrip_uint (by decide))
     (mk := fun es => [.dup 0, .idx false false [fieldKey 1], .popeq false (alignOf Uint32) es])
     (ReadOps.popeq_last [.dup 0, .idx false false [fieldKey 1]] false _) (by decide) (guardIs_top (by rw [hgd6, hgd5, hgd4, hgd3, hgd2, hgd1]))
@@ -312,7 +312,7 @@ theorem spend_runs (amt : Fr) (hamt : amt.val ≤ 65535) (ω₀ ω₁ : ω) (ks 
   have hc8 : Stable s₇.next st₇.env (fun e => Boolean.Is p e (a <=. b) (decide (n + amt.val ≤ L))) :=
     (ha7.and (hQ₇.imp fun e h => h.2.2)).imp fun e hh =>
       cmpLe_means (uint_means_of_is (by decide) (by omega) hh.1) (uint_means_of_is (by decide) (by omega) hh.2)
-  have h8 := XRuns.lift (O := oracles H wit) (st := st₇)
+  have h8 := XRuns.lift (O := oracles H (Damp.Exec.liftWitness wit)) (st := st₇)
     (Runs.require_top (p := p) (st := st₇.runState) "over limit" (by rw [hgd7, hgd6, hgd5, hgd4, hgd3, hgd2, hgd1])
       hc8) (Quiet.require _ _)
   refine h8.conseq (by simp) fun r e w l hq => ⟨rfl, ?_, ?_⟩
@@ -330,24 +330,24 @@ theorem spend_exec (amt : Fr) (ω₀ ω₁ : ω) (ks hk : List Fr)
     (σ : LedgerState) (ow lw : AV) (sa : List Zkir.AlignAtom) (X L n : Nat)
     (hst : σ.state = .array [.cell ow, .cell lw, .cell ⟨sa, [n]⟩]) (hwf : σ.WF)
     (how : ow.atoms = [X]) (hX : X < 2 ^ 256) (hlw : lw.atoms = [L]) (hL : L < 2 ^ 32) (hn : n < 2 ^ 64) :
-    ((Exec.run p (oracles H wit) spend.circuit [amt] ω₀ σ).isSome = true ↔
+    ((Exec.run p (oracles H (Damp.Exec.liftWitness wit)) spend.circuit [amt] ω₀ σ).isSome = true ↔
       amt.val ≤ 65535 ∧ hk = Bytes.limbVals 2 X ∧ n + amt.val < 2 ^ 64 ∧ n + amt.val ≤ L) ∧
-    ∀ r, Exec.run p (oracles H wit) spend.circuit [amt] ω₀ σ = some r →
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) spend.circuit [amt] ω₀ σ = some r →
       r.outputs = [] ∧ r.private_ = ω₁ ∧ r.ledger = σ.setField 2 (.cell (AV.ofU64 (n + amt.val))) := by
   have hrh : rangesHold (CircuitFnSpec.ranges (Uint16 → CircuitM Unit)) [amt] = decide (amt.val ≤ 65535) := by
     rw [spend_ranges]
     simp [rangesHold, uintRange_holds (show (65535 : Nat) < 2 ^ 254 by decide)]
-  show ((Exec.run p (oracles H wit) (mkCircuit "spend" ["amount"] spend) [amt] ω₀ σ).isSome = true ↔ _) ∧ ∀ r,
-    Exec.run p (oracles H wit) (mkCircuit "spend" ["amount"] spend) [amt] ω₀ σ = some r → _
+  show ((Exec.run p (oracles H (Damp.Exec.liftWitness wit)) (mkCircuit "spend" ["amount"] spend) [amt] ω₀ σ).isSome = true ↔ _) ∧ ∀ r,
+    Exec.run p (oracles H (Damp.Exec.liftWitness wit)) (mkCircuit "spend" ["amount"] spend) [amt] ω₀ σ = some r → _
   by_cases hamt : amt.val ≤ 65535
-  · obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H wit) "spend" ["amount"] spend
+  · obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) "spend" ["amount"] spend
       (xs := [amt]) (w := ω₀) (l := σ) (outs := [])
       (P := fun w l => w = ω₁ ∧ l = σ.setField 2 (.cell (AV.ofU64 (n + amt.val))))
       (by rw [spend_ranges]; rfl) (by rw [hrh]; simpa using hamt)
       (by rw [spend_ranges]; exact (spend_runs p H wit amt hamt ω₀ ω₁ ks hk hw hkl hkr hh σ ow lw sa X L n hst hwf
         how hX hlw hL hn))
     exact ⟨h1.trans (by simp [hamt]), fun r hr => ⟨(h2 r hr).1, (h2 r hr).2⟩⟩
-  · have hnone : Exec.run p (oracles H wit) (mkCircuit "spend" ["amount"] spend) [amt] ω₀ σ = none := by
+  · have hnone : Exec.run p (oracles H (Damp.Exec.liftWitness wit)) (mkCircuit "spend" ["amount"] spend) [amt] ω₀ σ = none := by
       rw [mkCircuit_exec]; split
       · rename_i h; rw [hrh] at h; simp [hamt] at h
       · rfl
@@ -370,9 +370,9 @@ theorem spend_shipped (amt : Fr) (ω₀ ω₁ : ω) (ks hk : List Fr)
     (σ : LedgerState) (ow lw : AV) (sa : List Zkir.AlignAtom) (X L n : Nat)
     (hst : σ.state = .array [.cell ow, .cell lw, .cell ⟨sa, [n]⟩]) (hwf : σ.WF)
     (how : ow.atoms = [X]) (hX : X < 2 ^ 256) (hlw : lw.atoms = [L]) (hL : L < 2 ^ 32) (hn : n < 2 ^ 64) :
-    ((∃ r, Exec.run p (oracles H wit) spend.circuit.optimize [amt] ω₀ σ = some r) ↔
+    ((∃ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) spend.circuit.optimize [amt] ω₀ σ = some r) ↔
       amt.val ≤ 65535 ∧ hk = Bytes.limbVals 2 X ∧ n + amt.val < 2 ^ 64 ∧ n + amt.val ≤ L) ∧
-    ∀ r, Exec.run p (oracles H wit) spend.circuit.optimize [amt] ω₀ σ = some r →
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) spend.circuit.optimize [amt] ω₀ σ = some r →
       r.outputs = [] ∧ r.private_ = ω₁ ∧ r.ledger = σ.setField 2 (.cell (AV.ofU64 (n + amt.val))) ∧
       ∀ src, Emit.circuit spend.circuit.optimize = .ok src →
         src.run p [amt] r.priv r.pub = some { outputs := r.outputs, groups := r.groups } := by
@@ -381,7 +381,7 @@ theorem spend_shipped (amt : Fr) (ω₀ ω₁ : ω) (ks hk : List Fr)
   obtain ⟨r', hu, ho, hpr, hl⟩ := run_optimize_some p _ _ _ _ _ r hr
   obtain ⟨e1, e2, e3⟩ := h2 r' hu
   exact ⟨ho.trans e1, hpr.trans e2, hl.trans e3, fun src hsrc =>
-    Exec.run_accepted_by_zkir p (oracles H wit) spend.circuit src hsrc [amt] ω₀ σ r hr⟩
+    Exec.run_accepted_by_zkir p (oracles H (Damp.Exec.liftWitness wit)) spend.circuit src hsrc [amt] ω₀ σ r hr⟩
 
 end Vault
 
@@ -430,7 +430,7 @@ theorem bump_branch (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (σ : LedgerSta
     (hX : Stable s.next st.env (fun e => e 0 = x))
     (hT : Stable s.next st.env (fun e => Boolean.Is p e (Value.ofExprs [.var 2] : Boolean) t))
     (hXm : Stable s.next st.env (fun e => Uint.Means p e (Value.ofExprs [.var 0] : Uint16) x.val)) :
-    XRuns p (oracles H wit) (do
+    XRuns p (oracles H (Damp.Exec.liftWitness wit)) (do
         count.increment (disclose (Value.ofExprs [.var 0] : Uint16))
         when_ (!.(disclose (Value.ofExprs [.var 2] : Boolean)))
           (total.write (Uint.toField (disclose (Value.ofExprs [.var 0] : Uint16))))
@@ -455,7 +455,7 @@ theorem bump_branch (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (σ : LedgerSta
       .ins true count.path.length] ≠ [] := by simp
   cases g with
   | true =>
-    refine (XRuns.bind (ok₂ := x.val < 500) (XRuns.ledgerOp (p := p) (O := oracles H wit) (s := s) (st := st)
+    refine (XRuns.bind (ok₂ := x.val < 500) (XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s) (st := st)
       (ops := [.idx false true count.path, .addi (disclose (Value.ofExprs [.var 0] : Uint16)).expr,
         .ins true count.path.length]) hops hgd (res := if n + x.val < 2 ^ 64 then some ([], σ₁) else none)
       (fun e he => by rw [hl]; exact op_req (hinc e he)))
@@ -477,20 +477,20 @@ theorem bump_branch (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (σ : LedgerSta
       · simp [Nat.not_lt.2 hc] at hres
     have hl1 : st₁.ledger = σ₁ := by simp [hov] at hres; exact hres.symm
     -- `when_ (!.(disclose stop)) (total.write ...)`
-    have hw2 := XRuns.when_ (p := p) (O := oracles H wit) (s := s₁) (st := st₁) (gb := true) (cb := !t)
+    have hw2 := XRuns.when_ (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₁) (st := st₁) (gb := true) (cb := !t)
       (ok := True) (Q := fun _ _ w l => w = st₁.private_ ∧ l = bumpLedger σ n x.val true t)
       (GuardIs.step hgd ha₁ hn1 hgd1) ((hS.transfer ha₁).mono hn1) (Grows.ledgerOp _ _)
       (fun s' st' ctx => by
         cases t with
         | false =>
-          refine (XRuns.ledgerOp (p := p) (O := oracles H wit) (s := s') (st := st') (List.cons_ne_nil _ _) ctx.2.2.2.2
+          refine (XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s') (st := st') (List.cons_ne_nil _ _) ctx.2.2.2.2
             (res := some ([], σ₁.setField 1 (.cell ⟨[.field], [x.val]⟩))) (fun e he => by
               rw [ctx.2.2.2.1, hl1]
               exact op_req (hwr e σ₁ _ hst₁ (by simp) hwf₁ (((hX.transfer ha₁).mono hn1 |> ctx.transfer) e he)))).conseq
             ⟨fun _ => trivial, fun _ => ⟨_, rfl⟩⟩ fun _ _ w l h => ⟨h.1.trans ctx.2.2.1, by
               simp only [Option.some.injEq, Prod.mk.injEq, true_and] at h; rw [← h.2]; rfl⟩
         | true =>
-          refine (XRuns.ledgerOp_off (p := p) (O := oracles H wit) (s := s') (st := st') (List.cons_ne_nil _ _) ctx.2.2.2.2
+          refine (XRuns.ledgerOp_off (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s') (st := st') (List.cons_ne_nil _ _) ctx.2.2.2.2
             (by obtain ⟨req, h, -⟩ := op_req (hwr st'.env σ₁ _ hst₁ (by simp) hwf₁
                   (((hX.transfer ha₁).mono hn1 |> ctx.transfer).holds)); exact ⟨req, h⟩)).conseq
             Iff.rfl fun _ _ w l h => ⟨h.1.trans ctx.2.2.1, by rw [h.2, ctx.2.2.2.1, hl1]; rfl⟩)
@@ -507,13 +507,13 @@ theorem bump_branch (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (σ : LedgerSta
     have hc3 : Stable s₂.next st₂.env (fun e => Boolean.Is p e ((Value.ofExprs [.var 0] : Uint16) <. 500)
         (decide (x.val < 500))) :=
       (((hXm.transfer ha₁).mono hn1).transfer ha₂ |>.mono hn2).imp fun e h => cmpLt_means_nat h (by decide)
-    refine (XRuns.lift (O := oracles H wit) (st := st₂)
+    refine (XRuns.lift (O := oracles H (Damp.Exec.liftWitness wit)) (st := st₂)
       (Runs.require (p := p) (st := st₂.runState) "too big" (GuardIs.step (GuardIs.step hgd ha₁ hn1 hgd1) ha₂ hn2 hgd2)
         hc3) (Quiet.require _ _)).conseq (by simp) fun _ _ w l h => ⟨?_, ?_, fun _ => hov⟩
     · rw [h.2.1, hw2', hw1]
     · rw [h.2.2, hl2]
   | false =>
-    refine XRuns.bind' ((XRuns.ledgerOp_off (p := p) (O := oracles H wit) (s := s) (st := st)
+    refine XRuns.bind' ((XRuns.ledgerOp_off (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s) (st := st)
       (ops := [.idx false true count.path, .addi (disclose (Value.ofExprs [.var 0] : Uint16)).expr,
         .ins true count.path.length]) hops hgd
       (by obtain ⟨req, h, -⟩ := op_req (hinc st.env (Agree.refl _ _)); exact ⟨req, h⟩)))
@@ -525,11 +525,11 @@ theorem bump_branch (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (σ : LedgerSta
     obtain ⟨hn1, hgd1, -⟩ := hg1
     simp only at hQ₁ hn1 hgd1 ⊢
     obtain ⟨hw1, hl1⟩ := hQ₁.holds
-    have hw2 := XRuns.when_ (p := p) (O := oracles H wit) (s := s₁) (st := st₁) (gb := false) (cb := !t)
+    have hw2 := XRuns.when_ (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₁) (st := st₁) (gb := false) (cb := !t)
       (ok := True) (Q := fun _ _ w l => w = st₁.private_ ∧ l = σ)
       (GuardIs.step hgd ha₁ hn1 hgd1) ((hS.transfer ha₁).mono hn1) (Grows.ledgerOp _ _)
       (fun s' st' ctx => by
-        refine (XRuns.ledgerOp_off (p := p) (O := oracles H wit) (s := s') (st := st') (List.cons_ne_nil _ _) ctx.2.2.2.2
+        refine (XRuns.ledgerOp_off (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s') (st := st') (List.cons_ne_nil _ _) ctx.2.2.2.2
           (by obtain ⟨req, h, -⟩ := op_req (hwr st'.env σ _ hst (by simp) hwf
                 (((hX.transfer ha₁).mono hn1 |> ctx.transfer).holds)); exact ⟨req, h⟩)).conseq
           Iff.rfl fun _ _ w l h => ⟨h.1.trans ctx.2.2.1, by rw [h.2, ctx.2.2.2.1, hl1, hl]⟩)
@@ -545,7 +545,7 @@ theorem bump_branch (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (σ : LedgerSta
     have hc3 : Stable s₂.next st₂.env (fun e => Boolean.Is p e ((Value.ofExprs [.var 0] : Uint16) <. 500)
         (decide (x.val < 500))) :=
       (((hXm.transfer ha₁).mono hn1).transfer ha₂ |>.mono hn2).imp fun e h => cmpLt_means_nat h (by decide)
-    refine (XRuns.lift (O := oracles H wit) (st := st₂)
+    refine (XRuns.lift (O := oracles H (Damp.Exec.liftWitness wit)) (st := st₂)
       (Runs.require (p := p) (st := st₂.runState) "too big" (GuardIs.step (GuardIs.step hgd ha₁ hn1 hgd1) ha₂ hn2 hgd2)
         hc3) (Quiet.require _ _)).conseq (by simp) fun _ _ w l h => ⟨?_, ?_, fun h => nomatch h⟩
     · rw [h.2.1, hw2', hw1]
@@ -566,7 +566,7 @@ theorem bump_ranges : CircuitFnSpec.ranges (Uint16 → Boolean → Boolean → C
 /-- The body of `counter.bump`. -/
 theorem bump_runs (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (ω₀ : ω) (σ : LedgerState) (a : List Zkir.AlignAtom)
     (n : Nat) (tot capv : SV) (hst : σ.state = .array [.cell ⟨a, [n]⟩, tot, capv]) (hwf : σ.WF) (hn : n < 2 ^ 64) :
-    XRuns p (oracles H wit) (bump (Value.ofExprs [.var 0]) (Value.ofExprs [.var 1]) (Value.ofExprs [.var 2]))
+    XRuns p (oracles H (Damp.Exec.liftWitness wit)) (bump (Value.ofExprs [.var 0]) (Value.ofExprs [.var 1]) (Value.ofExprs [.var 2]))
       { next := 3 } (Exec.State.start (fun v => [x, Fr.ofBool g, Fr.ofBool t].getD v 0) ω₀ σ)
       (g = true → n + x.val < 2 ^ 64 ∧ x.val < 500)
       (fun r e w l => Value.Is p e r [Fr.ofNat (if g then n + x.val else n)] ∧ w = ω₀ ∧
@@ -578,7 +578,7 @@ theorem bump_runs (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (ω₀ : ω) (σ 
   have hG := arg_boolean_means (p := p) (k := 3) (env := env) (v := 1) (by decide) (b := g) rfl
   have hT := arg_boolean_means (p := p) (k := 3) (env := env) (v := 2) (by decide) (b := t) rfl
   refine (XRuns.seq (ok₂ := True)
-    (XRuns.when_ (p := p) (O := oracles H wit) (s := { next := 3 }) (st := Exec.State.start env ω₀ σ)
+    (XRuns.when_ (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := { next := 3 }) (st := Exec.State.start env ω₀ σ)
       (gb := true) (cb := g) (ok := g = true → n + x.val < 2 ^ 64 ∧ x.val < 500)
       (Q := fun _ _ w l => w = ω₀ ∧ l = bumpLedger σ n x.val g t ∧ (g = true → n + x.val < 2 ^ 64))
       (guardIs_top rfl) (hG.imp fun e h => disclose_boolean_is h)
@@ -594,7 +594,7 @@ theorem bump_runs (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (ω₀ : ω) (σ 
     cases g
     · simpa using hn
     · simpa using hov rfl
-  refine (XRuns.ledgerRead (p := p) (O := oracles H wit) (s := s₁) (st := st₁) (α := Uint64)
+  refine (XRuns.ledgerRead (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) (s := s₁) (st := st₁) (α := Uint64)
     (roundTrip_uint (by decide))
     (mk := fun es => [.dup 0, .idx false false count.path, .popeq true [.bytes 8] es])
     (ReadOps.popeq_last [.dup 0, .idx false false count.path] true _) (by decide) (guardIs_top hgd1)
@@ -610,10 +610,10 @@ theorem bump_runs (x : Fr) (hx : x.val ≤ 65535) (g t : Bool) (ω₀ : ω) (σ 
 /-- `counter.bump` before optimization. -/
 theorem bump_exec (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List Zkir.AlignAtom) (n : Nat) (tot capv : SV)
     (hst : σ.state = .array [.cell ⟨a, [n]⟩, tot, capv]) (hwf : σ.WF) (hn : n < 2 ^ 64) :
-    ((Exec.run p (oracles H wit) bump.circuit [x, go, stop] ω₀ σ).isSome = true ↔
+    ((Exec.run p (oracles H (Damp.Exec.liftWitness wit)) bump.circuit [x, go, stop] ω₀ σ).isSome = true ↔
       x.val ≤ 65535 ∧ (go = 0 ∨ go = 1) ∧ (stop = 0 ∨ stop = 1) ∧
         (go = 1 → n + x.val < 2 ^ 64 ∧ x.val < 500)) ∧
-    ∀ r, Exec.run p (oracles H wit) bump.circuit [x, go, stop] ω₀ σ = some r →
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) bump.circuit [x, go, stop] ω₀ σ = some r →
       r.outputs = [Fr.ofNat (if go = 1 then n + x.val else n)] ∧ r.private_ = ω₀ ∧
       r.ledger = bumpLedger σ n x.val (decide (go = 1)) (decide (stop = 1)) := by
   have hrh : rangesHold (CircuitFnSpec.ranges (Uint16 → Boolean → Boolean → CircuitM Uint64)) [x, go, stop] =
@@ -622,8 +622,8 @@ theorem bump_exec (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List Zki
     simp only [rangesHold, List.zip_cons_cons, List.zip_nil_right, List.all_cons, List.all_nil, Option.all,
       uintRange_holds (show (65535 : Nat) < 2 ^ 254 by decide)]
     simp [Range.holds]
-  show ((Exec.run p (oracles H wit) (mkCircuit "bump" ["x", "go", "stop"] bump) [x, go, stop] ω₀ σ).isSome = true
-    ↔ _) ∧ ∀ r, Exec.run p (oracles H wit) (mkCircuit "bump" ["x", "go", "stop"] bump) [x, go, stop] ω₀ σ = some r → _
+  show ((Exec.run p (oracles H (Damp.Exec.liftWitness wit)) (mkCircuit "bump" ["x", "go", "stop"] bump) [x, go, stop] ω₀ σ).isSome = true
+    ↔ _) ∧ ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) (mkCircuit "bump" ["x", "go", "stop"] bump) [x, go, stop] ω₀ σ = some r → _
   by_cases hin : x.val ≤ 65535 ∧ (go = 0 ∨ go = 1) ∧ (stop = 0 ∨ stop = 1)
   · obtain ⟨g, rfl⟩ : ∃ g, go = Fr.ofBool g := by
       rcases hin.2.1 with h | h
@@ -633,7 +633,7 @@ theorem bump_exec (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List Zki
       rcases hin.2.2 with h | h
       · exact ⟨false, h⟩
       · exact ⟨true, h⟩
-    obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H wit) "bump" ["x", "go", "stop"] bump
+    obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H (Damp.Exec.liftWitness wit)) "bump" ["x", "go", "stop"] bump
       (xs := [x, Fr.ofBool g, Fr.ofBool t]) (w := ω₀) (l := σ)
       (outs := [Fr.ofNat (if g then n + x.val else n)])
       (P := fun w l => w = ω₀ ∧ l = bumpLedger σ n x.val g t)
@@ -645,7 +645,7 @@ theorem bump_exec (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List Zki
       refine ⟨?_, e2, ?_⟩
       · rw [e1]; cases g <;> simp [Fr.ofBool, Fr.zero_ne_one, Ne.symm Fr.zero_ne_one]
       · rw [e3]; cases g <;> cases t <;> simp [Fr.ofBool, Fr.zero_ne_one, Ne.symm Fr.zero_ne_one]
-  · have hnone : Exec.run p (oracles H wit) (mkCircuit "bump" ["x", "go", "stop"] bump) [x, go, stop] ω₀ σ = none := by
+  · have hnone : Exec.run p (oracles H (Damp.Exec.liftWitness wit)) (mkCircuit "bump" ["x", "go", "stop"] bump) [x, go, stop] ω₀ σ = none := by
       rw [mkCircuit_exec]; split
       · rename_i h; rw [hrh] at h; simp only [decide_eq_true_eq] at h; exact absurd h.2 hin
       · rfl
@@ -665,10 +665,10 @@ theorem bump_exec (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List Zki
     data it recorded. -/
 theorem bump_shipped (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List Zkir.AlignAtom) (n : Nat) (tot capv : SV)
     (hst : σ.state = .array [.cell ⟨a, [n]⟩, tot, capv]) (hwf : σ.WF) (hn : n < 2 ^ 64) :
-    ((∃ r, Exec.run p (oracles H wit) bump.circuit.optimize [x, go, stop] ω₀ σ = some r) ↔
+    ((∃ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) bump.circuit.optimize [x, go, stop] ω₀ σ = some r) ↔
       x.val ≤ 65535 ∧ (go = 0 ∨ go = 1) ∧ (stop = 0 ∨ stop = 1) ∧
         (go = 1 → n + x.val < 2 ^ 64 ∧ x.val < 500)) ∧
-    ∀ r, Exec.run p (oracles H wit) bump.circuit.optimize [x, go, stop] ω₀ σ = some r →
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness wit)) bump.circuit.optimize [x, go, stop] ω₀ σ = some r →
       r.outputs = [Fr.ofNat (if go = 1 then n + x.val else n)] ∧ r.private_ = ω₀ ∧
       r.ledger = bumpLedger σ n x.val (decide (go = 1)) (decide (stop = 1)) ∧
       ∀ src, Emit.circuit bump.circuit.optimize = .ok src →
@@ -678,7 +678,7 @@ theorem bump_shipped (x go stop : Fr) (ω₀ : ω) (σ : LedgerState) (a : List 
   obtain ⟨r', hu, ho, hpr, hl⟩ := run_optimize_some p _ _ _ _ _ r hr
   obtain ⟨e1, e2, e3⟩ := h2 r' hu
   exact ⟨ho.trans e1, hpr.trans e2, hl.trans e3, fun src hsrc =>
-    Exec.run_accepted_by_zkir p (oracles H wit) bump.circuit src hsrc [x, go, stop] ω₀ σ r hr⟩
+    Exec.run_accepted_by_zkir p (oracles H (Damp.Exec.liftWitness wit)) bump.circuit src hsrc [x, go, stop] ω₀ σ r hr⟩
 
 end Counter
 

@@ -66,11 +66,15 @@ private def c2 := mk 1 [rd one 1 10, .bind 20 "t" (.add (.var 10) (.const 1)), w
 #guard hoisted (mk 12 [rd (.var 11) 1 10, .bind 13 "t" (.const 0), ctx (.var 11) 2 12] [.var 12]) == "LCB"
 -- a statement between uses what the read binds (here: the read's variable written back)
 #guard hoisted (mk 1 [rd one 1 10, wr (.var 0) 3 (.var 12), ctx one 2 12] [.var 12]) == "LLC"
--- a witness that changes the query context in the runtime (`createZswapOutput`), or a contract call
+-- a witness that writes the call context in the runtime (`createZswapOutput`, `ctxWitness`)
 #guard hoisted (mk 1 [rd one 1 10, .witness one "createZswapOutput" [.var 0] [] (.tuple []), ctx one 2 12]
   [.var 12]) == "LWC"
+-- every other witness keeps the ledger, so a context read moves above it: a contract call
+-- (`CallIsolated`), a user's witness (it may read the ledger, which the read leaves as it was)
 #guard hoisted (mk 1 [rd one 1 10, .witness one "call:I.c" [.var 0] [] (.tuple []), ctx one 2 12]
-  [.var 12]) == "LWC"
+  [.var 12]) == "LCW"
+#guard hoisted (mk 1 [rd one 1 10, .witness one "w" [.var 0] [] (.tuple []), ctx one 2 12]
+  [.var 12]) == "LCW"
 -- the two would not merge: a first program that leaves a weak value as the state
 #guard hoisted (mk 1 [.ledger one [] [.pop, .pushNull false], wr (.var 0) 3 (.var 0), ctx one 2 12]
   [.var 12]) == "LLC"
@@ -85,7 +89,7 @@ private def σ₀ : LedgerState where
 private def noWitness : String → List Fr → Unit → Option (List Fr × Unit) := fun _ _ _ => some ([], ())
 
 private def run (c : Circuit) (inputs : List Nat) : String :=
-  match Exec.run Crypto.prims (oracles merkleHooks noWitness) c (inputs.map Fr.ofNat) () σ₀ with
+  match Exec.run Crypto.prims (oracles merkleHooks (Exec.liftWitness noWitness)) c (inputs.map Fr.ofNat) () σ₀ with
   | none => "fails"
   | some r => reprStr (r.ledgerObservable.1.map (·.val), r.priv.map (·.val), r.ledger.state, r.ledger.context,
       r.ledger.effects)

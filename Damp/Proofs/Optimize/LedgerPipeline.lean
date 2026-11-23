@@ -30,10 +30,11 @@ open Damp.Zkir (Prims)
 open Damp.Exec Damp.Ledger
 
 /-- At the hash functions `p`, the pass does not change what the executor
-    does against the modelled ledger, from any well-formed ledger state,
+    does against the modelled ledger, with witnesses that do what the
+    runtime's do (`WitnessesOK`), from any well-formed ledger state,
     except for the public transcript and the public inputs. -/
 structure Pass.SoundLedgerFor (p : Prims) (f : Pass) : Prop where
-  exec : ∀ {ω : Type} (H : Hooks) (w : String → List Fr → ω → Option (List Fr × ω))
+  exec : ∀ {ω : Type} (H : Hooks) (w : WitnessOracle ω LedgerState), WitnessesOK w → ∀
     (c : Circuit) (inputs : List Fr) (private_ : ω) (σ : LedgerState), σ.WF →
     (Exec.run p (oracles H w) (f c) inputs private_ σ).map Result.ledgerObservable =
       (Exec.run p (oracles H w) c inputs private_ σ).map Result.ledgerObservable
@@ -41,12 +42,12 @@ structure Pass.SoundLedgerFor (p : Prims) (f : Pass) : Prop where
 /-- Sound against the modelled ledger for all hash functions, so for `p`. -/
 theorem Pass.SoundLedger.soundLedgerFor {f : Pass} (h : Pass.SoundLedger f) (p : Prims) :
     Pass.SoundLedgerFor p f :=
-  ⟨fun H w c i pr σ hσ => h.exec H p w c i pr σ hσ⟩
+  ⟨fun H w hw c i pr σ hσ => h.exec H p w hw c i pr σ hσ⟩
 
 /-- A pass sound for `p` is sound against the modelled ledger for `p`. -/
 theorem Pass.SoundFor.soundLedgerFor {p : Prims} {f : Pass} (h : Pass.SoundFor p f) :
     Pass.SoundLedgerFor p f := by
-  refine ⟨fun {ω} H w c inputs private_ σ _ => ?_⟩
+  refine ⟨fun {ω} H w _ c inputs private_ σ _ => ?_⟩
   have e := h.exec (oracles H w) c inputs private_ σ
   cases h1 : Exec.run p (oracles H w) (f c) inputs private_ σ <;>
     cases h2 : Exec.run p (oracles H w) c inputs private_ σ <;> rw [h1, h2] at e <;> simp at e ⊢
@@ -55,7 +56,7 @@ theorem Pass.SoundFor.soundLedgerFor {p : Prims} {f : Pass} (h : Pass.SoundFor p
 /-- Passes sound against the modelled ledger for `p` compose. -/
 theorem Pass.SoundLedgerFor.comp {p : Prims} {f g : Pass} (hf : Pass.SoundLedgerFor p f)
     (hg : Pass.SoundLedgerFor p g) : Pass.SoundLedgerFor p (fun c => g (f c)) :=
-  ⟨fun H w c i pr σ hσ => (hg.exec H w (f c) i pr σ hσ).trans (hf.exec H w c i pr σ hσ)⟩
+  ⟨fun H w hw c i pr σ hσ => (hg.exec H w hw (f c) i pr σ hσ).trans (hf.exec H w hw c i pr σ hσ)⟩
 
 /-- A pass sound for `p` followed by a pass sound against the modelled ledger
     is sound against the modelled ledger for `p`. -/

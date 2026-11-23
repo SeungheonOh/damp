@@ -10,7 +10,9 @@ Three results are chained here:
 * `Circuit.optimize_correct` (`Damp/Proofs/Optimize/Simplify.lean`): optimizing does not
   change what a run produces that anyone can observe;
 * `pruned_run` (`Damp/Proofs/Prune.lean`): dropping unused bindings keeps every
-  accepted run;
+  accepted run (and, since only bindings that cannot fail are dropped, loses
+  no rejection either: `Emit.pruned_run_eq` in `Damp/Proofs/Shipped.lean`,
+  which also restates the pass theorems for the shipped ZKIR);
 * `circuitCore_correct` (`Damp/Proofs/Emit.lean`): the emitted ZKIR, run by the
   ZKIR evaluator, gives exactly what the IR semantics gives.
 

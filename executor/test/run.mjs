@@ -201,11 +201,15 @@ if (worldCalls.length > 0) {
     for (const s of Object.values(strangers)) {
       if (!s.like) continue;
       const base = w.contracts.get(addresses[s.like]);
-      w.deploy(s.address, s.like, base.data, s.keys ? s.keys(base.keys) : base.keys, s.bound ? base.module : undefined);
+      w.deploy(s.address, s.like, base.data, s.keys ? s.keys(base.keys) : base.keys, s.bound ? (s.wrap ? s.wrap(base.module) : base.module) : undefined);
       if (s.bound) nameAt[s.address] = s.like;
     }
     if (label === 'packaged') {
-      const bound = Object.fromEntries([...w.contracts].filter(([, c]) => c.module !== undefined).map(([a, c]) => [a, c.name]));
+      // A stranger with a doctored module (`wrap`) has no package of its own: the directory provider
+      // finds no implementation for it, so calls to it fail in this chain for that reason.
+      const doctored = new Set(Object.values(strangers).filter((s) => s.wrap).map((s) => s.address));
+      const bound = Object.fromEntries([...w.contracts].filter(([a, c]) => c.module !== undefined && !doctored.has(a))
+        .map(([a, c]) => [a, c.name]));
       w.provider = directoryModuleProvider(pkgRoot, bound);
     }
     worlds.push({ label, w, impl });
@@ -217,7 +221,7 @@ if (worldCalls.length > 0) {
   }
 
   let proved = false;
-  for (const [name, circuit, argsOf, shouldSucceed] of worldCalls) {
+  for (const [name, circuit, argsOf, shouldSucceed, opts] of worldCalls) {
     // An argument list may depend on the implementation called ('damp' or 'compactc').
     const argsIn = (kind) => (typeof argsOf === 'function' ? argsOf(kind) : argsOf);
     const label = `${name}.${circuit}(${argsIn('damp').map(show).join(', ')})`.replaceAll('"', '');
@@ -227,6 +231,14 @@ if (worldCalls.length > 0) {
       const args = argsIn(kind);
       const ctx = W.w.context(addresses[name], circuit, init.currentPrivateState, init.currentZswapLocalState.coinPublicKey);
       runs.push(await attempt(() => contract.circuits[circuit](ctx, ...args)));
+    }
+    if (!shouldSucceed && opts?.dampCallerOnly) {
+      // A check only Damp's executor makes (compactc's generated caller takes the callee's result as
+      // it comes): every chain whose caller is Damp's must refuse; compactc's outcome is shown.
+      const mine = runs.filter((_, i) => worlds[i].impl[name].kind === 'damp');
+      report(mine.length > 0 && mine.every((r) => r.error), `${label}: fails in every chain whose ${name} is Damp's`,
+        `[${runs.map((r, i) => `${worlds[i].label}: ${r.error ?? 'succeeded'}`).join(' | ')}]`);
+      continue;
     }
     if (!shouldSucceed) {
       report(runs.every((r) => r.error), `${label}: fails in every chain`,

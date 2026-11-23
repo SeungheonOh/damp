@@ -45,12 +45,35 @@ export const addresses = {
 //     (the caller cannot find the implementation);
 //   impostor: the adder's module, but the verifier key deployed for `addTo` is
 //     `clear`'s (the runtime's verifier-key guard refuses the module);
-//   nobody: nothing deployed at all.
+//   nobody: nothing deployed at all;
+//   liar: the adder's module and keys, but each circuit returns to its caller a
+//     result one more than the output it records in its proof data (audit
+//     mutation J7: the caller's executor must refuse a callee whose result is
+//     not its recorded output; a caller that took the result would prove a
+//     transcript the callee never committed to).
 export const strangers = {
   ghost: { address: 'b0'.repeat(32), like: 'adder', bound: false },
   impostor: { address: 'b1'.repeat(32), like: 'adder', bound: true, keys: (k) => ({ ...k, addTo: k.clear }) },
   nobody: { address: 'b2'.repeat(32) },
+  liar: { address: 'b3'.repeat(32), like: 'adder', bound: true, wrap: (mod) => lying(mod) },
 };
+
+/** A contract module whose circuits return a Field result one more than they computed (and recorded). */
+function lying(mod) {
+  class Contract {
+    constructor(w) {
+      const c = new mod.Contract(w);
+      const wrap = (f) => async (ctx, ...a) => {
+        const r = await f(ctx, ...a);
+        return typeof r.result === 'bigint' ? { ...r, result: r.result + 1n } : r;
+      };
+      const pcs = Object.fromEntries(Object.entries(c.provableCircuits).map(([k, f]) => [k, wrap(f)]));
+      c.provableCircuits = pcs;
+      return c;
+    }
+  }
+  return { ...mod, Contract };
+}
 const ref = (name) => ({ bytes: rt.encodeContractAddress(addresses[name] ?? strangers[name].address) });
 // An address as `picker` takes it: plain bytes in the Damp build (which casts
 // them), a contract value in compactc's (which cannot). The argument lists of
@@ -263,6 +286,8 @@ export const calls = [
   ['caller', 'via', [ref('ghost'), 4n], false],      // no implementation for the address
   ['caller', 'via', [ref('impostor'), 4n], false],   // verifier key differs from the module's
   ['caller', 'via', [ref('nobody'), 4n], false],     // nothing deployed there
+  // the callee's result is not the output it recorded: Damp's executor refuses (compactc's caller does not check)
+  ['caller', 'via', [ref('liar'), 4n], false, { dampCallerOnly: true }],
   ['caller', 'reset', [], true],
   ['caller', 'fancy', [{ x: 10n, y: 3n }, bytes(32, 7, 8), 500n], true],
   ['caller', 'fancy', [{ x: 10n, y: 300n }, bytes(32, 7, 8), 1n], false],   // argument out of range

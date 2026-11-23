@@ -25,11 +25,12 @@ with or without `--ledger-opt`) via `build_correct`, ending with the shipped
 ZKIR accepting the proof data.
 
 Nothing is assumed about hashes. The commitment index of the change coin is
-looked up in the call context (slot 1, `idx`) the call starts with: in Damp's
-executor (`Exec.step`) a witness, the built-in `createZswapOutput` included,
-cannot change the ledger state, so the index the real runtime inserts when
-`createZswapOutput` commits (`QueryContext.insertCommitment`) is, to the
-theorem, part of the starting context. The call completes exactly when the
+looked up in the call context (slot 1, `idx`) the call starts with: the theorem
+is stated for witnesses that see only the private state (`oracles H
+(liftWitness w)`, `Damp/Executor/Isolated.lean`), `createZswapOutput`
+included, so the index the real runtime inserts when `createZswapOutput`
+commits (`QueryContext.insertCommitment`, which `WitnessesOK` lets a witness
+oracle do: `CtxSlotWriter 1`) is, to the theorem, part of the starting context. The call completes exactly when the
 inputs pass their range checks, `value` is at most the held coin's value, and,
 when there is change, the change coin's commitment has an index and the
 qualified coin fits the VM's 91-byte bound (`qualifyAV`).
@@ -149,7 +150,7 @@ theorem grows_sendShielded (input : QualifiedShieldedCoinInfo) (recipient : Reci
 theorem toSelf_runs {s : Build} {st : Exec.State ω LedgerState} {gb : Bool} (hg : GuardIs p s st.runState gb)
     (cfs : List SV) (wa : AV) (selfFs : List Fr) (hctx : st.ledger.context = .array cfs)
     (hc0 : cfs[0]? = some (.cell wa)) (hself : fieldsOf [.bytes 32] wa.atoms = some selfFs) (hwf : st.ledger.WF) :
-    XRuns p (oracles H w) toSelf s st True
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) toSelf s st True
       (fun r e w' l => w' = st.private_ ∧ l = st.ledger ∧
         Value.Is p e r (Fr.ofBool false :: [0, 0] ++ selfOr gb selfFs) ∧
         (Value.toExprs r.left).length = 2 ∧ (Value.toExprs r.right).length = 2) := by
@@ -215,7 +216,7 @@ theorem spend_runs (to : Recipient) (value : Uint128) (env : Env) (ω₀ : ω) (
     (cmZ : List Fr) (cmvZ : AV)
     (hcmZ : phashFs p coinPreimageAlign (ccPre (List.replicate 5 0) false [0, 0] [0, 0]) = some cmZ)
     (hcmvZ : AV.ofFields [.bytes 32] cmZ = some cmvZ) :
-    XRuns p (oracles H w) (spend to value) { next := 6 } (Exec.State.start env ω₀ σ)
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (spend to value) { next := 6 } (Exec.State.start env ω₀ σ)
       (k ≤ v.val ∧ (v.val - k ≠ 0 → (qualifyAV chv idx (hkey z)).isSome = true))
       (fun r e w' l => Value.Is p e r [] ∧ w' = (if v.val - k = 0 then ω₂ else ω₃) ∧
         (if v.val - k = 0 then
@@ -232,7 +233,7 @@ theorem spend_runs (to : Recipient) (value : Uint128) (env : Env) (ω₀ : ω) (
   have hst₁ : L₁.state = .array fields := hst
   unfold spend
   -- 1. `(← held.read)`
-  have h1 := ((XRuns.ledgerRead (p := p) (O := oracles H w) (s := { next := 6 })
+  have h1 := ((XRuns.ledgerRead (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := { next := 6 })
     (st := Exec.State.start env ω₀ σ) (α := QualifiedShieldedCoinInfo) roundTrip_qcoin
     (mk := fun es => [.dup 0, .idx false false [fieldKey 6], .popeq false (alignOf QualifiedShieldedCoinInfo) es])
     (ReadOps.popeq_last [.dup 0, .idx false false [fieldKey 6]] false _) (by decide) (guardIs_top rfl)
@@ -271,7 +272,7 @@ theorem spend_runs (to : Recipient) (value : Uint128) (env : Env) (ω₀ : ω) (
   have hresl : resFs.length = Value.width ShieldedSendResult := by
     rw [Value.width_sendResult, Value.width_maybe, Value.width_coin]
     cases hcb : cb <;> simp [resFs, hcb, outFs, chFs, derivedNonceFs, hcl]
-  have h2 : XRuns p (oracles H w) (valM (sendShielded q (disclose to) (disclose value)) "r") s₁ st₁ (k ≤ v.val)
+  have h2 : XRuns p (oracles H (Damp.Exec.liftWitness w)) (valM (sendShielded q (disclose to) (disclose value)) "r") s₁ st₁ (k ≤ v.val)
       (fun r e w' l => Value.Is p e r resFs ∧ Value.Shaped r ∧ w' = (if v.val - k = 0 then ω₂ else ω₃) ∧ l = L₁) := by
     unfold valM
     refine (XRuns.seq (ok₂ := True) hS (fun _ => Grows.val _ _) fun r0 s₂ st₂ hn₂ hgd₂ ha₂ hQ₂ => ?_).conseq
@@ -279,7 +280,7 @@ theorem spend_runs (to : Recipient) (value : Uint128) (env : Env) (ω₀ : ω) (
     obtain ⟨hr0, hP₂, hL₂⟩ := hQ₂.holds
     have hlen : (Value.toExprs r0).length = Value.width ShieldedSendResult := by
       rw [← Damp.evalList_length (hres _ _ hr0), hresl]
-    refine ((XRuns.val (p := p) (O := oracles H w) roundTrip_sendResult "r" hlen
+    refine ((XRuns.val (p := p) (O := oracles H (Damp.Exec.liftWitness w)) roundTrip_sendResult "r" hlen
       (hQ₂.imp fun e h => hres e r0 h.1)).addResult (val_shaped r0 "r" s₂ hlen)).conseq Iff.rfl ?_
     intro r e w' l ⟨⟨h1, h2, h3⟩, h4⟩
     refine ⟨h1, h4, h2.trans hP₂, h3.trans ?_⟩
@@ -300,13 +301,13 @@ theorem spend_runs (to : Recipient) (value : Uint128) (env : Env) (ω₀ : ω) (
   let L₂ : LedgerState := L₁.setField 1 (.cell outv)
   have hreq3 : ∀ e, Agree s₂.next st₂.env e → ∃ req, Exec.request p e
       [.push false (fieldKey last.index), .push true (alignedOf r.sent), .ins false 1] = some req ∧
-      (oracles H w).ledger req st₂.ledger = some ([], L₂) := by
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st₂.ledger = some ([], L₂) := by
     intro e he
     rw [hL₂]
     exact op_req' (Cell.write_spec H last p e L₁ fields r.sent outFs outv hst₁ (by show 1 < fields.length; omega) (by decide) hwf₁
       (hparts e he).2.2 houtv)
   refine (XRuns.seq (ok₂ := v.val - k ≠ 0 → (qualifyAV chv idx (hkey z)).isSome = true)
-    (XRuns.ledgerOp (p := p) (O := oracles H w) (s := s₂) (st := st₂) (by simp) hg₂ hreq3)
+    (XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s₂) (st := st₂) (by simp) hg₂ hreq3)
     (fun _ => Grows.when_ _ (Grows.bind (Grows.bind (Grows.ledgerRead _ _) fun _ => Grows.pure' _) fun _ =>
         Grows.ledgerOp _ _))
     fun _ s₃ st₃ hn₃ hgd₃ ha₃ hQ₃ => ?_).conseq (by simp) fun _ _ _ _ h => h
@@ -433,15 +434,15 @@ theorem spend_exec (ω₀ : ω) (σ : LedgerState)
     (hcmZ : phashFs p coinPreimageAlign (ccPre (List.replicate 5 0) false [0, 0] [0, 0]) = some cmZ)
     (hcmvZ : AV.ofFields [.bytes 32] cmZ = some cmvZ) :
     let xs := (Fr.ofBool u :: rl ++ rr) ++ [kv]
-    ((Exec.run p (oracles H w) spend.circuit xs ω₀ σ).isSome = true ↔
+    ((Exec.run p (oracles H (Damp.Exec.liftWitness w)) spend.circuit xs ω₀ σ).isSome = true ↔
       rangesHold (Value.ranges Recipient ++ Value.ranges Uint128) xs = true ∧
         kv.val ≤ v.val ∧ (v.val - kv.val ≠ 0 → (qualifyAV chv idx (hkey z)).isSome = true)) ∧
-    ∀ r, Exec.run p (oracles H w) spend.circuit xs ω₀ σ = some r →
+    ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness w)) spend.circuit xs ω₀ σ = some r →
       r.outputs = [] ∧ SpendOutcome σ es m0 m1 m2 x y z (!u && decide (rr = selfFs)) outv chv idx v.val kv.val
         ω₂ ω₃ r.private_ r.ledger := by
   intro xs
-  show ((Exec.run p (oracles H w) (mkCircuit "spend" ["to", "value"] spend) xs ω₀ σ).isSome = true ↔ _) ∧ ∀ r,
-    Exec.run p (oracles H w) (mkCircuit "spend" ["to", "value"] spend) xs ω₀ σ = some r → _
+  show ((Exec.run p (oracles H (Damp.Exec.liftWitness w)) (mkCircuit "spend" ["to", "value"] spend) xs ω₀ σ).isSome = true ↔ _) ∧ ∀ r,
+    Exec.run p (oracles H (Damp.Exec.liftWitness w)) (mkCircuit "spend" ["to", "value"] spend) xs ω₀ σ = some r → _
   have hxl : xs.length = 6 := by simp [xs, hrl, hrr]
   by_cases hin : rangesHold (Value.ranges Recipient ++ Value.ranges Uint128) xs = true
   · let env : Env := fun v => xs.getD v 0
@@ -468,20 +469,20 @@ theorem spend_exec (ω₀ : ω) (σ : LedgerState)
         rw [← he 5 (by decide)]
         simp [env, xs, List.getD_eq_getElem?_getD, hrl, hrr]
       simp [disclose, Value.toExprs, Value.ofExprs, Uint.capped_eval uint128_bound, Expr.eval, h5]
-    obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H w) "spend" ["to", "value"] spend
+    obtain ⟨h1, h2⟩ := mkCircuit_exec_of_XRuns (p := p) (O := oracles H (Damp.Exec.liftWitness w)) "spend" ["to", "value"] spend
       (xs := xs) (w := ω₀) (l := σ) (outs := [])
       (ok := kv.val ≤ v.val ∧ (v.val - kv.val ≠ 0 → (qualifyAV chv idx (hkey z)).isSome = true))
       (P := SpendOutcome σ es m0 m1 m2 x y z (!u && decide (rr = selfFs)) outv chv idx v.val kv.val ω₂ ω₃)
       (by rw [spend_ranges, hxl]; rfl) (by rw [spend_ranges]; exact hin)
       (by
-        show XRuns p (oracles H w) (spend (Value.ofExprs (argVars 0 5)) (Value.ofExprs [.var 5]))
+        show XRuns p (oracles H (Damp.Exec.liftWitness w)) (spend (Value.ofExprs (argVars 0 5)) (Value.ofExprs [.var 5]))
           { next := 6 } _ _ _
         exact (spend_runs p H w _ _ env ω₀ σ u rl rr hrl hrr hto ⟨rfl, rfl⟩ kv.val hval fields hst hfl hw hf6 n c v i
           hnl hcl hv hread cfs wa selfFs hctx hc0 hself idx hidx hwf es m0 m1 m2 heff hm0 hm1 hm2 nf x hnf hx cm y
           hcm hy cm₂ z hcm₂ hz ω₁ ω₂ ω₃ hw₁ hw₂ hw₃ outv houtv chv hchv cmZ cmvZ hcmZ hcmvZ).conseq Iff.rfl
           fun r e w' l h => ⟨h.1, h.2.1, h.2.2⟩)
     refine ⟨h1.trans (by simp [hin]), fun r hr => h2 r hr⟩
-  · have hnone : Exec.run p (oracles H w) (mkCircuit "spend" ["to", "value"] spend) xs ω₀ σ = none := by
+  · have hnone : Exec.run p (oracles H (Damp.Exec.liftWitness w)) (mkCircuit "spend" ["to", "value"] spend) xs ω₀ σ = none := by
       rw [mkCircuit_exec]; split
       · rename_i h
         rw [spend_ranges] at h
@@ -545,14 +546,14 @@ theorem spend_shipped {level : OptLevel} {ledgerOpt : Bool} {shipped : Contract}
     (hcmvZ : AV.ofFields [.bytes 32] cmZ = some cmvZ) :
     let xs := (Fr.ofBool u :: rl ++ rr) ++ [kv]
     ∃ src, (buildPassWith level ledgerOpt spend.circuit, src) ∈ srcs ∧
-      ((∃ r, Exec.run p (oracles H w) (buildPassWith level ledgerOpt spend.circuit) xs ω₀ σ = some r) ↔
+      ((∃ r, Exec.run p (oracles H (Damp.Exec.liftWitness w)) (buildPassWith level ledgerOpt spend.circuit) xs ω₀ σ = some r) ↔
         rangesHold (Value.ranges Recipient ++ Value.ranges Uint128) xs = true ∧
           kv.val ≤ v.val ∧ (v.val - kv.val ≠ 0 → (qualifyAV chv idx (hkey z)).isSome = true)) ∧
-      ∀ r, Exec.run p (oracles H w) (buildPassWith level ledgerOpt spend.circuit) xs ω₀ σ = some r →
+      ∀ r, Exec.run p (oracles H (Damp.Exec.liftWitness w)) (buildPassWith level ledgerOpt spend.circuit) xs ω₀ σ = some r →
         (r.outputs = [] ∧ SpendOutcome σ es m0 m1 m2 x y z (!u && decide (rr = selfFs)) outv chv idx v.val kv.val
           ω₂ ω₃ r.private_ r.ledger) ∧
         src.run p xs r.priv r.pub = some { outputs := r.outputs, groups := r.groups } :=
-  shipped_of hb hp (by simp [Examples.Tokens.contract, Contract.allCircuits]) H w _ ω₀ σ hwf
+  shipped_of hb hp (by simp [Examples.Tokens.contract, Contract.allCircuits]) H (Damp.Exec.liftWitness w) (witnessesOK_lift w) _ ω₀ σ hwf
     (P := fun o w' l => o = [] ∧ SpendOutcome σ es m0 m1 m2 x y z (!u && decide (rr = selfFs)) outv chv idx v.val
       kv.val ω₂ ω₃ w' l)
     (spend_exec p H w ω₀ σ u rl rr hrl hrr kv hk128 fields hst hfl hw hf6 n c v i hnl hcl hv hread cfs wa selfFs hctx

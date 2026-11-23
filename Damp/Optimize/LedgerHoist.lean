@@ -12,8 +12,8 @@ a read up to right after the nearest earlier ledger statement `L` with the same
 guard, when
 
 * every statement between (at most `hoistWindow`) commutes with it
-  (`lcommutes`: neither reads nor binds what the other binds; no witness that
-  changes the runtime's query context, `ctxWitness`);
+  (`lcommutes true`: neither reads nor binds what the other binds; no witness
+  that writes the call context, `ctxWitness`: `createZswapOutput`);
 * the two statements pass `mergeInto` (so that `Circuit.ledgerMerge`, which
   runs next, makes them one request; the move by itself changes nothing but
   the order of the public transcript).
@@ -59,7 +59,7 @@ def findCtxRead (g : Expr) (rs : List Var) (ops : List (Op Expr)) : Nat → List
         some ([], x, l)
       else
         (findCtxRead g rs ops n l).bind fun (mid, r, rest) =>
-          if lcommutes r x && !x.emptyLedger then some (x :: mid, r, rest) else none
+          if lcommutes true r x && !x.emptyLedger then some (x :: mid, r, rest) else none
 
 /-- The scan: after each ledger statement, pull up a later context read it can merge with. -/
 def hoistGo : Nat → List Stmt → List Stmt

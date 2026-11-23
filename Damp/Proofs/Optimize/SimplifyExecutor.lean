@@ -388,7 +388,7 @@ theorem optimize_witness_exec {f f' : Facts} {guard : Expr} {name : String} {arg
       obtain ⟨rfl, rfl⟩ := ho
       rw [steps_single]
       have hargs := Facts.rw_evalList p hr.facts args
-      simp only [step, Option.bind_eq_bind, hrw, hargs, hr.private_]
+      simp only [step, Option.bind_eq_bind, hrw, hargs, hr.private_, hr.ledger]
       cases guard.eval p s.env with
       | none => simp [OptRel]
       | some gx =>
@@ -404,15 +404,15 @@ theorem optimize_witness_exec {f f' : Facts} {guard : Expr} {name : String} {arg
             | none => simp [OptRel]
             | some av =>
               simp only [Option.bind_some]
-              cases O.witness name av s.private_ with
+              cases O.witness name av s.private_ s.ledger with
               | none => simp [OptRel]
               | some res =>
-                obtain ⟨vals, pv⟩ := res
+                obtain ⟨vals, pv, lv⟩ := res
                 simp only [Option.bind_some]
                 split
                 · simp only [Option.pure_def, OptRel]
                   exact ⟨by simpa [witnessChecks, witnessBools] using hf, hr.priv, hr.pub, hr.groups,
-                    rfl, hr.ledger⟩
+                    rfl, rfl⟩
                 · simp [OptRel]
           · simp only [Option.pure_def, OptRel]
             exact ⟨by simpa [witnessChecks, witnessBools] using hf, hr.priv, hr.pub, hr.groups,
@@ -423,15 +423,15 @@ theorem optimize_witness_exec {f f' : Facts} {guard : Expr} {name : String} {arg
           | some act =>
             simp only [Option.bind_some]
             -- Both sides assign the same values: the oracle's answer, or zeros.
-            have key : ∀ (vals : List Fr) (pv : ω) (pv' : ω), pv' = pv →
+            have key : ∀ (vals : List Fr) (pv : ω) (pv' : ω) (lv : σ), pv' = pv →
                 OptRel (ExecRel p { f.forget (outs.map (·.1)) with
                     checked := witnessChecks outs ++ (f.forget (outs.map (·.1))).checked,
                     bools := witnessBools outs ++ (f.forget (outs.map (·.1))).bools })
                   ((assign s.env outs vals).bind fun env => pure
-                    ({ s with env, private_ := pv, priv := (if act then s.priv ++ vals else s.priv) }))
+                    ({ s with env, private_ := pv, ledger := (if act then lv else s.ledger), priv := (if act then s.priv ++ vals else s.priv) }))
                   ((assign s'.env outs vals).bind fun env => pure
-                    ({ s' with env, private_ := pv', priv := (if act then s'.priv ++ vals else s'.priv) })) := by
-              intro vals pv pv' hpv
+                    ({ s' with env, private_ := pv', ledger := (if act then lv else s'.ledger), priv := (if act then s'.priv ++ vals else s'.priv) })) := by
+              intro vals pv pv' lv hpv
               have hp := assign_pair outs s.env s'.env vals
               cases h1 : assign s.env outs vals with
               | none =>
@@ -449,21 +449,21 @@ theorem optimize_witness_exec {f f' : Facts} {guard : Expr} {name : String} {arg
                   obtain ⟨hin, hout⟩ := hp
                   have hrd := assign_readAll' outs s.env vals r h1
                   simp only [Option.bind_some, Option.pure_def, OptRel]
-                  refine ⟨?_, by rw [hr.priv], hr.pub, hr.groups, hpv, hr.ledger⟩
+                  refine ⟨?_, by rw [hr.priv], hr.pub, hr.groups, hpv, by cases act <;> simp [hr.ledger]⟩
                   exact (Facts.forget_holds p hr.facts (Bool.eq_false_iff.mpr hc) hin hout).extend p
                     (witnessChecks_holds p hrd hin) (witnessBools_holds hrd hin)
             cases act
-            · simpa using key (outs.map fun _ => 0) s.private_ s.private_ rfl
+            · simpa [hr.ledger] using key (outs.map fun _ => 0) s.private_ s.private_ s.ledger rfl
             · simp only [ite_true]
               cases Expr.evalList p s.env args with
               | none => simp [OptRel]
               | some av =>
                 simp only [Option.bind_some]
-                cases O.witness name av s.private_ with
+                cases O.witness name av s.private_ s.ledger with
                 | none => simp [OptRel]
                 | some res =>
-                  obtain ⟨vals, pv⟩ := res
-                  simpa using key vals pv pv rfl
+                  obtain ⟨vals, pv, lv⟩ := res
+                  simpa using key vals pv pv lv rfl
 
 /-! ### Ledger statements -/
 
@@ -698,8 +698,8 @@ theorem simplify_correct (p : Prims) (O : Oracles ω σ) (c : Circuit)
     it is sent. -/
 def Oracles.logged (O : Oracles ω σ) :
     Oracles (ω × List (String × List Fr)) (σ × List (List (Impact.Op Fr))) where
-  witness name args st :=
-    (O.witness name args st.1).map fun (vals, w) => (vals, (w, st.2 ++ [(name, args)]))
+  witness name args st l :=
+    (O.witness name args st.1 l.1).map fun (vals, w, l') => (vals, (w, st.2 ++ [(name, args)]), (l', l.2))
   ledger req st :=
     (O.ledger req st.1).map fun (vals, l) => (vals, (l, st.2 ++ [req]))
 

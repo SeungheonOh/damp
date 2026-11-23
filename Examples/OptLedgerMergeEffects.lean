@@ -87,14 +87,17 @@ private def after (c : Circuit) : String := shape c.ledgerMerge
 -- `TokenType` keys: not merged after
 #guard after (mk 2 [L (addOps 6 ⟨[.bytes 1, .bytes 32, .bytes 32], [.const 0, .const 0, .var 0, .const 0]⟩
   ⟨[.bytes 16], [.var 1]⟩), L (wrOps 1 (.var 0))] []) == "LL"
--- never moved above a witness that changes the query context (`createZswapOutput` inserts its
--- commitment into the call context, which the next statement may read), or a contract call
+-- never moved above a witness that changes the call context (`createZswapOutput` inserts its
+-- commitment, which the next statement may read), or a user's witness (it may read the contract
+-- state the next statement writes): only isolated witnesses are crossed (`isolatedWitness`)
 #guard after (mk 2 [L (claimOps 0 (h32 (.var 0))), .witness one "createZswapOutput" [.var 0] [] (.tuple []),
   L (wrOps 1 (.var 0))] []) == "LWL"
-#guard after (mk 2 [L (claimOps 0 (h32 (.var 0))), .witness one "call:I.c" [.var 0] [] (.tuple []),
-  L (wrOps 1 (.var 0))] []) == "LWL"
--- other witnesses are crossed
 #guard after (mk 2 [L (claimOps 0 (h32 (.var 0))), .witness one "w" [.var 0] [] (.tuple []),
+  L (wrOps 1 (.var 0))] []) == "LWL"
+-- isolated witnesses are crossed: a contract call (`CallIsolated`), the Zswap built-ins that do not touch the ledger
+#guard after (mk 2 [L (claimOps 0 (h32 (.var 0))), .witness one "call:I.c" [.var 0] [] (.tuple []),
+  L (wrOps 1 (.var 0))] []) == "LW"
+#guard after (mk 2 [L (claimOps 0 (h32 (.var 0))), .witness one "createZswapInput" [.var 0] [] (.tuple []),
   L (wrOps 1 (.var 0))] []) == "LW"
 
 /-! ### Runs through the executor against the VM model -/
@@ -112,7 +115,7 @@ private def σ₀ : LedgerState where
 private def noWitness : String → List Fr → Unit → Option (List Fr × Unit) := fun _ _ _ => some ([], ())
 
 private def run (c : Circuit) (inputs : List Nat) : String :=
-  match Exec.run Crypto.prims (oracles merkleHooks noWitness) c (inputs.map Fr.ofNat) () σ₀ with
+  match Exec.run Crypto.prims (oracles merkleHooks (Exec.liftWitness noWitness)) c (inputs.map Fr.ofNat) () σ₀ with
   | none => "fails"
   | some r => reprStr (r.outputs.map (·.val), r.priv.map (·.val), r.pub.map (·.val), r.ledger.state,
       r.ledger.context, r.ledger.effects)

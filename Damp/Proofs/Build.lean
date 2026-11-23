@@ -14,23 +14,29 @@ first error.
 `build_correct` bundles, for every circuit of the contract, everything proved
 about the ZKIR shipped for it, at every optimization level, with and without
 `--ledger-opt`. What does not depend on how the shipped circuit relates to the
-original (`ShippedBase`: disclosure, the ZKIR means the shipped circuit,
-accepts what the executor records on it, the ledger check and its consequence
-for public inputs, producer obligations, reading back) holds for every build.
-What relates runs of the shipped circuit to runs of the original depends on
-the flag (`ShippedAs`):
+original (`ShippedBase`: disclosure, the ZKIR means the shipped circuit
+exactly, unused bindings included (`Emit.circuit_exact`), accepts what the
+executor records on it, the ledger check and its consequence for public
+inputs, producer obligations, reading back) holds for every build. What
+relates runs of the shipped circuit to runs of the original depends on the
+flag (`ShippedAs`):
 
-* without `--ledger-opt` (`ShippedOK`): the ZKIR accepts every run of the
-  original with the same outputs and public inputs, and the executor does on
-  the shipped circuit what it does on the original, for every oracle
+* without `--ledger-opt` (`ShippedOK`): the ZKIR accepts exactly the runs of
+  the original, with the same outputs and active public inputs; it accepts
+  exactly the proof data the `--no-opt` ZKIR accepts under Midnight's
+  `preprocess` (`shipped_preprocessFor`); the disclosure check's
+  noninterference holds of it (`shipped_noninterference`); and the executor
+  does on the shipped circuit what it does on the original, for every oracle
   (`Pass.Sound` strength);
-* with `--ledger-opt` (`ShippedLedgerOK`): only against the modelled ledger
-  (`Damp.Ledger.oracles`), from a well-formed ledger state, the executor
-  completes on the shipped circuit exactly when on the original, with the same
-  outputs, private transcript, private state and ledger state
-  (`Pass.SoundLedger` strength); and when the original completes, the ZKIR
+* with `--ledger-opt` (`ShippedLedgerOK`): the ZKIR means the shipped circuit
+  exactly; and only against the modelled ledger (`Damp.Ledger.oracles`), with
+  witnesses that do what the runtime's do (`Ledger.WitnessesOK`), from a
+  well-formed ledger state, the executor completes on the shipped circuit
+  exactly when on the original, with the same outputs, private transcript,
+  private state and ledger state (`Pass.SoundLedger` strength), and the ZKIR
   accepts what the executor records on the shipped circuit. The public
-  transcript and public inputs differ, so nothing is said about them.
+  transcript and public inputs differ, so nothing relates the ZKIR to the
+  original's on a preimage the executor did not produce.
 
 These hold for every choice of hash functions at `--no-opt`, the default
 level and `--O2`, and at `--O3` for Damp's implementations of Midnight's hash
@@ -45,6 +51,8 @@ import Damp.Proofs.Optimize.LedgerPipeline
 import Damp.Proofs.ZkirJson
 import Damp.Proofs.ZkirText
 import Damp.Proofs.ExportJson
+import Damp.Proofs.Shipped
+import Damp.Proofs.Disclosure
 
 namespace Damp
 open IR
@@ -215,6 +223,13 @@ structure ShippedBase (circ s : Circuit) (src : Zkir.IrSource) : Prop where
       (`compile_exact`). -/
   exact : ∀ (p : Prims) (inputs priv pub : List Fr),
     src.run p inputs priv pub = (Emit.pruned s).run p inputs priv pub
+  /-- (1') ... and so exactly the shipped circuit itself, unused bindings
+      included: the emitter drops only bindings that cannot fail
+      (`Emit.circuit_exact`, from `Emit.pruned_run_eq`). Whatever the ZKIR
+      accepts, `Circuit.run` of the shipped circuit accepts, with the same
+      outcome, and conversely. -/
+  exactSource : ∀ (p : Prims) (inputs priv pub : List Fr),
+    src.run p inputs priv pub = s.run p inputs priv pub
   /-- (3) What the executor records on the shipped circuit, the ZKIR accepts
       (`run_accepted_by_emitted`). -/
   accepted : ∀ {ω σ : Type} (p : Prims) (O : Exec.Oracles ω σ) (inputs : List Fr) (w : ω) (l : σ)
@@ -250,41 +265,117 @@ structure ShippedBase (circ s : Circuit) (src : Zkir.IrSource) : Prop where
     `circ`, proved for the hash functions `sound` admits. -/
 structure ShippedOK (sound : Prims → Prop) (circ s : Circuit) (src : Zkir.IrSource) : Prop
     extends ShippedBase circ s src where
-  /-- (2) Every run the original circuit accepts, the ZKIR accepts, with the same
-      outputs and active public inputs (`compile_complete`). -/
-  complete : ∀ (p : Prims), sound p → ∀ (inputs priv pub : List Fr) (o : Outcome),
-    circ.run p inputs priv pub = some o →
-      ∃ o', src.run p inputs priv pub = some o' ∧ o'.observable = o.observable
+  /-- (2) The ZKIR accepts exactly the runs the original circuit accepts, with
+      the same outputs and active public inputs: on every inputs, private
+      transcript and ledger reads, both reject or both accept with the same
+      observable outcome (`Emit.circuit_exact` and `Pass.SoundFor.run`; the
+      direction "original accepts ⇒ ZKIR accepts" is `compile_complete`). -/
+  complete : ∀ (p : Prims), sound p → ∀ (inputs priv pub : List Fr),
+    (src.run p inputs priv pub).map Outcome.observable = (circ.run p inputs priv pub).map Outcome.observable
+  /-- (2') The shipped ZKIR and the ZKIR `--no-opt` ships for `circ` (`src₀`)
+      accept exactly the same proof data under Midnight's `preprocess` (inputs,
+      private transcript, ledger reads, claimed public inputs, commitment),
+      with the same outputs and active public inputs
+      (`shipped_preprocessFor`). -/
+  sameAsNoOpt : ∀ (p : Prims), sound p → ∀ (src₀ : Zkir.IrSource), Emit.circuit circ = .ok src₀ →
+    ∀ pre : Zkir.Preimage, (src.preprocess p pre).map Outcome.observable = (src₀.preprocess p pre).map Outcome.observable
+  /-- (2'') Noninterference holds of the shipped ZKIR: two runs it accepts that
+      read the same values from the ledger, and in which every disclosed value
+      the original circuit's public inputs could depend on agrees
+      (`IR.Agree`, about `circ`), have the same active public inputs, whatever
+      their arguments and private transcripts (`shipped_noninterference`, from
+      `groups_noninterference` on `circ`). -/
+  noninterference : ∀ (p : Prims), sound p → ∀ (in₁ in₂ priv₁ priv₂ pub : List Fr) (o₁ o₂ : Outcome),
+    src.run p in₁ priv₁ pub = some o₁ → src.run p in₂ priv₂ pub = some o₂ →
+    (∀ env₁ env₂, bindInputs (fun _ => 0) circ.inputs in₁ = some env₁ →
+      bindInputs (fun _ => 0) circ.inputs in₂ = some env₂ →
+      IR.Agree p circ.body.toList { env := env₁, priv := priv₁, pub } { env := env₂, priv := priv₂, pub }) →
+    o₁.activeInputs = o₂.activeInputs
   /-- The executor on the shipped circuit does what it does on the original. -/
   exec_same : ∀ {ω σ : Type} (p : Prims), sound p → ∀ (O : Exec.Oracles ω σ) (inputs : List Fr) (w : ω) (l : σ),
     (Exec.run p O s inputs w l).map Exec.Result.observable =
       (Exec.run p O circ inputs w l).map Exec.Result.observable
 
+/-- `ShippedOK.complete` in the form of `compile_complete`. -/
+theorem ShippedOK.complete_run {sound : Prims → Prop} {circ s : Circuit} {src : Zkir.IrSource}
+    (h : ShippedOK sound circ s src) (p : Prims) (hp : sound p) (inputs priv pub : List Fr) (o : Outcome)
+    (hr : circ.run p inputs priv pub = some o) :
+    ∃ o', src.run p inputs priv pub = some o' ∧ o'.observable = o.observable := by
+  have e := h.complete p hp inputs priv pub
+  rw [hr] at e
+  cases h1 : src.run p inputs priv pub with
+  | none => rw [h1] at e; cases e
+  | some o' => rw [h1] at e; exact ⟨o', rfl, Option.some.inj e⟩
+
+/-- `ShippedOK.complete`, the other way: whatever the shipped ZKIR accepts, the
+    original circuit accepts, with the same outputs and active public inputs. -/
+theorem ShippedOK.sound_run {sound : Prims → Prop} {circ s : Circuit} {src : Zkir.IrSource}
+    (h : ShippedOK sound circ s src) (p : Prims) (hp : sound p) (inputs priv pub : List Fr) (o' : Outcome)
+    (hr : src.run p inputs priv pub = some o') :
+    ∃ o, circ.run p inputs priv pub = some o ∧ o.observable = o'.observable := by
+  have e := h.complete p hp inputs priv pub
+  rw [hr] at e
+  cases h1 : circ.run p inputs priv pub with
+  | none => rw [h1] at e; cases e
+  | some o => rw [h1] at e; exact ⟨o, rfl, (Option.some.inj e).symm⟩
+
 /-- Everything proved about the ZKIR `src` shipped for the contract circuit
     `circ`, when the shipped circuit is `s` and the build ran with
     `--ledger-opt`: `ShippedBase`, and, only against the modelled ledger
-    (`Damp.Ledger.oracles`) from a well-formed ledger state and for the hash
+    (`Damp.Ledger.oracles`) with witnesses that do what the runtime's do
+    (`Ledger.WitnessesOK`), from a well-formed ledger state and for the hash
     functions `sound` admits, what relates runs of `s` to runs of `circ`.
-    Nothing about the public transcript or public inputs: they differ. -/
+
+    What the ZKIR accepts is pinned to the shipped circuit exactly
+    (`ShippedBase.exactSource`: `src.run = s.run`), and the executor runs of `s`
+    are pinned to those of `circ` in both directions (`exec_ledger`,
+    `complete_exec`, `sound_exec`). What is **not** stated, because it is not
+    true or not proved:
+
+    * the public transcript and the public inputs of `s` differ from those of
+      `circ` by design (the ledger passes drop, merge and reorder ledger
+      instructions), so nothing relates `src` to the ZKIR of `circ` (no
+      `sameAsNoOpt`) and the disclosure check's noninterference is not
+      transferred (it is about `circ`'s public inputs);
+    * nothing relates acceptance of `src` on an arbitrary preimage (inputs,
+      private transcript, ledger reads chosen by a prover rather than produced
+      by the executor against the modelled ledger from a well-formed state) to
+      anything about `circ`: `src` accepts it exactly when `s` does, and that
+      is all;
+    * the on-chain replay of the public transcript against a state other than
+      the one the executor ran from (audit finding F4), and gas, are not
+      modelled. -/
 structure ShippedLedgerOK (sound : Prims → Prop) (circ s : Circuit) (src : Zkir.IrSource) : Prop
     extends ShippedBase circ s src where
   /-- The executor against the modelled ledger completes on the shipped
       circuit exactly when on the original, with the same outputs, private
       transcript, private state and ledger state (`Pass.SoundLedger`). -/
   exec_ledger : ∀ (p : Prims), sound p → ∀ {ω : Type} (H : Ledger.Hooks)
-      (w : String → List Fr → ω → Option (List Fr × ω)) (inputs : List Fr) (private_ : ω)
+      (w : Exec.WitnessOracle ω Ledger.LedgerState), Ledger.WitnessesOK w → ∀ (inputs : List Fr) (private_ : ω)
       (σ : Ledger.LedgerState), σ.WF →
     (Exec.run p (Ledger.oracles H w) s inputs private_ σ).map Exec.Result.ledgerObservable =
       (Exec.run p (Ledger.oracles H w) circ inputs private_ σ).map Exec.Result.ledgerObservable
   /-- So every call of the original circuit the executor completes against the
       modelled ledger completes on the shipped circuit, with the same outputs,
       private transcript, private state and ledger state, and the ZKIR accepts
-      what the executor records on the shipped circuit. -/
+      what the executor records on the shipped circuit, which is a run of the
+      shipped circuit itself (`exactSource`). -/
   complete_exec : ∀ (p : Prims), sound p → ∀ {ω : Type} (H : Ledger.Hooks)
-      (w : String → List Fr → ω → Option (List Fr × ω)) (inputs : List Fr) (private_ : ω)
+      (w : Exec.WitnessOracle ω Ledger.LedgerState), Ledger.WitnessesOK w → ∀ (inputs : List Fr) (private_ : ω)
       (σ : Ledger.LedgerState), σ.WF → ∀ r, Exec.run p (Ledger.oracles H w) circ inputs private_ σ = some r →
     ∃ r', Exec.run p (Ledger.oracles H w) s inputs private_ σ = some r' ∧
       r'.ledgerObservable = r.ledgerObservable ∧
+      src.run p inputs r'.priv r'.pub = some { outputs := r'.outputs, groups := r'.groups } ∧
+      s.run p inputs r'.priv r'.pub = some { outputs := r'.outputs, groups := r'.groups }
+  /-- Conversely, every call the executor completes on the shipped circuit
+      against the modelled ledger, from a well-formed state, is one it
+      completes on the original, with the same outputs, private transcript,
+      private state and ledger state; and the ZKIR accepts what was recorded. -/
+  sound_exec : ∀ (p : Prims), sound p → ∀ {ω : Type} (H : Ledger.Hooks)
+      (w : Exec.WitnessOracle ω Ledger.LedgerState), Ledger.WitnessesOK w → ∀ (inputs : List Fr) (private_ : ω)
+      (σ : Ledger.LedgerState), σ.WF → ∀ r', Exec.run p (Ledger.oracles H w) s inputs private_ σ = some r' →
+    ∃ r, Exec.run p (Ledger.oracles H w) circ inputs private_ σ = some r ∧
+      r.ledgerObservable = r'.ledgerObservable ∧
       src.run p inputs r'.priv r'.pub = some { outputs := r'.outputs, groups := r'.groups }
 
 /-- What is proved about a shipped circuit, by whether the build ran with
@@ -305,6 +396,7 @@ theorem shippedBase_of {f : Pass} {circ : Circuit} {src : Zkir.IrSource}
   disclosure := hd
   exact p inputs priv pub :=
     Emit.circuitCore_correct p _ src (Emit.circuit_eq_core _ src he) inputs priv pub
+  exactSource p inputs priv pub := Emit.circuit_exact p _ src he inputs priv pub
   accepted p O inputs w l r h := Exec.run_accepted_by_emitted p O _ src he inputs w l r h
   ledger := hl
   groups p _ _ _ _ _ h := Exec.run_groups_fromLedger p hl h
@@ -312,12 +404,46 @@ theorem shippedBase_of {f : Pass} {circ : Circuit} {src : Zkir.IrSource}
   readsBack := Zkir.IrSource.ofJson_toJson_of_emitted he
   readsBackText := Zkir.IrSource.ofText_of_emitted he
 
+/-- **Noninterference of the shipped ZKIR.** For a pass sound at `p` and a
+    circuit that passes the disclosure check, two runs the ZKIR emitted for
+    `f circ` accepts with the same ledger reads, in which every disclosed value
+    `circ`'s public inputs could depend on agrees, have the same active public
+    inputs: `groups_noninterference` on `circ`, carried to the ZKIR by
+    `Emit.circuit_exact` and `Pass.SoundFor.run`. -/
+theorem shipped_noninterference {p : Prims} {f : Pass} (hf : Pass.SoundFor p f) {circ : Circuit}
+    (hd : circ.checkDisclosure = .ok ()) {src : Zkir.IrSource} (he : Emit.circuit (f circ) = .ok src)
+    (in₁ in₂ priv₁ priv₂ pub : List Fr) (o₁ o₂ : Outcome)
+    (h₁ : src.run p in₁ priv₁ pub = some o₁) (h₂ : src.run p in₂ priv₂ pub = some o₂)
+    (hagree : ∀ env₁ env₂, bindInputs (fun _ => 0) circ.inputs in₁ = some env₁ →
+      bindInputs (fun _ => 0) circ.inputs in₂ = some env₂ →
+      IR.Agree p circ.body.toList { env := env₁, priv := priv₁, pub } { env := env₂, priv := priv₂, pub }) :
+    o₁.activeInputs = o₂.activeInputs := by
+  have e₁ := hf.run circ in₁ priv₁ pub
+  have e₂ := hf.run circ in₂ priv₂ pub
+  rw [← Emit.circuit_exact p _ src he, h₁] at e₁
+  rw [← Emit.circuit_exact p _ src he, h₂] at e₂
+  cases hc₁ : circ.run p in₁ priv₁ pub with
+  | none => rw [hc₁] at e₁; cases e₁
+  | some c₁ =>
+  cases hc₂ : circ.run p in₂ priv₂ pub with
+  | none => rw [hc₂] at e₂; cases e₂
+  | some c₂ =>
+  rw [hc₁] at e₁; rw [hc₂] at e₂
+  simp only [Option.map_some, Option.some.injEq, Outcome.observable, Prod.mk.injEq] at e₁ e₂
+  have hg := groups_noninterference p circ hd in₁ in₂ priv₁ priv₂ pub c₁ c₂ hc₁ hc₂ hagree
+  rw [e₁.2, e₂.2]
+  simp only [Zkir.Outcome.activeInputs, hg]
+
 theorem shippedOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, sound p → Pass.SoundFor p f)
     {circ : Circuit} {src : Zkir.IrSource}
     (hd : circ.checkDisclosure = .ok ()) (hl : (f circ).checkLedger = .ok ())
     (he : Emit.circuit (f circ) = .ok src) : ShippedOK sound circ (f circ) src :=
   { shippedBase_of hd hl he with
-    complete := fun p hp inputs priv pub o hrun => compile_complete_ofFor (hf p hp) circ src he inputs priv pub o hrun
+    complete := fun p hp inputs priv pub => by
+      rw [Emit.circuit_exact p _ src he]; exact (hf p hp).run circ inputs priv pub
+    sameAsNoOpt := fun p hp src₀ h₀ pre => shipped_preprocessFor (hf p hp) circ src src₀ he h₀ pre
+    noninterference := fun p hp in₁ in₂ priv₁ priv₂ pub o₁ o₂ h₁ h₂ hagree =>
+      shipped_noninterference (hf p hp) hd he in₁ in₂ priv₁ priv₂ pub o₁ o₂ h₁ h₂ hagree
     exec_same := fun p hp O inputs w l => (hf p hp).exec O circ inputs w l }
 
 theorem shippedLedgerOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, sound p → Pass.SoundLedgerFor p f)
@@ -326,16 +452,26 @@ theorem shippedLedgerOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, soun
     (he : Emit.circuit (f circ) = .ok src) : ShippedLedgerOK sound circ (f circ) src :=
   have hb := shippedBase_of hd hl he
   { hb with
-    exec_ledger := fun p hp {_} H w inputs private_ σ hσ => (hf p hp).exec H w circ inputs private_ σ hσ
-    complete_exec := fun p hp {_} H w inputs private_ σ hσ r hr => by
-      have e := (hf p hp).exec H w circ inputs private_ σ hσ
+    exec_ledger := fun p hp {_} H w hw inputs private_ σ hσ => (hf p hp).exec H w hw circ inputs private_ σ hσ
+    complete_exec := fun p hp {_} H w hw inputs private_ σ hσ r hr => by
+      have e := (hf p hp).exec H w hw circ inputs private_ σ hσ
       rw [hr] at e
       cases h1 : Exec.run p (Ledger.oracles H w) (f circ) inputs private_ σ with
       | none => rw [h1] at e; cases e
       | some r' =>
           rw [h1] at e
           simp only [Option.map_some, Option.some.injEq] at e
-          exact ⟨r', rfl, e, hb.accepted p _ inputs private_ σ r' h1⟩ }
+          have ha := hb.accepted p _ inputs private_ σ r' h1
+          exact ⟨r', rfl, e, ha, (hb.exactSource p inputs r'.priv r'.pub).symm.trans ha⟩
+    sound_exec := fun p hp {_} H w hw inputs private_ σ hσ r' hr' => by
+      have e := (hf p hp).exec H w hw circ inputs private_ σ hσ
+      rw [hr'] at e
+      cases h1 : Exec.run p (Ledger.oracles H w) circ inputs private_ σ with
+      | none => rw [h1] at e; cases e
+      | some r =>
+          rw [h1] at e
+          simp only [Option.map_some, Option.some.injEq] at e
+          exact ⟨r, rfl, e.symm, hb.accepted p _ inputs private_ σ r' hr'⟩ }
 
 /-! ## The theorem -/
 
@@ -345,20 +481,23 @@ theorem shippedLedgerOK_of {f : Pass} {sound : Prims → Prop} (hf : ∀ p, soun
     order, and for each circuit `circ` the entry is `(s, src)` where `s` is
     `circ` under the selected optimization and `src` is the ZKIR emitted for
     `s`; and `ShippedAs level.SoundAt ledgerOpt circ s src` holds. For every
-    build (`ShippedBase`): the ZKIR means the shipped circuit exactly, accepts
-    what the executor records on the shipped circuit, the shipped circuit
-    passes the ledger check (with its consequence for the executor's public
-    inputs), the ZKIR meets the producer obligations, and its JSON reads back
-    as itself, as a JSON tree and as text (for every text that lexes as its
-    tokens). Without `--ledger-opt` (`ShippedOK`), the ZKIR also accepts every
-    run of the original circuit with the same observable outcome, and the
-    executor does on the shipped circuit what it does on the original, for
-    every oracle. With it (`ShippedLedgerOK`), the executor does on the
-    shipped circuit what it does on the original only against the modelled
-    ledger from a well-formed state, and only up to the public transcript and
-    public inputs. The statements about runs of the original circuit hold for
-    every choice of hash functions, except at `--O3`, where they hold for
-    `Damp.Crypto.prims` (`OptLevel.SoundAt`). -/
+    build (`ShippedBase`): the ZKIR means the shipped circuit exactly (unused
+    bindings included), accepts what the executor records on the shipped
+    circuit, the shipped circuit passes the ledger check (with its
+    consequence for the executor's public inputs), the ZKIR meets the
+    producer obligations, and its JSON reads back as itself, as a JSON tree
+    and as text (for every text that lexes as its tokens). Without
+    `--ledger-opt` (`ShippedOK`), the ZKIR accepts exactly the runs the
+    original circuit accepts with the same observable outcome, accepts
+    exactly the proof data the `--no-opt` ZKIR accepts, satisfies the
+    disclosure noninterference of the original, and the executor does on the
+    shipped circuit what it does on the original, for every oracle. With it
+    (`ShippedLedgerOK`), the executor does on the shipped circuit what it does
+    on the original only against the modelled ledger, with witnesses that
+    respect `Ledger.WitnessesOK`, from a well-formed state, and only up to the
+    public transcript and public inputs. The statements about runs of the
+    original circuit hold for every choice of hash functions, except at
+    `--O3`, where they hold for `Damp.Crypto.prims` (`OptLevel.SoundAt`). -/
 theorem build_correct {c : Contract} {level : OptLevel} {ledgerOpt : Bool} {shipped : Contract}
     {srcs : List (Circuit × Zkir.IrSource)} (h : c.buildCore level ledgerOpt = .ok (shipped, srcs)) :
     shipped = c.optimize level ledgerOpt ∧

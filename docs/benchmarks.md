@@ -203,15 +203,22 @@ TOTAL --O3                                                        6620          
 
 | | compactc | Damp `--no-opt` | Damp default | Damp `--O2` | Damp `--O3` | `--O2 --ledger-opt` | `--O3 --ledger-opt` |
 |---|---|---|---|---|---|---|---|
-| instructions | 6940 | 7652 | 6826 | 6778 | 6589 | 4811 | 4622 |
-| rows | 533 476 | 507 125 | 504 667 | 504 543 | 465 427 | 456 871 | 417 754 |
-| sum of 2^k | 779 328 | 777 792 | 776 320 | 775 808 | 726 656 | 702 912 | 653 760 |
-| circuits with smaller k than compactc's | 0 | 3 | 3 | 5 | 7 | 22 | 24 |
+| instructions | 6940 | 7652 | 6826 | 6778 | 6589 | 4835 | 4646 |
+| rows | 533 476 | 507 125 | 504 667 | 504 543 | 465 427 | 491 669 | 452 552 |
+| sum of 2^k | 779 328 | 777 792 | 776 320 | 775 808 | 726 656 | 768 448 | 719 296 |
+| circuits with smaller k than compactc's | 0 | 3 | 3 | 5 | 7 | 21 | 23 |
 
 (`test/bench.sh`, columns O2+L and O3+L of `bench/report.py`. `--O2` and `--O3` include the emitter's
 `constrain_eq a (-k)` for `constrain (a + k) zero`, which took 4 instructions and 4 rows off each;
 `--ledger-opt` is opt-in and changes the verifier key and public transcript: see "Opt-in ledger
-passes" below.)
+passes" below. Measured with `BENCH_OUT=build/bench-wire2 ./test/bench.sh` after the fix of the
+audit's finding F2, docs/audit.md: the emitter now keeps an unused binding that can fail. That
+changes no level without `--ledger-opt`, and raises both `--ledger-opt` columns by 24 instructions
+and 34 798 rows; the rows are all in `coracle.withdraw` (+23 196) and `coracle.concede` (+11 602): persistent
+hashes, and the byte decompositions feeding them, that the ledger passes leave unused, and that the
+emitter used to drop. Their inputs are not known to fit the hash's byte alignment, so they can fail,
+and the source semantics rejects a run in which they do. The earlier figures, 4811 / 456 871 and
+4622 / 417 754, came from a ZKIR that accepted such runs.)
 
 (Before `assertZero`, `mergeChecks` and the hash sharing of this round: `--O2` 6808 / 504 631, `--O3`
 6620 / 469 263; the per-circuit table above is from that run, `--O3` excepted where noted. Default
@@ -263,8 +270,8 @@ them: at `--O3` the guarantee is relative to those implementations.
 | default | `simplify, foldDivmod, bounds2, simplify, algebra, commuteOpt` | 6826 / 504 667 |
 | `--O2` | `simplify, foldDivmod, assertEq, asserts, mergeChecks, simplify, bounds2, simplify, algebra, forwardOpt, forwardAllOpt, commuteOpt, assertZero` | 6778 / 504 543 |
 | `--O3` | `simplify, foldHashes Crypto.prims`, then `--O2`, then `shareSelects, shareGuarded, hashRanges` | 6589 / 465 427 |
-| `--O2 --ledger-opt` | `--O2`, then `ledgerReuse, optimizeFull, ledgerDeadStore` (`Pass.SoundLedger` only) | 4811 / 456 871 |
-| `--O3 --ledger-opt` | `--O3`, then `ledgerReuse, optimizeFull, ledgerDeadStore` (`Pass.SoundLedgerFor Crypto.prims`) | 4622 / 417 754 |
+| `--O2 --ledger-opt` | `--O2`, then `ledgerReuse, optimizeFull, ledgerDeadStore, ledgerHoist, ledgerMerge` (`Pass.SoundLedger` only) | 4835 / 491 669 |
+| `--O3 --ledger-opt` | `--O3`, then the same ledger passes (`Pass.SoundLedgerFor Crypto.prims`) | 4646 / 452 552 |
 
 ### Where the rows are
 
@@ -422,6 +429,19 @@ and public inputs no longer sent); the rest is the `--O2` passes on the forwarde
 Totals (`test/bench.sh`): `--O2 --ledger-opt` 4811 instructions / 456 871 rows (was 5295 /
 500 208), `--O3 --ledger-opt` 4622 / 417 754 (was 5106 / 461 092); 22 circuits end up in a smaller
 size class than compactc's at `--O2 --ledger-opt` (5 at `--O2`; sum of 2^k 775 808 -> 702 912).
+
+*Since the pruning fix* (audit finding F2; the emitter keeps an unused binding that can fail): `--O2
+--ledger-opt` 4835 instructions / 491 669 rows, `--O3 --ledger-opt` 4646 / 452 552, 21 and 23
+circuits in a smaller size class than compactc's, sum of 2^k 768 448 and 719 296 (`BENCH_OUT=...
+./test/bench.sh`). The difference is in two circuits only: `coracle.withdraw` 85 219 (`--O2`) ->
+84 947 rows (61 751 before the fix) and `coracle.concede` 50 468 -> 50 342 (38 740 before). There
+the ledger passes forward values that make persistent hashes, and the byte decompositions feeding
+them, unused. The emitter dropped them before the fix, though a hash fails when an input does not
+fit its byte alignment and nothing shows these inputs fit. The circuit then accepted runs the source
+rejects. Now it keeps them. The gas figures below are unaffected: the hashes are circuit work, not
+ledger work (`LO_ALL=1 LO_OUT=build/ledger-opt-wire2 ./test/ledger-opt.sh` after the fix: 287.53
+x10^9 computeTime, 82 365 x10^6 readTime, 40 321 bytes written, 176 requests over the 99 calls, the
+figures of "Witnesses that see the ledger" below).
 
 (`ledgerMerge`, below, changes no row or instruction count; with it 51 circuits' ZKIR differs, the
 other 21 only in instruction order.) The table below is from before `ledgerMerge` (its gas is in
@@ -593,31 +613,20 @@ context move, so two statements that write the ledger are never reordered and th
 effects' entries (which in the model follows the order of the writes, `assocSet` appending a new
 key) never changes.
 
-*The witness barrier.* The model's witnesses do not touch the ledger (`Exec.Oracles.witness` sees
-only the private state). In the runtime the built-in `createZswapOutput` inserts its coin's
-commitment into the call context's `com_indices` (`insertCommitment`, compact-runtime `zswap.js`),
-and a coin-storing write (`writeCoin`, `insertCoin`, ...) reads it back from there
-(`idxStack` on the context). The model cannot see the difference, so the proofs do not prevent a
-ledger statement from moving above such a witness; the runtime then refuses the call ("expected a
-cell, received null"). This was reachable with `ledgerMerge` as committed in 353606e: a circuit
-`Kernel.self; if b { count.write 1 }; n = count.read; createZswapOutput(coin, self);
+*The witness barrier (as first done).* The model's witnesses did not touch the ledger
+(`Exec.Oracles.witness` saw only the private state). In the runtime the built-in `createZswapOutput`
+inserts its coin's commitment into the call context's `com_indices` (`insertCommitment`,
+compact-runtime `zswap.js`), and a coin-storing write (`writeCoin`, `insertCoin`, ...) reads it back
+from there (`idxStack` on the context). The model could not see the difference, so the proofs did not
+prevent a ledger statement from moving above such a witness; the runtime then refuses the call
+("expected a cell, received null"). This was reachable with `ledgerMerge` as committed in 353606e: a
+circuit `Kernel.self; if b { count.write 1 }; n = count.read; createZswapOutput(coin, self);
 held.writeCoin(coin, self)` (`lo_barrier.store`, built by test/ledger-opt.sh) had the coin-storing
 write merged into the read's request, above the witness, and both calls of it fail in the runtime
 with the merge as committed then (reproduced with `ledger_headroom.py --merge ... seqgap`, which has
-no barrier). The syntactic restriction that covers it (`ctxWitness`, Damp/Optimize/LedgerFrame.lean:
-`createZswapOutput` and every cross-contract call `call:…`; `createZswapInput` and `ownPublicKey`
-work only on the Zswap local state, which no ledger statement reads):
-
-* `ledgerMerge` and `ledgerHoist` (`lcommutes`) never move a ledger statement above one;
-* `ledgerReuse` forgets every fact about the call context's slot 1 (`com_indices`, or a path that
-  does not start with a constant key) at one (`keepsAcrossWitness`); facts about the contract
-  state and the other context slots survive (contract calls: `CallIsolated`);
-* `ledgerDeadStore` does not look for the overwriting write past one.
-
-Each restriction only removes rewrites, so the proofs are unchanged in substance. Tested by
-`lo_barrier` in `executor/test/ledger-opt.mjs` (a direct `createZswapOutput` and a
-`receiveShielded`, each followed by `writeCoin` and reads, a failing call), which fails on a build
-without the barrier and passes with it.
+no barrier). The first fix was a syntactic restriction outside the proof (`ctxWitness` then
+`createZswapOutput` and every `call:…`); it missed user witnesses, which read the contract state
+(below). It is now replaced by barriers the proofs use; see "Witnesses that see the ledger".
 
 *Measured* (gas of the 99 successful benchmark calls, `LO_ALL=1 LO_OUT=... ./test/ledger-opt.sh`,
 `lo_barrier` excluded; requests counted by wrapping `QueryContext.query`; rows and instructions do
@@ -637,6 +646,34 @@ above, gave the last 1.07 x10^9.) Predicted by `bench/ledger_headroom.py --merge
 implementing (modes `seqgap+eff+eff05+nozswap+nocap+reorder` and parts, gas from the simulated
 builds): effects -12.89 (slots 6 to 8 would add -1.07), cap -3.62 (one refused cached `ins` is in
 `adt_merkle.test_historic`, which always fails: 0), hoisting -2.15 x10^9.
+
+#### Witnesses that see the ledger
+
+The executor's definition now gives a witness the ledger state (`Exec.WitnessOracle`,
+Damp/Executor/Spec.lean), and `Pass.SoundLedger` holds for every witness oracle doing what the
+runtime's witnesses do (`WitnessesOK`, Damp/Executor/Witnesses.lean; docs/ledger-model.md, "What a
+witness can touch", tested by `test/witness-effects.sh`): a user's witness is handed the contract's
+current state and may read it; `createZswapOutput` writes call-context slot 1; `ownPublicKey`,
+`createZswapInput` and calls are isolated from the ledger. The barriers are what the proofs need
+(`ctxWitness`, `stateWitness`, `isolatedWitness`, Damp/Optimize/LedgerFrame.lean): `ledgerDeadStore`
+no longer looks past a user's witness, and `ledgerMerge` no longer moves a statement above one (both
+did, and changed what the witness saw: `lo_witness.deadstore` and `lo_witness.merge` in
+test/ledger-opt.sh, from the audit's finding F1); calls are no longer barriers for any pass, nor is
+`createZswapOutput` for `ledgerDeadStore`; `ledgerHoist` moves context reads above user witnesses.
+
+*Measured* (`LO_ALL=1 LO_OUT=... ./test/ledger-opt.sh`, the 99 successful benchmark calls, the
+barrier contracts `lo_*` not tallied):
+
+| | readTime (10^6) | computeTime (10^9) | bytesWritten | requests |
+|---|---|---|---|---|
+| `--O2` | 137 190 | 1 116.07 | 365 235 | 867 |
+| `--O2 --ledger-opt`, barrier `createZswapOutput`/`call:` (unsound for user witnesses) | 82 365 | 283.23 | 40 321 | 172 |
+| `--O2 --ledger-opt`, the barriers `WitnessesOK` justifies | 82 365 | **287.53** | **40 321** | **176** |
+
+The four requests (4.30 x10^9 computeTime) are merges that moved a ledger statement above a user's
+witness; they are no longer made. ledgerMerge: 57 circuits merged, ledger programs 526 -> 210 over the
+benchmark programs and the barrier contracts.
+
 
 *Not done: dead stores across writes of other top-level fields* (21, `pm_19287`). After merging
 they are worth much less than before it: -1.97 x10^9 computeTime, -1 785 x10^6 readTime, 0 bytes

@@ -140,10 +140,10 @@ theorem step_sim (p : Prims) (O : Oracles ω σ) (s s' : State ω σ) (st : Stmt
                 | none => simp [hargs] at h
                 | some argVals =>
                     simp only [hargs, Option.bind_some] at h
-                    cases hw : O.witness name argVals s.private_ with
+                    cases hw : O.witness name argVals s.private_ s.ledger with
                     | none => simp [hw] at h
                     | some res =>
-                        obtain ⟨vals, ps'⟩ := res
+                        obtain ⟨vals, ps', ls'⟩ := res
                         simp only [hw, Option.bind_some] at h
                         by_cases hv : vals.isEmpty
                         · simp only [hv, ite_true, Option.pure_def, Option.some.injEq] at h
@@ -168,10 +168,10 @@ theorem step_sim (p : Prims) (O : Oracles ω σ) (s s' : State ω σ) (st : Stmt
                     | none => simp [hargs] at h
                     | some argVals =>
                         simp only [hargs, Option.bind_some] at h
-                        cases hw : O.witness name argVals s.private_ with
+                        cases hw : O.witness name argVals s.private_ s.ledger with
                         | none => simp [hw] at h
                         | some res =>
-                            obtain ⟨vals, ps'⟩ := res
+                            obtain ⟨vals, ps', ls'⟩ := res
                             simp only [hw, Option.bind_some] at h
                             cases ha : assign s.env outs vals with
                             | none => simp [ha] at h

@@ -28,12 +28,14 @@ import Examples.OptGuards
 import Examples.OptShareHashes
 import Examples.OptLedgerReuse
 import Examples.OptLedgerDeadStore
+import Examples.WitnessBarrier
 import Examples.OptLedgerFrame
 import Examples.OptLedgerMerge
 import Examples.TokenProofs
 import Examples.OptLedgerMergeEffects
 import Examples.OptLedgerHoist
 import Examples.CoinProofs
+import Examples.PruneSound
 import Examples.Casts
 import Examples.EmitAgrees
 import Examples.Semantics

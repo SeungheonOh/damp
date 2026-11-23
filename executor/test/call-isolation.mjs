@@ -12,9 +12,10 @@
 //
 // Every query any contract makes is logged (the runtime's
 // `QueryContext.prototype.query` is wrapped): the address, the instructions,
-// the contract state and effects before and after. For every contract taking
-// part in a call, its queries must thread: each starts from the contract state
-// and effects the previous one of the same contract left. The only exception
+// the contract state, effects and call context before and after. For every
+// contract taking part in a call, its queries must thread: each starts from the
+// contract state, effects and call context the previous one of the same
+// contract left. The only exception
 // allowed is the runtime's own claim of a call made by a Damp caller, which the
 // executor undoes and the caller's circuit then makes again with the same
 // instructions from the same state (docs/calls.md): a query whose successor has
@@ -34,7 +35,9 @@
 //      happens and checks the caller's state is unchanged.
 //   6. caller.via(caller, 4): a contract calling itself (refused).
 //
-// Usage: node test/call-isolation.mjs <dir of Damp contract.json builds> <dir of back's compactc build>
+// Usage: node test/call-isolation.mjs <dir of Damp contract.json builds> <dir of back's compactc build> [results.json]
+// With a third argument, the result (or refusal) of every call and every contract's final state are
+// written there (test/calls-isolation.sh compares the --O2 and --O2 --ledger-opt callers with it).
 
 import path from 'node:path';
 import fs from 'node:fs';
@@ -69,7 +72,7 @@ function canon(x) {
 const sv = (v) => toJson(canon(v.encode()), 0);
 function snapshot(qc) {
   const st = qc.toVmStack();
-  return { state: sv(st.get(2)), effects: sv(st.get(1)) };
+  return { state: sv(st.get(2)), effects: sv(st.get(1)), context: sv(st.get(0)) };
 }
 
 let log = [];
@@ -133,7 +136,9 @@ function threading(entries, startStates) {
         // Other contracts ran in between: a call. Their queries may not have changed ours.
         info.gaps++;
       }
-      const same = (a, b) => a.state === b.state && a.effects === b.effects;
+      // The call context too (address, commitment indices, block, ...): a call may change none of
+      // the caller's ledger state (`CallIsolated`, Damp/Executor/Witnesses.lean).
+      const same = (a, b) => a.state === b.state && a.effects === b.effects && (a.context === undefined || b.context === undefined || a.context === b.context);
       if (cur === undefined || same(q.before, cur)) {
         if (k > 0 && q.i > qs[k - 1].i + 1) info.gapsUnchanged++;
       } else if (k > 0 && q.ops === qs[k - 1].ops && same(q.before, qs[k - 1].before) &&
@@ -141,7 +146,7 @@ function threading(entries, startStates) {
         // The previous query was the runtime's own claim, undone by the executor; this is the circuit's.
         info.undone++;
       } else {
-        problems.push(`${name}: query ${k} starts from ${q.before.state === cur.state ? 'other effects' : 'another contract state'} than its previous query left`);
+        problems.push(`${name}: query ${k} starts from ${q.before.state !== cur.state ? 'another contract state' : q.before.effects !== cur.effects ? 'other effects' : 'another call context'} than its previous query left`);
       }
       cur = q.after;
     }
@@ -208,8 +213,8 @@ const show = (n) => {
 
 const r1 = await call('caller.bump(5)', 'caller', 'bump', [5n], 'ok');
 report(r1.entries.some((e) => nameAt[e.address] === 'adder'), 'caller.bump(5): the callee wrote its own state', `adder now ${show('adder')}`);
-await call('caller.twice(1, 2)', 'caller', 'twice', [1n, 2n], 'ok');
-await call('top.go(9)', 'top', 'go', [9n], 'ok');
+const r2 = await call('caller.twice(1, 2)', 'caller', 'twice', [1n, 2n], 'ok');
+const r3 = await call('top.go(9)', 'top', 'go', [9n], 'ok');
 const r4 = await call('back.addTo(7)', 'back', 'addTo', [7n], 'ok');
 report(r4.th.per.caller?.queries > 0, 'back.addTo(7): caller.bump ran as a callee (Damp executor between two calls)', `caller now ${show('caller')}`);
 const before = show('caller');
@@ -226,7 +231,20 @@ report(show('caller') === before, 'the caller\'s ledger state is unchanged after
   forged[firstAfter] = { ...forged[firstAfter], before: { ...forged[firstAfter].before, state: forged[firstAfter].before.state + ' ' } };
   report(!threading(forged, {}).ok, 'the check detects a caller state changed during a call (forged log)');
 }
-await call('caller.via(caller, 4) [self-call]', 'caller', 'via', [ref('caller'), 4n], 'refused');
+// The same with the caller's call context changed during the call (the check compares it too).
+{
+  const forged = r1.entries.map((e) => ({ ...e }));
+  const firstAfter = forged.findIndex((e, i) => nameAt[e.address] === 'caller' && i > 0 && nameAt[forged[i - 1].address] !== 'caller');
+  forged[firstAfter] = { ...forged[firstAfter], before: { ...forged[firstAfter].before, context: forged[firstAfter].before.context + ' ' } };
+  report(!threading(forged, {}).ok, 'the check detects a caller call context changed during a call (forged log)');
+}
+const r6 = await call('caller.via(caller, 4) [self-call]', 'caller', 'via', [ref('caller'), 4n], 'refused');
+if (process.argv[4]) {
+  const res = (r) => (r.error ? 'refused' : toJson(r.run.result, 0));
+  const states = Object.fromEntries(Object.keys(addresses).filter((n) => world.state(addresses[n])).map((n) => [n, show(n)]));
+  fs.writeFileSync(process.argv[4], JSON.stringify({ bump: res(r1), twice: res(r2), go: res(r3), addTo: res(r4), via: res(r5),
+    self: res(r6), states }));
+}
 
 console.log(failures === 0 ? 'ALL PASS' : `${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

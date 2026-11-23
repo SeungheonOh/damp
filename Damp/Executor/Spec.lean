@@ -13,9 +13,20 @@ JavaScript executor does the same thing as this definition, step for step.
 
 The two things the executor cannot compute for itself are parameters:
 
-* the witnesses, which run the user's own code against their private state;
+* the witnesses, which run the user's own code against their private state,
+  and the runtime's built-in witnesses and cross-contract calls;
 * the ledger, Midnight's on-chain virtual machine, which runs the public
   instructions against the contract's state and reports what they read.
+
+A witness is given the ledger state as well as the private state, and returns
+both: in the runtime a user's witness is handed the contract's current state
+(`WitnessContext.ledger`), and the built-in `createZswapOutput` inserts its
+coin's commitment into the call context. What each witness may actually see
+and change is not part of this definition; it is stated as hypotheses on the
+oracle where it matters (`Damp/Executor/Witnesses.lean`, docs/ledger-model.md,
+"What a witness can touch"). The old interface, where a witness sees only the
+private state, is the special case `liftWitness`
+(`Damp/Executor/Isolated.lean`, `Exec.run_lift`).
 -/
 import Damp.IR.Semantics
 
@@ -23,12 +34,26 @@ namespace Damp.Exec
 open Damp.IR
 open Damp.Zkir (Prims Group)
 
-/-- What the executor is given to work with. `ω` is the user's private state,
-    `σ` the public ledger state. Either may refuse (`none`). -/
+/-- A witness oracle: run the named witness on the field elements of its
+    arguments, from a private state and a ledger state; the field elements of
+    its result, the private state afterwards and the ledger state afterwards,
+    or a refusal (`none`). -/
+abbrev WitnessOracle (ω σ : Type) := String → List Fr → ω → σ → Option (List Fr × ω × σ)
+
+/-- A witness oracle that neither sees nor changes the ledger state, given by
+    its answers on the private state alone. -/
+def liftWitness {ω σ : Type} (w : String → List Fr → ω → Option (List Fr × ω)) : WitnessOracle ω σ :=
+  fun n args x l => (w n args x).map fun (r, x') => (r, x', l)
+
+/-- What the executor is given to work with. `ω` is everything off the
+    contract's ledger the call carries (the user's private state, the call's
+    Zswap local state, the other contracts a call may run), `σ` the public
+    ledger state of the contract. Either may refuse (`none`). -/
 structure Oracles (ω σ : Type) where
-  /-- Run the named witness on its arguments: the field elements of its
-      result, and the private state afterwards. -/
-  witness : String → List Fr → ω → Option (List Fr × ω)
+  /-- Run the named witness on its arguments, seeing the private state and the
+      ledger state: the field elements of its result, and both states
+      afterwards. -/
+  witness : WitnessOracle ω σ
   /-- Run on-chain instructions: the field elements they read, in order, and
       the ledger state afterwards. Each `popeq` arrives with an empty result. -/
   ledger : List (Impact.Op Fr) → σ → Option (List Fr × σ)
@@ -86,16 +111,16 @@ def step (p : Prims) (O : Oracles ω σ) (s : State ω σ) : Stmt → Option (St
         -- private state.
         if g = 1 then
           let argVals ← Expr.evalList p s.env args
-          let (vals, private_) ← O.witness name argVals s.private_
-          if vals.isEmpty then pure { s with private_ } else none
+          let (vals, private_, ledger) ← O.witness name argVals s.private_ s.ledger
+          if vals.isEmpty then pure { s with private_, ledger } else none
         else pure s
       else
         let active ← asBool g
         if active then
           let argVals ← Expr.evalList p s.env args
-          let (vals, private_) ← O.witness name argVals s.private_
+          let (vals, private_, ledger) ← O.witness name argVals s.private_ s.ledger
           let env ← assign s.env outs vals
-          pure { s with env, private_, priv := s.priv ++ vals }
+          pure { s with env, private_, ledger, priv := s.priv ++ vals }
         else
           -- Not asked: its results are zero, and nothing is recorded.
           let env ← assign s.env outs (outs.map fun _ => 0)

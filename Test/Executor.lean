@@ -101,6 +101,14 @@ structure Case where
       Fields, or `none` to throw. -/
   answers : List (Option (List Nat)) := []
   expect : Expect
+  /-- Also run the circuit as each optimization level ships it (`buildPass`),
+      through the JS executor and the definition, and compare every level's
+      ZKIR (`Emit.circuit`) with the definition's outcome. -/
+  levels : Bool := false
+  /-- The JS witness answers with the value of ledger cell `c0` as its
+      witness context shows it (the ledger as the statements before left it),
+      instead of a scripted answer. -/
+  peek : Bool := false
 
 /-- A witness statement whose shape is a vector of `k` Fields. -/
 def wit (guard : Expr) (outs : List (Var × Option Range)) (k : Nat) (args : List Expr := []) : Stmt :=
@@ -309,7 +317,32 @@ def cases : List Case :=
     { what := "one argument for two input variables",
       fn := circ "inputs_mismatch" 1 [] [] (inputs := [0, 1]), args := [1], expect := .failInputs },
     { what := "an output fails", fn := circ "outputs_fail" 1 [] [bad], args := [1], expect := .failOutputs },
-    { what := "an output reads an unbound variable", fn := circ "outputs_unbound" 0 [] [V 50], expect := .ok } ]
+    { what := "an output reads an unbound variable", fn := circ "outputs_unbound" 0 [] [V 50], expect := .ok },
+    -- a binding nothing reads that can fail (audit F2): every level must still refuse
+    { what := "dead binding that fails", fn := circ "dead_fail" 1 [.bind 10 "v" (.lt 8 (V 0) (K 0))] [K 0],
+      args := [1000], expect := .failAt 0, levels := true },
+    { what := "dead binding that succeeds", fn := circ "dead_fail" 1 [.bind 10 "v" (.lt 8 (V 0) (K 0))] [K 0],
+      args := [3], expect := .ok, levels := true },
+    { what := "binding whose only use v*0 the optimizer folds, fails",
+      fn := circ "dead_mul0" 1 [.bind 10 "v" (.lt 8 (V 0) (K 0))] [.mul (V 10) (K 0)],
+      args := [1000], expect := .failAt 0, levels := true },
+    { what := "binding whose only use v*0 the optimizer folds, succeeds",
+      fn := circ "dead_mul0" 1 [.bind 10 "v" (.lt 8 (V 0) (K 0))] [.mul (V 10) (K 0)],
+      args := [3], expect := .ok, levels := true },
+    { what := "binding whose only use v==v the optimizer folds, fails",
+      fn := circ "dead_eqself" 1 [.bind 10 "v" (.lt 8 (V 0) (K 0))] [.eq (V 10) (V 10)],
+      args := [1000], expect := .failAt 0, levels := true },
+    -- a witness that reads the ledger (audit F1, mutation J6): it must see each write before it
+    { what := "witness reads the ledger between two writes",
+      fn := circ "peek" 1
+        [.ledger (K 1) [] (writeOps 0 (V 0)),
+         wit (K 1) [(10, none)] 1,
+         .assert (.eq (V 10) (V 0)) "first peek sees the first write",
+         .ledger (K 1) [] (writeOps 0 (.add (V 0) (K 1))),
+         wit (K 1) [(11, none)] 1,
+         .ledger (K 1) [12] (readOps 0 (V 12)),
+         .assert (.eq (V 11) (V 12)) "second peek sees the second write"] [V 10, V 11],
+      args := [7], peek := true, expect := .ok } ]
 
 /-- Circuits of `cases`, each name once. -/
 def synCircuits : List Circuit :=
@@ -321,10 +354,24 @@ def synthetic : Contract :=
                { name := "n", index := 2, kind := .counter }],
     circuits := synCircuits }
 
-/-- What the JS executor is given: the optimized examples, and the synthetic contract as written. -/
-def contracts : List Contract := examples.map Contract.optimize ++ [synthetic]
+/-- The optimization levels the `levels` cases also run at, with the name of
+    the contract holding their circuits as that level ships them. -/
+def levelContracts : List (OptLevel × String) :=
+  [(.default, "synthetic_default"), (.full, "synthetic_O2"), (.max, "synthetic_O3")]
+
+/-- The synthetic contract's circuits that `levels` cases run, as `level` ships them. -/
+def levelContract (level : OptLevel) (name : String) : Contract :=
+  let fns := (synCircuits.filter fun f => cases.any fun c => c.levels && c.fn.name == f.name).map (buildPass level)
+  { synthetic with «name» := name, circuits := fns }
+
+/-- What the JS executor is given: the optimized examples, the synthetic
+    contract as written, and its `levels` circuits as each level ships them. -/
+def contracts : List Contract :=
+  examples.map Contract.optimize ++ [synthetic] ++ levelContracts.map fun (l, n) => levelContract l n
 
 def caseLabel (i : Nat) (c : Case) : String := s!"synthetic {i}: {c.fn.name}: {c.what}"
+
+def levelLabel (n : String) (i : Nat) (c : Case) : String := s!"{n} {i}: {c.fn.name}: {c.what}"
 
 /-! ## Export -/
 
@@ -338,12 +385,16 @@ def exportAll (dir : System.FilePath) : IO Unit := do
     IO.ofExcept c.check
     IO.FS.createDirAll (dir / "contracts" / c.name)
     IO.FS.writeFile (dir / "contracts" / c.name / "contract.json") ((Export.contract c).pretty ++ "\n")
-  let calls := cases.zipIdx.map fun (c, i) =>
-    Json.mkObj [("label", caseLabel i c), ("contract", "synthetic"), ("circuit", c.fn.name),
+  let entry (label con : String) (c : Case) : Json :=
+    Json.mkObj [("label", label), ("contract", con), ("circuit", c.fn.name),
       ("args", .arr (c.args.map fun a => Json.str (toString a)).toArray),
       ("witness", .arr (c.answers.map fun
         | some xs => .arr (xs.map fun a => Json.str (toString a)).toArray
-        | none => .null).toArray)]
+        | none => .null).toArray),
+      ("peek", if c.peek then Json.str "c0" else .null)]
+  let calls := cases.zipIdx.map (fun (c, i) => entry (caseLabel i c) "synthetic" c) ++
+    (levelContracts.flatMap fun (_, n) =>
+      cases.zipIdx.filterMap fun (c, i) => if c.levels then some (entry (levelLabel n i c) n c) else none)
   IO.FS.writeFile (dir / "synthetic.json") ((Json.arr calls.toArray).pretty ++ "\n")
   IO.println s!"wrote {contracts.length} contracts and {cases.length} synthetic calls to {dir}"
 
@@ -373,10 +424,11 @@ def Ask.show (a : Ask) : String :=
 abbrev Script := List (Option (List Fr))
 
 def scripted (ref : IO.Ref (Array Ask)) : Exec.Oracles Script Script where
-  «witness» name args ω :=
+  -- the scripted witnesses leave the ledger state (here the ledger's script) as it was
+  «witness» name args ω σ :=
     if logAsk ref { isWitness := true, name, args } then
       match ω with
-      | some vals :: rest => some (vals, rest)
+      | some vals :: rest => some (vals, rest, σ)
       | _ => none
     else none
   «ledger» req σ :=
@@ -557,9 +609,49 @@ def sameResult (a b : Option Result) : Bool :=
       a.private_ == b.private_ && a.«ledger» == b.«ledger»
   | _, _ => false
 
-/-- Compare one call. `.ok note` or `.error why`. -/
+/-- The ZKIR the emitter returns for `c`, against the definition's outcome on
+    the same call: a completed call's transcripts are accepted with the same
+    outputs and public inputs; when the definition fails, the transcripts the
+    oracles were asked for (the scripted answers, in order) are refused.
+    `none` if the ZKIR agrees. -/
+def zkirDisagrees (c : Circuit) (inputs : List Fr) (wit led : Script) (res : Option Result) : Option String :=
+  match Emit.circuit c with
+  | .error e => some s!"the emitter refuses the circuit: {e}"
+  | .ok src =>
+      match res with
+      | some r =>
+          if src.run Crypto.prims inputs r.priv r.pub == some { outputs := r.outputs, groups := r.groups } then none
+          else some "the ZKIR does not accept what the definition recorded"
+      | none =>
+          let priv := wit.filterMap id |>.flatten
+          let pub := led.filterMap id |>.flatten
+          if (src.run Crypto.prims inputs priv pub).isNone then none
+          else some "the definition fails but the ZKIR accepts the recorded answers"
+
+/-- The circuit as a level ships it, against the circuit as written, on the
+    same scripted answers: both fail, or both complete with the same outputs,
+    private transcript, ledger reads and active public inputs. -/
+def levelDisagrees (c orig : Circuit) (inputs : List Fr) (wit led : Script) : Option String :=
+  let a := Exec.run Crypto.prims (scripted' ) c inputs wit led
+  let b := Exec.run Crypto.prims (scripted' ) orig inputs wit led
+  match a, b with
+  | none, none => none
+  | some a, some b =>
+      if a.outputs == b.outputs && a.priv == b.priv && a.pub == b.pub && activeInputs a.groups == activeInputs b.groups
+      then none else some "the shipped circuit and the circuit as written complete differently"
+  | some _, none => some "the shipped circuit completes; the circuit as written fails"
+  | none, some _ => some "the shipped circuit fails; the circuit as written completes"
+where
+  scripted' : Exec.Oracles Script Script :=
+    { «witness» := fun _ _ ω σ => match ω with | some vals :: rest => some (vals, rest, σ) | _ => none,
+      «ledger» := fun _ σ => match σ with | some vals :: rest => some (vals, rest) | _ => none }
+
+/-- Compare one call. `.ok note` or `.error why`. With `zkir`, the ZKIR of the
+    circuit is also compared (`zkirDisagrees`); with `orig`, the circuit is a
+    level's shipped form of `orig` and is compared with it (`levelDisagrees`). -/
 def compare (c : Circuit) (rec : JsRecord) (pre : Option Preimage) (outFields : Option (List Fr))
-    (expect : Option Expect) : IO (Except String String × Array String) := do
+    (expect : Option Expect) (zkir : Bool := false) (orig : Option Circuit := none) :
+    IO (Except String String × Array String) := do
   -- Arguments the boundary rejected: the definition never sees them. Where they
   -- have a field form, the circuit must reject it too, before asking anything.
   if let some (.other "arguments", reason) := rec.failure then
@@ -625,6 +717,12 @@ def compare (c : Circuit) (rec : JsRecord) (pre : Option Preimage) (outFields : 
   if let some e := expect then
     unless e == got do
       return (.error s!"the definition does {repr got}, the case expects {repr e}", r)
+  if zkir then
+    if let some why := zkirDisagrees c inputs wit led run.result then return (.error why, r)
+  if let some o := orig then
+    if let some why := levelDisagrees c o inputs wit led then return (.error why, r)
+  let verdict := verdict.map fun note =>
+    note ++ (if zkir then "; the ZKIR agrees" else "") ++ (if orig.isSome then "; as written agrees" else "")
   return (verdict, r)
 
 /-! ## Main -/
@@ -633,6 +731,10 @@ def checkAll (dir : System.FilePath) : IO UInt32 := do
   let j ← IO.ofExcept (Json.parse (← IO.FS.readFile (dir / "traces.json")))
   let calls ← IO.ofExcept (j.getObjValAs? (Array Json) "calls")
   let expects : List (String × Expect) := cases.zipIdx.map fun (c, i) => (caseLabel i c, c.expect)
+  let levelCases : List String :=
+    cases.zipIdx.filterMap fun (c, i) => if c.levels then some (caseLabel i c) else none
+  let levelLabels : List String := levelContracts.flatMap fun (_, n) =>
+    cases.zipIdx.filterMap fun (c, i) => if c.levels then some (levelLabel n i c) else none
   let mut ok := 0
   let mut bad := 0
   let mut nSyn := 0
@@ -655,12 +757,16 @@ def checkAll (dir : System.FilePath) : IO UInt32 := do
         | none => pure none
       let expect := expects.lookup label
       if cname == "synthetic" && expect.isNone then throw (IO.userError "no such synthetic case")
-      compare circ rec_ pre outFields expect : IO _).toBaseIO
+      let atLevel := levelContracts.any (·.2 == cname)
+      if atLevel && !levelLabels.contains label then throw (IO.userError "no such level case")
+      let orig := if atLevel then synCircuits.find? (·.name == cn) else none
+      if atLevel && orig.isNone then throw (IO.userError s!"no synthetic circuit {cn}")
+      compare circ rec_ pre outFields expect (zkir := atLevel || levelCases.contains label) (orig := orig) : IO _).toBaseIO
     match res with
     | .ok (.ok note, tags) =>
         ok := ok + 1
         IO.println s!"ok    {label}  [{note}]"
-        if label.startsWith "synthetic" then
+        if label.startsWith "synthetic " then
           nSyn := nSyn + 1
           for t in tags do cov := cov.insert t (cov.getD t 0 + 1)
     | .ok (.error why, _) =>
@@ -671,7 +777,7 @@ def checkAll (dir : System.FilePath) : IO UInt32 := do
         IO.println s!"FAIL  {label}  {e}"
   -- Every synthetic case must have been run.
   let labels := calls.toList.filterMap fun c => (c.getObjValAs? String "label").toOption
-  for (l, _) in expects do
+  for l in expects.map (·.1) ++ levelLabels do
     unless labels.contains l do
       bad := bad + 1
       IO.println s!"FAIL  {l}  not run by the JS executor"

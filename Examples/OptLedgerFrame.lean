@@ -126,7 +126,7 @@ private def σ₀ : LedgerState where
 private def noWitness : String → List Fr → Unit → Option (List Fr × Unit) := fun _ _ _ => none
 
 private def runAt (σ : LedgerState) (c : Circuit) (inputs : List Nat) : String :=
-  match Exec.run Crypto.prims (oracles merkleHooks noWitness) c (inputs.map Fr.ofNat) () σ with
+  match Exec.run Crypto.prims (oracles merkleHooks (Exec.liftWitness noWitness)) c (inputs.map Fr.ofNat) () σ with
   | none => "fails"
   | some r => reprStr (r.outputs.map (·.val), r.priv.map (·.val), r.ledger.state, r.ledger.context, r.ledger.effects)
 

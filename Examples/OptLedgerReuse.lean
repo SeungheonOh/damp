@@ -53,14 +53,15 @@ private def after (c : Circuit) : String := shape c.ledgerReuse
 #guard after (mk 1 [rd one 1 10, wr one 1 (.add (.var 10) (.var 0)), rd one 1 11] [.var 11]) == "LLB"
 -- A read of the call context survives writes of the contract state.
 #guard after (mk 1 [ctx 10, wr one 1 (.var 0), ctx 12] [.var 12]) == "LLBB"
--- a lookup in the context's slot 1 (`com_indices`) is not kept across `createZswapOutput` or a contract
--- call: the runtime's `createZswapOutput` adds to it (`keepsAcrossWitness`); slot 0 (the address) is
+-- a lookup in the context's slot 1 (`com_indices`) is not kept across `createZswapOutput`: the
+-- runtime's `createZswapOutput` adds to it (`ctxWitness`, `keepsAcrossWitness`); slot 0 (the address) is.
+-- A contract call is isolated from the caller's ledger (`CallIsolated`), so it keeps every fact.
 #guard after (mk 1 [ctxIdx 10, .witness one "createZswapOutput" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) ==
   "LWL"
-#guard after (mk 1 [ctxIdx 10, .witness one "call:I.c" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) == "LWL"
+#guard after (mk 1 [ctxIdx 10, .witness one "call:I.c" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) == "LWB"
 #guard after (mk 1 [ctxIdx 10, .witness one "w" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) == "LWB"
 #guard after (mk 1 [ctx 10, .witness one "createZswapOutput" [.var 0] [] (.tuple []), ctx 12] [.var 12]) == "LWBB"
--- a fact about the contract state survives them (`CallIsolated`; the built-ins do not touch it)
+-- a fact about the contract state survives them (`createZswapOutput` changes only call-context slot 1)
 #guard after (mk 0 [rd one 1 10, .witness one "createZswapOutput" [] [] (.tuple []), rd one 1 11] [.var 11]) == "LWB"
 -- Reads of other fields in between do not stop it.
 #guard after (mk 0 [rd one 1 10, rd one 2 11, rd one 1 12] [.var 12]) == "LLB"
@@ -109,7 +110,7 @@ private def noWitness : String → List Fr → Unit → Option (List Fr × Unit)
 
 /-- The executor's outputs, private transcript and final ledger state, printed. -/
 private def run (c : Circuit) (inputs : List Nat) : String :=
-  match Exec.run Crypto.prims (oracles merkleHooks noWitness) c (inputs.map Fr.ofNat) () σ₀ with
+  match Exec.run Crypto.prims (oracles merkleHooks (Exec.liftWitness noWitness)) c (inputs.map Fr.ofNat) () σ₀ with
   | none => "fails"
   | some r => reprStr (r.outputs.map (·.val), r.priv.map (·.val), r.ledger.state, r.ledger.context, r.ledger.effects)
 

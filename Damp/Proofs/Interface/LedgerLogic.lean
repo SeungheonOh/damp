@@ -718,9 +718,9 @@ theorem XRuns.askWitness {α : Type} [Value α] (hrt : Value.RoundTrip α) (name
     {argVals : List Fr} {s : Build} {st : Exec.State ω σ} (hw : 0 < Value.width α)
     (hg : GuardIs p s st.runState true) (hargs : Expr.evalList p st.env args = some argVals) :
     XRuns p O (Damp.askWitness name α args) s st
-      (∃ ys w', O.witness name argVals st.private_ = some (ys, w') ∧ ys.length = Value.width α ∧
+      (∃ ys w' l', O.witness name argVals st.private_ st.ledger = some (ys, w', l') ∧ ys.length = Value.width α ∧
         rangesHold (Value.ranges α) ys = true)
-      (fun r e w l => l = st.ledger ∧ ∃ ys, O.witness name argVals st.private_ = some (ys, w) ∧
+      (fun r e w l => ∃ ys, O.witness name argVals st.private_ st.ledger = some (ys, w, l) ∧
         rangesHold (Value.ranges α) ys = true ∧ Value.Is p e r ys) := by
   obtain ⟨h1, h2, h3, h4⟩ := askWitness_run name α args s
   have hne : ((List.range' s.next (Value.width α)).zip (Value.ranges α)).isEmpty = false := by
@@ -731,42 +731,42 @@ theorem XRuns.askWitness {α : Type} [Value α] (hrt : Value.RoundTrip α) (name
       rw [hr] at this; rw [this]; simp [List.range'_succ]
   have hstep : Exec.steps p O [.witness s.guard name args ((List.range' s.next (Value.width α)).zip (Value.ranges α))
       (Value.shape α)] st =
-      (O.witness name argVals st.private_).bind fun r =>
+      (O.witness name argVals st.private_ st.ledger).bind fun r =>
         (Exec.assign st.env ((List.range' s.next (Value.width α)).zip (Value.ranges α)) r.1).map fun env =>
-          { st with env, private_ := r.2, priv := st.priv ++ r.1 } := by
+          { st with env, private_ := r.2.1, ledger := r.2.2, priv := st.priv ++ r.1 } := by
     rw [steps_single]
     simp only [Exec.step, guard_eval hg, hne, Bool.false_eq_true, ↓reduceIte, Option.bind_eq_bind,
       Option.bind_some, show asBool (Fr.ofBool true) = some true from rfl, hargs]
-    cases O.witness name argVals st.private_ with
+    cases O.witness name argVals st.private_ st.ledger with
     | none => rfl
     | some r =>
-      obtain ⟨vals, w'⟩ := r
+      obtain ⟨vals, w', l'⟩ := r
       simp only [Option.bind_some]
       cases Exec.assign st.env ((List.range' s.next (Value.width α)).zip (Value.ranges α)) vals <;> rfl
   refine ⟨by rw [h2]; exact Nat.le_add_right _ _, h3, _, h4, ?_, ?_⟩
   · rw [hstep]
     constructor
     · intro h
-      cases hw' : O.witness name argVals st.private_ with
+      cases hw' : O.witness name argVals st.private_ st.ledger with
       | none => simp [hw'] at h
       | some r =>
-        obtain ⟨vals, w'⟩ := r
+        obtain ⟨vals, w', l'⟩ := r
         rw [hw'] at h
         cases ha : Exec.assign st.env ((List.range' s.next (Value.width α)).zip (Value.ranges α)) vals with
         | none => simp [ha] at h
         | some env' =>
           obtain ⟨hv, -, hr⟩ := assign_range' (Value.ranges α) s.next st.env vals env' ha
-          exact ⟨vals, w', rfl, by rw [← hv]; simp [Value.width], hr⟩
-    · rintro ⟨ys, w', hw', hl, hr⟩
+          exact ⟨vals, w', l', rfl, by rw [← hv]; simp [Value.width], hr⟩
+    · rintro ⟨ys, w', l', hw', hl, hr⟩
       obtain ⟨env', ha⟩ := assign_range'_some (Value.ranges α) s.next st.env ys hl hr
       rw [hw']
       simp [show Value.width α = (Value.ranges α).length from rfl, ha]
   · intro st' h'
     rw [hstep] at h'
-    cases hw' : O.witness name argVals st.private_ with
+    cases hw' : O.witness name argVals st.private_ st.ledger with
     | none => simp [hw'] at h'
     | some r =>
-      obtain ⟨vals, w'⟩ := r
+      obtain ⟨vals, w', l'⟩ := r
       rw [hw'] at h'
       cases ha : Exec.assign st.env ((List.range' s.next (Value.width α)).zip (Value.ranges α)) vals with
       | none => simp [ha] at h'
@@ -780,7 +780,7 @@ theorem XRuns.askWitness {α : Type} [Value α] (hrt : Value.RoundTrip α) (name
           rw [readVarsAt_eq_range']; exact hv
         have := read_value_is (p := p) hrt hv'
         rw [readVarsAt_eq_range'] at this
-        exact this.imp fun e h => ⟨rfl, vals, rfl, hr, h⟩
+        exact this.imp fun e h => ⟨vals, rfl, hr, h⟩
 
 /-- A witness call under a guard that is off: the oracle is not asked, and the
     result is zero (every range of the type must accept 0). -/

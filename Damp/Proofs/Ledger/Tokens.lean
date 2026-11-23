@@ -145,7 +145,7 @@ theorem receiveUnshielded_runs (color : Bytes 32) (amount : Uint128) {s : Build}
     (a : Fr) (ha : Stable s.next st.env (fun e => amount.expr.eval p e = some a)) (ha128 : a.val < 2 ^ 128)
     (es : List SV) (m : List (AV × SV)) (hwf : st.ledger.WF) (heff : st.ledger.effects = .array es)
     (hm : es[6]? = some (.map m)) :
-    XRuns p (oracles H w) (receiveUnshielded color amount) s st
+    XRuns p (oracles H (Damp.Exec.liftWitness w)) (receiveUnshielded color amount) s st
       ((assocGet (leftKey c) m).isNone ∨ effAmount m (leftKey c) + a.val < 2 ^ 64)
       (fun _ _ w' l => w' = st.private_ ∧
         l = { st.ledger with
@@ -153,7 +153,7 @@ theorem receiveUnshielded_runs (color : Bytes 32) (amount : Uint128) {s : Build}
       := by
   rw [receiveUnshielded_eq]
   have hreq : ∀ e, Agree s.next st.env e → ∃ req, Exec.request p e (receiveUnshieldedOps color amount) = some req ∧
-      (oracles H w).ledger req st.ledger =
+      (oracles H (Damp.Exec.liftWitness w)).ledger req st.ledger =
         if (assocGet (leftKey c) m).isNone ∨ effAmount m (leftKey c) + a.val < 2 ^ 64 then
           some ([], { st.ledger with
             effects := .array (es.set 6 (.map (assocSet (leftKey c) (amountCell 6 (effAmount m (leftKey c) + a.val)) m))) })
@@ -163,7 +163,7 @@ theorem receiveUnshielded_runs (color : Bytes 32) (amount : Uint128) {s : Build}
     have h := Kernel.incUnshieldedInputs_spec H p e st.ledger es m (left color) amount ks (leftKey c) a hwf heff hm
       hks hkv hok (ha e he) ha128
     exact h
-  have h := XRuns.ledgerOp (p := p) (O := oracles H w) (s := s) (st := st) (by simp [receiveUnshieldedOps]) hg hreq
+  have h := XRuns.ledgerOp (p := p) (O := oracles H (Damp.Exec.liftWitness w)) (s := s) (st := st) (by simp [receiveUnshieldedOps]) hg hreq
   refine h.conseq ?_ ?_
   · split <;> simp_all
   · intro _ _ w' l ⟨hw, hl⟩
