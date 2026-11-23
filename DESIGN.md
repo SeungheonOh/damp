@@ -357,8 +357,8 @@ carries that side condition.
 | `MergeChecks` | `mergeChecks` (`--O2`, `--O3`): a check repeated under complementary guards (`assert (select b c 1)` and `assert (select !b c 1)`, or `constrain (select b x 0) r` and its `!b` twin when 0 passes `r`), which Compact's `if (b) { assert(x != y) } else { assert(y != x) }` produces, becomes one `assert (select b c c)` (`constrain (select b x x) r`) at the first's place, which `Simplify` reduces to `assert c` when `b` is known to be 0 or 1; the second is dropped. Only when nothing between them rebinds a variable of the second; `!b` is recognised from a binding `n := select b 0 1` whose variables are not rebound |
 | `ShareHashes` | `shareSelects` and `shareGuarded` (`--O3` only): one hash for the two arms of a conditional. `select c (H as) (H bs)` becomes `H (select c as bs)` componentwise; and in two ledger statements guarded by `c` and `!c` whose operands are the hashes `phash as` and `phash bs`, both operands become `phash (select c as bs)`, which the emitter computes once (a ledger statement evaluates its operands whatever its guard and uses them only when the guard is 1). Exact for the transient hash and any hash functions; for the persistent hash only when the inputs differ in constants that fit their byte slots and the hash refuses exactly the inputs that do not fit their alignment, as `Crypto.prims` does, hence `Pass.SoundFor Crypto.prims` |
 | `HashRanges` | `hashRanges` (`--O3` only): drops a range check that a later persistent hash of the same value implies (see `--O3` below) |
-| `LedgerReuse` | `ledgerReuse` (`--ledger-opt` only): drops a ledger read whose answer is already known, binding its variables to the earlier read's (a repeated plain read of the same path under the same guard) or to the operands of a cell write of the same key just before (single-limb values). Facts about the contract state are forgotten at any ledger statement that may write; facts about the call context survive; a fact is forgotten when a variable it mentions is rebound. Rewrites the ledger statements themselves: not `Pass.Sound`, see below |
-| `LedgerDeadStore` | `ledgerDeadStore` (`--ledger-opt` only): drops a cell write under the constant guard 1, with a constant key and a value that cannot fail, when the next ledger statement (within a bounded window of bindings, checks and witness calls) is a write of the same key under guard 1 |
+| `LedgerReuse` | `ledgerReuse` (`--ledger-opt` only): drops a ledger read whose answer is already known, binding its variables to the earlier read's (a repeated plain read of the same path under the same guard) or to the operands of a cell write of the same key just before (single-limb values). Also reads through two `idx` steps (a `Map.lookup`, a field of a structure: `ledgerOracle_read2`), and learns the value of a map insert at the same key (`ledgerOracle_mapInsert_read`, `Damp/Proofs/Ledger/OptRead.lean`). A fact about the contract state survives a ledger statement that may write when `frameKeeps` (`Damp/Optimize/LedgerFrame.lean`), a syntactic frame check that interprets the statement's program on an abstract stack, shows it leaves the fact's storage alone (every write uses a constant key that differs from the fact's path; `frame_ledgerOracle`, `Damp/Proofs/Ledger/OptFrame.lean`); otherwise it is forgotten. Facts about the call context survive; a fact is forgotten when a variable it mentions is rebound. Rewrites the ledger statements themselves: not `Pass.Sound`, see below |
+| `LedgerDeadStore` | `ledgerDeadStore` (`--ledger-opt` only): drops a cell write under the constant guard 1, with a constant key and a value that cannot fail (or constants that fit their alignment), when the next ledger statement (within a bounded window of bindings, checks and witness calls) is a write of the same key under guard 1 |
 | emitter | writes `constrain (a + k) zero` (what `assertZero` produces for `assert (a == k)`) as one `constrain_eq a (−k)` with no `add`, one row less (`Emit.zeroShift`; covered by `circuitCore_correct`); shares equal expressions; drops unused bindings (`Emit.pruneDeadBinds`: one backward liveness pass, which is already a fixpoint, since a dropped binding adds nothing to the live set; it counts the variables of witness arguments as live, though they are not emitted) |
 
 Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
@@ -399,7 +399,9 @@ Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
 `--no-opt` turns everything off.
 
 `--ledger-opt` (opt-in, with the default level, `--O2` or `--O3`; refused
-with `--no-opt`) runs `ledgerPasses` (`ledgerReuse`, then `ledgerDeadStore`)
+with `--no-opt`) runs `ledgerPasses` (`ledgerReuse`, `optimizeFull` (the `--O2`
+passes again, which fold what `ledgerReuse` forwarded, so the default level with
+`--ledger-opt` also gets them), then `ledgerDeadStore`)
 after the level's passes: the shipped circuit is
 `runPasses ledgerPasses (level.pass c)` (`buildPassWith level true`). These
 passes change what the circuit sends to the ledger: fewer reads, fewer writes.
@@ -698,10 +700,16 @@ to state what two whole contract circuits do.
 **The ledger** (`Damp/Ledger/`, `Damp/Proofs/Ledger/`): a Lean model of
 Midnight's on-chain VM on the fragment Damp emits, differentially tested
 against the real runtime (`test/vm.sh`). The ledger operations of `Cell`,
-`Counter`, `Map` and `Set` are proved against it; the theorem list, and what
+`Counter`, `Map` and `Set`, nested paths, lists, Merkle trees, the kernel's reads
+and every kernel operation that writes the effects (`Ledger/Effects.lean`: Zswap
+claims, the contract-call claim, mint and unshielded additions, with their failure
+cases) are proved against it, and the token library's operations are composed from
+them (`Ledger/Tokens.lean`: `receiveUnshielded_runs`, `Kernel.balance_spec`); the
+cross-contract call assumption `--ledger-opt` relies on is stated and shown to compose
+with `Pass.SoundLedger` in `Ledger/Calls.lean` (`CallIsolated`, `runC_eq_run`), and
+tested by `test/calls-isolation.sh`; the theorem list, and what
 the model abstracts, are in [docs/ledger-model.md](docs/ledger-model.md):
-gas, and the typed decoding of some effect slots, are not modelled; nested
-paths, lists, Merkle trees and kernel operations have no theorems yet;
+gas is not modelled; nested
 the `Counter` theorems assume the amount fits 32 bits; write-then-read is
 proved for single-limb alignments only.
 
@@ -735,9 +743,22 @@ What the proofs do not give:
 - **`--ledger-opt` beyond the ledger model.** The ledger passes are proved
   only against the Lean model of Midnight's VM from a well-formed state, and
   keep neither the public transcript nor the verifier key; the model is
-  tested against the runtime (`test/vm.sh`), and the rewritten builds are run
+  tested against the runtime (`test/vm.sh`, about 27,000 vectors, the kernel's
+  effect-writing sequences included), and the rewritten builds are run
   through the real runtime against `--O2` (`test/ledger-opt.sh`), not proved
-  equal to it. Gas is measured, not modelled.
+  equal to it. Gas is measured, not modelled. A cross-contract call is, to the
+  proof, a witness, which can neither see nor change the caller's ledger
+  state. `Damp/Proofs/Ledger/Calls.lean` states this as an assumption,
+  `CallIsolated` (a call's answer does not depend on the caller's ledger
+  state, which it hands back unchanged: contract state, effects and context),
+  and proves the guarantee under it for an executor whose calls may see and
+  change that state (`runC_eq_run`, `Pass.SoundLedger.runC`). That the
+  runtime meets the assumption is tested, not proved
+  (`test/calls-isolation.sh`: every contract's queries thread across calls,
+  repeated and nested calls and a Damp contract called between two others;
+  re-entrant calls, A calls B calls A and A calls A, are refused by the
+  runtime's re-entrancy guard before the inner call runs). A runtime that
+  allowed re-entry would void it.
 - **`--O3` beyond Damp's hash functions.** `--O3` is proved sound for runs
   with `Damp.Crypto.prims`, the Lean implementations of Poseidon and of the
   SHA-256 persistent hash. That they compute what Midnight's runtime and

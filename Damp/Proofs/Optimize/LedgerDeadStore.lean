@@ -119,18 +119,46 @@ end
 /-! ## Recognizing the pattern -/
 
 theorem droppableWrite?_spec {s : Stmt} {k : Aligned Expr} (h : droppableWrite? s = some k) :
-    ∃ e, s = .ledger (.const 1) [] [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1] ∧
-      k.vals.all Expr.isConst = true ∧ e.total [] = true := by
+    ∃ v, s = .ledger (.const 1) [] [.push false k, .push true v, .ins false 1] ∧
+      k.vals.all Expr.isConst = true ∧ droppableValue v = true := by
   unfold droppableWrite? at h
   split at h
-  · rename_i k' e
+  · rename_i k' v
     split at h
     · rename_i hc
       simp only [Option.some.injEq] at h; subst h
       simp only [Bool.and_eq_true] at hc
-      exact ⟨e, rfl, hc.1, hc.2⟩
+      exact ⟨v, rfl, hc.1, hc.2⟩
     · simp at h
   · simp at h
+
+/-- A value the pass may drop always evaluates, fits its alignment and is hashable. -/
+theorem droppableValue_spec (p : Prims) {v : Aligned Expr} (h : droppableValue v = true) (env : Env) :
+    ∃ v' vv, v.mapM (Expr.eval p env) = some v' ∧ AV.ofAligned v' = some vv ∧ vv.toHash.isSome = true := by
+  unfold droppableValue at h
+  simp only [Bool.or_eq_true] at h
+  rcases h with h | h
+  · split at h
+    · rename_i e
+      obtain ⟨x, hx⟩ := total_nil_eval p env e h
+      have hb : byteLen x.val ≤ 64 := by
+        unfold byteLen
+        split
+        · omega
+        · have h1 : x.val < 2 ^ 256 := Nat.lt_trans x.isLt (by decide)
+          have h2 : x.val.log2 < 256 := (Nat.log2_lt (by omega)).mpr h1
+          omega
+      have hlt : x.val < 2 ^ 256 := Nat.lt_trans x.isLt (by decide)
+      exact ⟨⟨[.field], [x]⟩, ⟨[.field], [x.val]⟩, by simp [Aligned.mapM, hx],
+        by simp [AV.ofAligned, AV.ofFields, atomWidth, atomOfFields, atomFits, hb], by simp [AV.toHash, hlt]⟩
+    · simp at h
+  · split at h
+    · rename_i vv hc
+      unfold constAV at hc
+      simp only [Option.bind_eq_bind] at hc
+      obtain ⟨vs, hvs, hc⟩ := bind_some_elim hc
+      exact ⟨⟨v.align, vs⟩, vv, by simp [Aligned.mapM, mapM_consts (p := p) (env := env) hvs], hc, h⟩
+    · simp at h
 
 theorem overwrites_spec {k : Aligned Expr} : ∀ {n : Nat} {rest : List Stmt}, overwrites k n rest = true →
     ∃ P v₂ R, rest = P ++ .ledger (.const 1) [] [.push false k, .push true v₂, .ins false 1] :: R ∧
@@ -199,35 +227,26 @@ theorem step_W2_eq {k : Aligned Expr} {k' : Aligned Fr} (hk : ∀ env : Env, k.m
   | none => rfl
   | some w => simp only [Option.map_some, Option.bind_some, oracles, heq w]
 
-theorem window {k : Aligned Expr} {e : Expr} (hk : k.vals.all Expr.isConst = true) (he : e.total [] = true)
+theorem window {k : Aligned Expr} {v : Aligned Expr} (hk : k.vals.all Expr.isConst = true)
+    (hv : ∀ env : Env, ∃ v' vv, v.mapM (Expr.eval p env) = some v' ∧ AV.ofAligned v' = some vv ∧
+      vv.toHash.isSome = true)
     {P R : List Stmt} {v₂ : Aligned Expr} (hP : ∀ st ∈ P, ∀ g rs ops, st ≠ .ledger g rs ops)
     (s : Exec.State ω LedgerState) :
     (Exec.steps p (oracles H wit)
-        (.ledger (.const 1) [] [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1] ::
+        (.ledger (.const 1) [] [.push false k, .push true v, .ins false 1] ::
           (P ++ .ledger (.const 1) [] [.push false k, .push true v₂, .ins false 1] :: R)) s).map Exec.State.obs =
       (Exec.steps p (oracles H wit)
         (P ++ .ledger (.const 1) [] [.push false k, .push true v₂, .ins false 1] :: R) s).map Exec.State.obs := by
   obtain ⟨k', hk'⟩ := const_aligned_eval p hk
-  obtain ⟨x, hx⟩ := total_nil_eval p s.env e he
-  have hv1 : (⟨[.field], [e]⟩ : Aligned Expr).mapM (Expr.eval p s.env) = some ⟨[.field], [x]⟩ := by
-    simp [Aligned.mapM, hx]
-  -- the dropped value is one field element: it fits, and it is hashable
-  have hof : AV.ofAligned ⟨[.field], [x]⟩ = some ⟨[.field], [x.val]⟩ := by
-    have hb : byteLen x.val ≤ 64 := by
-      unfold byteLen
-      split
-      · omega
-      · have h1 : x.val < 2 ^ 256 := Nat.lt_trans x.isLt (by decide)
-        have h2 : x.val.log2 < 256 := (Nat.log2_lt (by omega)).mpr h1
-        omega
-    simp [AV.ofAligned, AV.ofFields, atomWidth, atomOfFields, atomFits, hb]
-  have hhash : (AV.mk [.field] [x.val]).toHash.isSome := by
-    have hlt : x.val < 2 ^ 256 := Nat.lt_trans x.isLt (by decide)
-    simp [AV.toHash, hlt]
-  have htwice := fun w => ledgerOracle_cellWrite_twice H k' ⟨[.field], [x]⟩ w _ s.ledger hof hhash
+  obtain ⟨v', vv, hv1, hof, hhash⟩ := hv s.env
+  have hvv : ∀ y ∈ v.vals, (y.eval p s.env).isSome := by
+    have := (aligned_mapM_vals _ _ _ hv1).2
+    rw [← evalList_eq_mapM] at this
+    exact (evalList_isSome_iff p s.env _).mp (by simp [this])
+  have htwice := fun w => ledgerOracle_cellWrite_twice H k' v' w vv s.ledger hof hhash
   -- the groups of the dropped write
   have hgr : (ledgerGroups p s.env true
-      [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1]).isSome := by
+      [.push false k, .push true v, .ins false 1]).isSome := by
     rw [ledgerGroups_isSome_iff]
     have hkv : ∀ y ∈ k.vals, (y.eval p s.env).isSome := fun y hy => by
       have := List.all_eq_true.mp hk y hy
@@ -241,20 +260,20 @@ theorem window {k : Aligned Expr} {e : Expr} (hk : k.vals.all Expr.isConst = tru
       all_goals first | rfl | exact hkv y hy
     · simp only [Op.encode, Aligned.encode, evalList_isSome_iff, List.mem_cons, List.mem_append, List.mem_map]
       rintro y (rfl | rfl | (rfl | ⟨_, _, rfl⟩) | hy)
-      all_goals first | rfl | (simp at hy; subst hy; simp [hx])
+      all_goals first | rfl | exact hvv y hy
     · simp [Op.encode, Expr.evalList, Expr.eval]
   obtain ⟨gs, hgs⟩ := Option.isSome_iff_exists.mp hgr
   have h1 : asBool (Fr.ofInt 1) = some true := rfl
   have hstep : Exec.step p (oracles H wit) s
-      (.ledger (.const 1) [] [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1]) =
-      (ledgerOracle H (writeOps k' ⟨[.field], [x]⟩) s.ledger).bind fun r =>
+      (.ledger (.const 1) [] [.push false k, .push true v, .ins false 1]) =
+      (ledgerOracle H (writeOps k' v') s.ledger).bind fun r =>
         (Exec.assign s.env [] r.1).bind fun env =>
-          (ledgerGroups p env true [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1]).bind fun gs =>
+          (ledgerGroups p env true [.push false k, .push true v, .ins false 1]).bind fun gs =>
             some { s with env, ledger := r.2, pub := s.pub ++ r.1, groups := s.groups ++ gs } := by
     simp only [Exec.step, Expr.eval, Option.bind_eq_bind, Option.bind_some, h1, request_write, hk', hv1]
     simp [oracles]
   rw [Exec.steps_append p (oracles H wit)]
-  cases ho : ledgerOracle H (writeOps k' ⟨[.field], [x]⟩) s.ledger with
+  cases ho : ledgerOracle H (writeOps k' v') s.ledger with
   | none =>
     simp only [Exec.steps, hstep, ho, Option.bind_eq_bind, Option.bind_none, Option.map_none]
     cases hPs : Exec.steps p (oracles H wit) P s with
@@ -279,14 +298,14 @@ theorem window {k : Aligned Expr} {e : Expr} (hk : k.vals.all Expr.isConst = tru
       rw [ledgerOracle_cellWrite] at ho
       simp only [Option.bind_eq_bind] at ho
       cases h1 : AV.ofAligned k' <;> simp [h1] at ho
-      cases h2 : AV.ofAligned (⟨[.field], [x]⟩ : Aligned Fr) <;> simp [h2] at ho
+      cases h2 : AV.ofAligned v' <;> simp [h2] at ho
       rename_i a b
       cases h3 : setCell s.ledger.state a b <;> simp [h3] at ho
       cases h4 : decodeEffects s.ledger.effects <;> simp [h4] at ho
       exact ho.1
     subst hvals
     have hL : Exec.steps p (oracles H wit)
-        (.ledger (.const 1) [] [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1] ::
+        (.ledger (.const 1) [] [.push false k, .push true v, .ins false 1] ::
           (P ++ .ledger (.const 1) [] [.push false k, .push true v₂, .ins false 1] :: R)) s =
         Exec.steps p (oracles H wit) (P ++ .ledger (.const 1) [] [.push false k, .push true v₂, .ins false 1] :: R)
           { s with ledger := σ₁, pub := s.pub ++ [], groups := s.groups ++ gs } := by
@@ -322,9 +341,9 @@ theorem deadStore_go : ∀ (stmts : List Stmt) (s t : Exec.State ω LedgerState)
       | some k =>
         by_cases ho : overwrites k deadStoreWindow rest = true
         · simp only [deadStoreGo, hd, ho, ite_true]
-          obtain ⟨e, rfl, hk, he⟩ := droppableWrite?_spec hd
+          obtain ⟨v, rfl, hk, hv⟩ := droppableWrite?_spec hd
           obtain ⟨P, v₂, R, rfl, hP⟩ := overwrites_spec ho
-          rw [deadStore_go _ s t hobs, window p H wit hk he hP s]
+          rw [deadStore_go _ s t hobs, window p H wit hk (droppableValue_spec p hv) hP s]
         · simp only [deadStoreGo, hd, ho, Bool.false_eq_true, ite_false]; exact keep
 
 end Window

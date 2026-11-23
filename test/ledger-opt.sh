@@ -47,5 +47,20 @@ for f in sorted(glob.glob(os.path.join(a, '*', 'zkir', '*.zkir'))):
 print(f'{n} circuits changed; instructions saved {ti}, rows saved {tr} of {tot}')
 PY
 
+# What the passes leave (bench/ledger_headroom.py --classes, the frame analysis ported): every read
+# a fact answers and every dead store the pass handles must be gone. Left: forwarding blocked by the
+# operand size cap or a multi-limb value, and dead stores across writes of other fields at the top
+# level (unsound in the model when the contract state is a map, see docs/benchmarks.md).
+python3 -I bench/ledger_headroom.py "$out/lo" --classes --json "$out/classes.json" >/dev/null
+python3 -I - "$out/classes.json" <<'PY'
+import json, sys
+tot = json.load(open(sys.argv[1]))['total']
+left = {k: v for k, v in tot.items() if (k.startswith('R:') and 'BIG' not in k and 'MULTILIMB' not in k)
+        or (k.startswith('D:') and 'across-root-writes' not in k and 'guard' not in k)}
+print('left by the passes:', {k: v for k, v in tot.items() if k.startswith(('R:', 'D:'))})
+if left:
+    print('FAIL: rewrites the passes should have made:', left); sys.exit(1)
+PY
+
 ln -sfn ../executor/node_modules build/node_modules
 (cd executor && node test/ledger-opt.mjs "../$out")

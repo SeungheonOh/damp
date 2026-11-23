@@ -58,6 +58,10 @@ private def after (c : Circuit) : String := shape c.ledgerDeadStore
 #guard after (mk 1 [wr 1 (.lt 8 (.var 0) (.const 3)), wr 1 (.var 0)] []) == "LL"
 -- a value of an alignment other than one field element (it might not fit)
 #guard after (mk 1 [wrA one (fieldKey 1) [.bytes 2] [.var 0], wr 1 (.var 0)] []) == "LL"
+-- ... unless it is a constant that fits, as one atom
+#guard after (mk 1 [wrA one (fieldKey 1) [.bytes 2] [.const 5], wr 1 (.var 0)] []) == "L"
+#guard after (mk 1 [wrA one (fieldKey 1) [.bytes 1] [.const 300], wr 1 (.var 0)] []) == "LL"
+#guard after (mk 1 [wrA one (fieldKey 1) [.bytes 1, .bytes 1] [.const 1, .const 2], wr 1 (.var 0)] []) == "LL"
 -- a key that is not constant
 #guard after (mk 1 [wrA one ⟨[.field], [.var 0]⟩ [.field] [.var 0], wrA one ⟨[.field], [.var 0]⟩ [.field] [.var 0]] [])
   == "LL"

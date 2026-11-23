@@ -4,7 +4,8 @@ key overwrites, with nothing between that touches the ledger.
 
 A write `push false k; push true v; ins false 1` under the constant guard 1,
 with a constant key `k` and a value of one field element whose expression
-cannot fail (`Expr.total []` of `Simplify`), is dropped when the next ledger statement, after
+cannot fail (`Expr.total []` of `Simplify`), or of constants that fit their
+alignment as one atom (`droppableValue`), is dropped when the next ledger statement, after
 any number of bindings, assertions, range checks and witness calls (at most
 `deadStoreWindow` statements), is a cell write of the same key, also under the
 constant guard 1. Only what the dropped write would have left can differ, and
@@ -31,10 +32,22 @@ def Expr.isConst : Expr → Bool
 /-- How far ahead the pass looks for the overwriting write. -/
 def deadStoreWindow : Nat := 64
 
+/-- A written value whose write the pass may drop: one field element whose
+    expression cannot fail (`Expr.total []`), or constants that fit their
+    alignment as one atom of at most 32 bytes (`constAV`, computed here: the
+    VM stores exactly that value, and a Merkle-tree slot would accept it). -/
+def droppableValue (v : Aligned Expr) : Bool :=
+  (match v with
+   | ⟨[.field], [e]⟩ => e.total []
+   | _ => false) ||
+  (match constAV v with
+   | some vv => vv.toHash.isSome
+   | none => false)
+
 /-- The key of a write the pass may drop. -/
 def droppableWrite? : Stmt → Option (Aligned Expr)
-  | .ledger (.const 1) [] [.push false k, .push true ⟨[.field], [e]⟩, .ins false 1] =>
-      if k.vals.all Expr.isConst && e.total [] then some k else none
+  | .ledger (.const 1) [] [.push false k, .push true v, .ins false 1] =>
+      if k.vals.all Expr.isConst && droppableValue v then some k else none
   | _ => none
 
 /-- The next ledger statement, within `fuel` statements, is a cell write of `k`

@@ -12,10 +12,17 @@ on the current ledger state (`readSpec`, `Damp/Proofs/Ledger/OptVm.lean`);
 if off, the values are zeros. The ledger state stays well formed
 (`ledgerOracle_wf`). A plain read answered by a fact is then exactly the
 bindings the pass puts in its place: the original statement cannot fail, and
-leaves the ledger state as it was.
+leaves the ledger state as it was. A read through two `idx` is the plain read
+along both paths (`ledgerOracle_read2`, `ReadOps`). A fact about the contract
+state kept across another ledger statement stays true because the statement's
+program leaves the part of the state at the fact's constant prefix as it was
+(`frame_ledgerOracle`, `readSpec_frame`); the facts a cell write or a map
+insert establish hold by `ledgerOracle_cellWrite_read` and
+`ledgerOracle_mapInsert_read` (`write_holds`).
 -/
 import Damp.Proofs.Optimize.LedgerReuseBase
 import Damp.Proofs.Ledger.Cell
+import Damp.Proofs.Ledger.OptRead
 
 set_option linter.unusedSimpArgs false
 set_option linter.unusedSectionVars false
@@ -80,6 +87,15 @@ theorem LFact.Holds.ledger {f : LFact} {env : Env} {q q' : LedgerState} (h : f.H
   obtain ⟨path', xs, h1, h2, h3⟩ := hon hb1
   exact ⟨path', xs, h1, by rw [readSpec_congr hq]; exact h2, h3⟩
 
+theorem LFact.Holds.frame {f : LFact} {env : Env} {q q' : LedgerState} (h : f.Holds p env q) (hn : f.n = 0)
+    (hw : svWalk q'.state (constPrefix maxFramePath f.path) = svWalk q.state (constPrefix maxFramePath f.path)) :
+    f.Holds p env q' := by
+  obtain ⟨hn2, gv, b, hg, hb, hpath, hon, hoff⟩ := h
+  refine ⟨hn2, gv, b, hg, hb, hpath, fun hb1 => ?_, hoff⟩
+  obtain ⟨path', xs, h1, h2, h3⟩ := hon hb1
+  rw [hn] at h2 ⊢
+  exact ⟨path', xs, h1, by rw [readSpec_frame maxFramePath h1 f.align hw]; exact h2, h3⟩
+
 theorem mem_forgetVars {vs : List Var} {fs : List LFact} {f : LFact} (h : f ∈ forgetVars vs fs) :
     f ∈ fs ∧ ∀ w ∈ f.vars, w ∉ vs := by
   simp only [forgetVars, List.mem_filter, Bool.not_eq_true', List.any_eq_false] at h
@@ -104,10 +120,16 @@ theorem pathSame_eq : ∀ {x y : List (Aligned Expr)}, pathSame x y = true → x
   | [], _ :: _, h => by simp [pathSame] at h
   | _ :: _, [], h => by simp [pathSame] at h
 
+/-- The programs `plainRead?` recognizes. -/
+def ReadOps (n : Nat) (path : List (Aligned Expr)) (a : List Zkir.AlignAtom) (rs : List Var)
+    (ops : List (Op Expr)) : Prop :=
+  (∃ ci c, ops = [.dup n, .idx ci false path, .popeq c a (rs.map Expr.var)] ∧ (ci = false ∨ 1 ≤ n)) ∨
+  (n = 0 ∧ ∃ p₁ p₂ c, path = p₁ ++ p₂ ∧
+    ops = [.dup 0, .idx false false p₁, .idx false false p₂, .popeq c a (rs.map Expr.var)])
+
 theorem plainRead?_spec {rs : List Var} {ops : List (Op Expr)} {n : Nat} {path : List (Aligned Expr)}
     {a : List Zkir.AlignAtom} (h : plainRead? rs ops = some (n, path, a)) :
-    ∃ ci c, ops = [.dup n, .idx ci false path, .popeq c a (rs.map Expr.var)] ∧ n ≤ 2 ∧ (ci = false ∨ 1 ≤ n) ∧
-      rs ≠ [] ∧ rs.Nodup ∧ ∀ w ∈ pathVars path, w ∉ rs := by
+    ReadOps n path a rs ops ∧ n ≤ 2 ∧ rs ≠ [] ∧ rs.Nodup ∧ ∀ w ∈ pathVars path, w ∉ rs := by
   unfold plainRead? at h
   split at h
   · rename_i n' ci path' c a' res
@@ -123,7 +145,17 @@ theorem plainRead?_spec {rs : List Var} {ops : List (Op Expr)} {n : Nat} {path :
       have h3 := hc.1.1.2
       have h4 := hc.1.2
       have h5 := hc.2
-      exact ⟨ci, c, by rw [h3], h1, by simpa using h0, h2, h4, fun w hw hr => h5 w hw (by simpa using hr)⟩
+      exact ⟨Or.inl ⟨ci, c, by rw [h3], by simpa using h0⟩, h1, h2, h4, fun w hw hr => h5 w hw (by simpa using hr)⟩
+    · simp at h
+  · rename_i p₁ p₂ c a' res
+    split at h
+    · rename_i hc
+      simp only [Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨rfl, rfl, rfl⟩ := h
+      simp only [Bool.and_eq_true, decide_eq_true_eq, Bool.not_eq_true', List.isEmpty_eq_false_iff,
+        beq_iff_eq, List.any_eq_false] at hc
+      exact ⟨Or.inr ⟨rfl, p₁, p₂, c, rfl, by rw [hc.1.1.2]⟩, by omega, hc.1.1.1, hc.1.2,
+        fun w hw hr => hc.2 w hw (by simpa using hr)⟩
     · simp at h
   · simp at h
 
@@ -215,6 +247,38 @@ theorem plain_groups_isSome (env : Env) (act : Bool) (n : Nat) (path : List (Ali
     rintro x ⟨k, hk, hx⟩
     exact (encode_aligned_isSome p env k).mpr (h k hk) |> fun hh =>
       (evalList_isSome_iff p env _).mp hh x hx
+
+theorem idx_encode_isSome (env : Env) (ci pp : Bool) (path : List (Aligned Expr)) :
+    (Expr.evalList p env ((Op.idx ci pp path : Op Expr).encode Expr.const)).isSome ↔
+      ∀ k ∈ path, ∀ x ∈ k.vals, (x.eval p env).isSome := by
+  simp only [Op.encode, evalList_isSome_iff, List.mem_cons, List.mem_flatMap, forall_eq_or_imp]
+  constructor
+  · rintro ⟨_, h⟩ k hk x hx
+    exact h x ⟨k, hk, by simp [Aligned.encode, hx]⟩
+  · intro h
+    refine ⟨rfl, ?_⟩
+    rintro x ⟨k, hk, hx⟩
+    exact (encode_aligned_isSome p env k).mpr (h k hk) |> fun hh =>
+      (evalList_isSome_iff p env _).mp hh x hx
+
+theorem ReadOps.groups {n : Nat} {path : List (Aligned Expr)} {a : List Zkir.AlignAtom} {rs : List Var}
+    {ops : List (Op Expr)} (h : ReadOps n path a rs ops) (env : Env) (act : Bool) :
+    (ledgerGroups p env act ops).isSome ↔ ∀ k ∈ path, ∀ x ∈ k.vals, (x.eval p env).isSome := by
+  rcases h with ⟨ci, c, rfl, _⟩ | ⟨rfl, p₁, p₂, c, rfl, rfl⟩
+  · exact plain_groups_isSome p env act n path ci c a rs
+  · rw [ledgerGroups_isSome_iff]
+    simp only [List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp, forall_eq]
+    have hdup : (Expr.evalList p env ((Op.dup 0 : Op Expr).encode Expr.const)).isSome := by
+      simp [Op.encode, Expr.evalList, Expr.eval]
+    have hpop : (Expr.evalList p env ((Op.popeq c a (rs.map Expr.var) : Op Expr).encode Expr.const)).isSome := by
+      simp only [Op.encode, evalList_isSome_iff, List.mem_cons, List.mem_append, List.mem_map]
+      rintro x ((rfl | rfl | ⟨_, _, rfl⟩) | ⟨v, _, rfl⟩) <;> rfl
+    simp only [hdup, hpop, true_and, and_true, idx_encode_isSome, List.mem_append]
+    constructor
+    · rintro ⟨h1, h2⟩ k (hk | hk)
+      · exact h1 k hk
+      · exact h2 k hk
+    · intro h; exact ⟨fun k hk => h k (Or.inl hk), fun k hk => h k (Or.inr hk)⟩
 
 theorem write_groups_isSome {env : Env} {act : Bool} {k v : Aligned Expr}
     (h : (ledgerGroups p env act [.push false k, .push true v, .ins false 1]).isSome) :
@@ -353,6 +417,58 @@ section Scan
 variable (p : Prims) (H : Hooks) {ω : Type} (wit : String → List Fr → ω → Option (List Fr × ω))
 
 
+theorem request_plain2 (env : Env) (p₁ p₂ : List (Aligned Expr)) (c : Bool) (a : List Zkir.AlignAtom)
+    (rs : List Var) :
+    Exec.request p env [.dup 0, .idx false false p₁, .idx false false p₂, .popeq c a (rs.map Expr.var)] =
+      (p₁.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env))).bind fun p₁' =>
+        (p₂.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env))).map fun p₂' =>
+          [.dup 0, .idx false false p₁', .idx false false p₂', .popeq c a []] := by
+  have hr : (rs.map Expr.var).mapM (Expr.eval p env) = some (rs.map env) := by
+    rw [← evalList_eq_mapM]; exact evalList_vars p env rs
+  cases hp1 : p₁.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) <;>
+    cases hp2 : p₂.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) <;>
+    simp [Exec.request, Op.mapM, hp1, hp2, hr, Exec.blank]
+
+/-- What the request of a read program does, on a well-formed state. -/
+theorem ReadOps.read {n : Nat} {path : List (Aligned Expr)} {a : List Zkir.AlignAtom} {rs : List Var}
+    {ops : List (Op Expr)} (h : ReadOps n path a rs ops) (hn : n ≤ 2) (env : Env) (q : LedgerState) (hwf : q.WF) :
+    (Exec.request p env ops).map (fun req => ledgerOracle H req q) =
+      (path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env))).map fun path' =>
+        (readSpec n path' a q).map fun ys => (ys, q) := by
+  rcases h with ⟨ci, c, rfl, hci⟩ | ⟨rfl, p₁, p₂, c, rfl, rfl⟩
+  · rw [request_plain]
+    cases hp : path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) with
+    | none => rfl
+    | some path' => simp [ledgerOracle_read H n hn path' ci c hci a q hwf]
+  · rw [request_plain2, List.mapM_append]
+    cases hp1 : p₁.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) with
+    | none => rfl
+    | some p₁' =>
+      cases hp2 : p₂.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) with
+      | none => rfl
+      | some p₂' => simp [ledgerOracle_read2 H p₁' p₂' c a q hwf]
+
+theorem ReadOps.read_some {n : Nat} {path : List (Aligned Expr)} {a : List Zkir.AlignAtom} {rs : List Var}
+    {ops : List (Op Expr)} (h : ReadOps n path a rs ops) (hn : n ≤ 2) {env : Env} {q : LedgerState} (hwf : q.WF)
+    {path' : List (Aligned Fr)} (hp : path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) = some path') :
+    ∃ req, Exec.request p env ops = some req ∧ ledgerOracle H req q = (readSpec n path' a q).map fun ys => (ys, q) := by
+  have e := h.read p H hn env q hwf
+  rw [hp] at e
+  cases hr : Exec.request p env ops with
+  | none => rw [hr] at e; simp at e
+  | some req => rw [hr] at e; simp at e; exact ⟨req, rfl, e⟩
+
+theorem ReadOps.read_of_req {n : Nat} {path : List (Aligned Expr)} {a : List Zkir.AlignAtom} {rs : List Var}
+    {ops : List (Op Expr)} (h : ReadOps n path a rs ops) (hn : n ≤ 2) {env : Env} {q : LedgerState} (hwf : q.WF)
+    {req : List (Op Fr)} (hr : Exec.request p env ops = some req) :
+    ∃ path', path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) = some path' ∧
+      ledgerOracle H req q = (readSpec n path' a q).map fun ys => (ys, q) := by
+  have e := h.read p H hn env q hwf
+  rw [hr] at e
+  cases hp : path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) with
+  | none => rw [hp] at e; simp at e
+  | some path' => rw [hp] at e; simp at e; exact ⟨path', rfl, e⟩
+
 /-- A plain read answered by a fact. -/
 theorem go_hit {g : Expr} {rs : List Var} {ops : List (Op Expr)} {rest : List Stmt} {fs : List LFact}
     (ih : ∀ (fs : List LFact) (s t : Exec.State ω LedgerState), s.obs = t.obs → LInv p fs s.env s.ledger →
@@ -364,7 +480,7 @@ theorem go_hit {g : Expr} {rs : List Var} {ops : List (Op Expr)} {rest : List St
     (Exec.steps p (oracles H wit) (bindReads rs f.vals ++ ledgerReuseGo (forgetVars rs fs) rest) t).map
         Exec.State.obs =
       (Exec.steps p (oracles H wit) (.ledger g rs ops :: rest) s).map Exec.State.obs := by
-  obtain ⟨ci, c, rfl, hn2, hci, hne, hnd, hpv⟩ := plainRead?_spec hpr
+  obtain ⟨hro, hn2, hne, hnd, hpv⟩ := plainRead?_spec hpr
   obtain ⟨hmem, rfl, rfl, rfl, rfl, hlen, hvr⟩ := findFact_spec hff
   obtain ⟨_, gv, b, hg, hb, hpath, hon, hoff⟩ := hinv.2 f hmem
   have hte : t.env = s.env := by
@@ -378,7 +494,6 @@ theorem go_hit {g : Expr} {rs : List Var} {ops : List (Op Expr)} {rest : List St
     · obtain ⟨path', xs, h1, h2, h3⟩ := hon rfl
       exact ⟨xs, h3, fun _ => ⟨path', h1, h2⟩, fun h => by simp at h⟩
   have hxl : xs.length = rs.length := by rw [evalList_length hxs, hlen]
-  have hzl : (rs.map fun _ => (0 : Fr)).length = rs.length := by simp
   -- the environment after the read
   obtain ⟨env', ha⟩ := assign_plain s.env rs xs hxl
   have hframe := assign_frame ha
@@ -387,15 +502,13 @@ theorem go_hit {g : Expr} {rs : List Var} {ops : List (Op Expr)} {rest : List St
     rw [eval_congr_of (e₂ := s.env) (fun w hw => hframe w (by
       simpa using hpv w (by simp only [pathVars, List.mem_flatMap]; exact ⟨k, hk, mem_varsList hx hw⟩)))]
     exact hpath k hk x hx
-  obtain ⟨gs, hgs⟩ := Option.isSome_iff_exists.mp
-    ((plain_groups_isSome p env' b f.n f.path ci c f.align rs).mpr hpath')
-  have hrs : (rs.isEmpty && [Op.dup f.n, Op.idx ci false f.path, Op.popeq c f.align (rs.map Expr.var)].isEmpty) = false := by
+  obtain ⟨gs, hgs⟩ := Option.isSome_iff_exists.mp ((hro.groups p env' b).mpr hpath')
+  have hrs : (rs.isEmpty && ops.isEmpty) = false := by
     cases rs with
     | nil => exact absurd rfl hne
     | cons => rfl
   -- the original statement
-  have hstep : Exec.step p (oracles H wit) s
-      (.ledger f.guard rs [.dup f.n, .idx ci false f.path, .popeq c f.align (rs.map Expr.var)]) =
+  have hstep : Exec.step p (oracles H wit) s (.ledger f.guard rs ops) =
       some { s with env := env', pub := s.pub ++ (if b then xs else []), groups := s.groups ++ gs } := by
     cases b
     · have hx0 := (hread.2 rfl)
@@ -406,10 +519,10 @@ theorem go_hit {g : Expr} {rs : List Var} {ops : List (Op Expr)} {rest : List St
       simp only [Exec.step, hg, hrs, hb, Option.bind_eq_bind, Option.bind_some, Bool.false_eq_true, if_false]
       rw [ha]; simp only [Option.bind_some]; rw [hgs]; simp
     · obtain ⟨path', hp', hrd⟩ := hread.1 rfl
-      have hor := ledgerOracle_read H f.n hn2 path' ci c hci f.align s.ledger hinv.1
+      obtain ⟨req, hreq, hor⟩ := hro.read_some p H hn2 hinv.1 hp'
       rw [hrd] at hor
-      simp only [Exec.step, hg, hrs, hb, Option.bind_eq_bind, Option.bind_some, if_true, request_plain, hp',
-        Option.map_some, oracles, hor, Option.map_some]
+      simp only [Exec.step, hg, hrs, hb, Option.bind_eq_bind, Option.bind_some, if_true, hreq,
+        oracles, hor, Option.map_some]
       rw [ha]; simp only [Option.bind_some]; rw [hgs]; rfl
   -- the rewritten statements
   have hbind := bindReads_steps p (oracles H wit) rs f.vals xs t s.env hlen hxs (fun w hw hr => hvr w hw hr)
@@ -424,13 +537,12 @@ theorem go_hit {g : Expr} {rs : List Var} {ops : List (Op Expr)} {rest : List St
     exact (hinv.2 f' hf1).env p fun w hw => hframe w (by simpa using hf2 w hw)
 
 /-- What the step of a plain read does, on a well-formed state. -/
-theorem plain_step {g : Expr} {rs : List Var} {n : Nat} {path : List (Aligned Expr)} {ci c : Bool}
-    {a : List Zkir.AlignAtom} {s r : Exec.State ω LedgerState} (hn : n ≤ 2) (hci : ci = false ∨ 1 ≤ n)
+theorem plain_step {g : Expr} {rs : List Var} {n : Nat} {path : List (Aligned Expr)} {ops : List (Op Expr)}
+    {a : List Zkir.AlignAtom} {s r : Exec.State ω LedgerState} (hro : ReadOps n path a rs ops) (hn : n ≤ 2)
     (hne : rs ≠ []) (hwf : s.ledger.WF)
-    (h : Exec.step p (oracles H wit) s (.ledger g rs [.dup n, .idx ci false path, .popeq c a (rs.map Expr.var)]) =
-      some r) :
+    (h : Exec.step p (oracles H wit) s (.ledger g rs ops) = some r) :
     r.ledger = s.ledger ∧ ∃ gv b, g.eval p s.env = some gv ∧ asBool gv = some b ∧
-      (ledgerGroups p r.env b [.dup n, .idx ci false path, .popeq c a (rs.map Expr.var)]).isSome ∧
+      (ledgerGroups p r.env b ops).isSome ∧
       ∃ xs, Exec.assign s.env (rs.map fun v => (v, none)) xs = some r.env ∧
         (b = true → ∃ path', path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p s.env)) = some path' ∧
           readSpec n path' a s.ledger = some xs) ∧ (b = false → xs = rs.map fun _ => 0) := by
@@ -439,20 +551,15 @@ theorem plain_step {g : Expr} {rs : List Var} {n : Nat} {path : List (Aligned Ex
     | nil => exact absurd rfl hne
     | cons => simp at hsk
   · exact ⟨hl, gv, false, hg, hb, hgr, _, ha, fun h => by simp at h, fun _ => rfl⟩
-  · rw [request_plain] at hreq
-    cases hp : path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p s.env)) with
-    | none => simp [hp] at hreq
-    | some path' =>
-      simp [hp] at hreq; subst hreq
-      have := ledgerOracle_read H n hn path' ci c hci a s.ledger hwf
-      simp only [oracles] at hor
-      rw [hor] at this
-      cases hrs : readSpec n path' a s.ledger with
-      | none => simp [hrs] at this
-      | some ys =>
-        simp [hrs] at this
-        obtain ⟨rfl, hle⟩ := this
-        exact ⟨hle, gv, true, hg, hb, hgr, xs, ha, fun _ => ⟨path', rfl, hrs⟩, fun h => by simp at h⟩
+  · obtain ⟨path', hp, this⟩ := hro.read_of_req p H hn hwf hreq
+    simp only [oracles] at hor
+    rw [hor] at this
+    cases hrs : readSpec n path' a s.ledger with
+    | none => simp [hrs] at this
+    | some ys =>
+      simp [hrs] at this
+      obtain ⟨rfl, hle⟩ := this
+      exact ⟨hle, gv, true, hg, hb, hgr, xs, ha, fun _ => ⟨path', hp, hrs⟩, fun h => by simp at h⟩
 
 /-- After a plain read the pass does not answer, its facts hold. -/
 theorem go_miss_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : List LFact}
@@ -460,8 +567,8 @@ theorem go_miss_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : List
     {s r : Exec.State ω LedgerState} (hinv : LInv p fs s.env s.ledger)
     (h : Exec.step p (oracles H wit) s (.ledger g rs ops) = some r) :
     LInv p (missFacts g rs n path a fs) r.env r.ledger := by
-  obtain ⟨ci, c, rfl, hn2, hci, hne, hnd, hpv⟩ := plainRead?_spec hpr
-  obtain ⟨hle, gv, b, hg, hb, hgr, xs, ha, hon, hoff⟩ := plain_step p H wit hn2 hci hne hinv.1 h
+  obtain ⟨hro, hn2, hne, hnd, hpv⟩ := plainRead?_spec hpr
+  obtain ⟨hle, gv, b, hg, hb, hgr, xs, ha, hon, hoff⟩ := plain_step p H wit hro hn2 hne hinv.1 h
   have hframe := assign_frame ha
   have hold : ∀ f ∈ forgetVars rs fs, f.Holds p r.env r.ledger := fun f hf => by
     obtain ⟨hf1, hf2⟩ := mem_forgetVars hf
@@ -474,7 +581,7 @@ theorem go_miss_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : List
     intro f hf
     rcases mem_addFact hf with rfl | hf
     · have hgv' : ∀ w ∈ g.vars, w ∉ rs := fun w hw hr => hgv (List.any_eq_true.mpr ⟨w, hw, by simpa using hr⟩)
-      have hpath := (plain_groups_isSome p r.env b n path ci c a rs).mp hgr
+      have hpath := (hro.groups p r.env b).mp hgr
       have hreads : (rs.map Expr.var).mapM (Expr.eval p r.env) = some (rs.map r.env) := by
         rw [← evalList_eq_mapM]; exact evalList_vars p r.env rs
       refine ⟨hn2, gv, b, ?_, hb, hpath, ?_, ?_⟩
@@ -488,9 +595,10 @@ theorem go_miss_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : List
         rw [evalList_vars, assign_reads hnd ha, hoff hb0, List.map_map]; rfl
     · exact hold f hf
 
-theorem writeFact_spec {g : Expr} {k v : Aligned Expr} {f : LFact} (h : writeFact g k v = some f) :
+theorem writeFact_spec {g : Expr} {path : List (Aligned Expr)} {v : Aligned Expr} {f : LFact}
+    (h : writeFact g path v = some f) :
     singleLimb v.align = true ∧ v.vals.length = v.align.length ∧
-      f = { guard := g, n := 0, path := [k], align := v.align,
+      f = { guard := g, n := 0, path, align := v.align,
             vals := if g == .const 1 then v.vals else v.vals.map fun e => .select g e (.const 0) } := by
   unfold writeFact at h
   split at h
@@ -500,9 +608,98 @@ theorem writeFact_spec {g : Expr} {k v : Aligned Expr} {f : LFact} (h : writeFac
     exact ⟨hc.1.1, hc.1.2, h.symm⟩
   · simp at h
 
+theorem mapInsert?_spec {ops : List (Op Expr)} {k₁ k₂ v : Aligned Expr} (h : mapInsert? ops = some (k₁, k₂, v)) :
+    ops = [.idx false true [k₁], .push false k₂, .push true v, .ins false 1, .ins true 1] := by
+  unfold mapInsert? at h
+  split at h
+  · simp at h; obtain ⟨rfl, rfl, rfl⟩ := h; rfl
+  · simp at h
+
+theorem mapIns_groups_isSome {env : Env} {act : Bool} {k₁ k₂ v : Aligned Expr}
+    (h : (ledgerGroups p env act [.idx false true [k₁], .push false k₂, .push true v, .ins false 1, .ins true 1]).isSome) :
+    (∀ k ∈ [k₁, k₂], ∀ x ∈ k.vals, (x.eval p env).isSome) ∧ (∀ x ∈ v.vals, (x.eval p env).isSome) := by
+  rw [ledgerGroups_isSome_iff] at h
+  have hi := (idx_encode_isSome p env false true [k₁]).mp (h _ (List.mem_cons_self ..))
+  have hk := h (.push false k₂) (by simp)
+  have hv := h (.push true v) (by simp)
+  simp only [Op.encode, evalList_isSome_iff, List.mem_cons] at hk hv
+  refine ⟨fun k hk' x hx => ?_, fun x hx => hv x (Or.inr (Or.inr ?_))⟩
+  · simp only [List.mem_cons, List.mem_nil_iff, or_false] at hk'
+    rcases hk' with rfl | rfl
+    · exact hi _ (by simp) x hx
+    · exact hk x (Or.inr (Or.inr (by simp [Aligned.encode, hx])))
+  · simp [Aligned.encode, hx]
+
+theorem request_mapIns (env : Env) (k₁ k₂ v : Aligned Expr) :
+    Exec.request p env [.idx false true [k₁], .push false k₂, .push true v, .ins false 1, .ins true 1] =
+      (k₁.mapM (Expr.eval p env)).bind fun k₁' => (k₂.mapM (Expr.eval p env)).bind fun k₂' =>
+        (v.mapM (Expr.eval p env)).map fun v' => mapInsOps k₁' k₂' v' := by
+  cases h1 : k₁.mapM (Expr.eval p env) <;> cases h2 : k₂.mapM (Expr.eval p env) <;>
+    cases h3 : v.mapM (Expr.eval p env) <;> simp [Exec.request, Op.mapM, h1, h2, h3, Exec.blank, mapInsOps]
+
+theorem ledgerOracle_mapIns_some {H : Hooks} {k₁ k₂ v : Aligned Fr} {q q' : LedgerState} {xs : List Fr}
+    (h : ledgerOracle H (mapInsOps k₁ k₂ v) q = some (xs, q')) : ∃ vv, AV.ofAligned v = some vv := by
+  cases hv : AV.ofAligned v with
+  | some vv => exact ⟨vv, rfl⟩
+  | none =>
+    unfold ledgerOracle at h
+    cases h1 : AV.ofAligned k₁ <;> cases h2 : AV.ofAligned k₂ <;> simp [mapInsOps, Op.toR, h1, h2, hv] at h
+
 theorem mapM_eval_length {env : Env} {xs : List Expr} {ys : List Fr} (h : xs.mapM (Expr.eval p env) = some ys) :
     ys.length = xs.length := by
   rw [← evalList_eq_mapM] at h; exact evalList_length h
+
+/-- A write of `v` at `path` establishes the fact `writeFact g path v`, given
+    that its public inputs need the operands evaluated and that each successful
+    request of it leaves a state where the read along the evaluated path
+    answers `v`'s field elements. -/
+theorem write_holds {g : Expr} {ops : List (Op Expr)} {path : List (Aligned Expr)} {v : Aligned Expr} {f : LFact}
+    (hwf : writeFact g path v = some f) (hops : ops ≠ [])
+    (hgr : ∀ env act, (ledgerGroups p env act ops).isSome →
+      (∀ k ∈ path, ∀ x ∈ k.vals, (x.eval p env).isSome) ∧ ∀ x ∈ v.vals, (x.eval p env).isSome)
+    (hrd : ∀ env req q q' xs, Exec.request p env ops = some req → ledgerOracle H req q = some (xs, q') →
+      ∃ path' v' vv, path.mapM (fun k : Aligned Expr => k.mapM (Expr.eval p env)) = some path' ∧
+        v.mapM (Expr.eval p env) = some v' ∧ AV.ofAligned v' = some vv ∧
+        readSpec 0 path' v.align q' = fieldsOf v.align vv.atoms)
+    {s r : Exec.State ω LedgerState} (h : Exec.step p (oracles H wit) s (.ledger g [] ops) = some r) :
+    f.Holds p r.env r.ledger := by
+  obtain ⟨hsl, hvl, rfl⟩ := writeFact_spec hwf
+  rcases step_ledger_cases p _ h with ⟨hsk, _⟩ | ⟨gv, hg, ⟨hb, hl, ha, hgr'⟩ | ⟨hb, req, xs, hreq, hor, ha, hgr'⟩⟩
+  · cases ops with
+    | nil => exact absurd rfl hops
+    | cons => simp at hsk
+  · simp [Exec.assign] at ha; rw [← ha] at hgr' ⊢
+    obtain ⟨hkv, hvv⟩ := hgr s.env false hgr'
+    have hc1 : (g == Expr.const 1) = false := by
+      cases hgc : g == Expr.const 1
+      · rfl
+      · have := eq_of_beq hgc; subst this
+        simp [Expr.eval] at hg; subst hg
+        have h1 : asBool (Fr.ofInt 1) = some true := rfl
+        rw [h1] at hb; simp at hb
+    refine ⟨Nat.zero_le 2, gv, false, hg, hb, hkv, fun h => by simp at h, fun _ => ?_⟩
+    simp only [hc1, Bool.false_eq_true, if_false]
+    rw [evalList_select p hg hb v.vals hvv]; simp
+  · cases xs with
+    | cons => simp [Exec.assign] at ha
+    | nil =>
+    simp [Exec.assign] at ha; rw [← ha]
+    simp only [oracles] at hor
+    obtain ⟨path', v', vv, hp', hv, hvv, hrd'⟩ := hrd s.env req _ _ _ hreq hor
+    obtain ⟨hva, hvm⟩ := aligned_mapM_vals _ _ _ hv
+    have hvl' : v'.vals.length = v.align.length := by rw [mapM_eval_length p hvm, hvl]
+    have hfo : fieldsOf v.align vv.atoms = some v'.vals := by
+      apply fieldsOf_ofFields v.align v'.vals vv _ (singleLimb_spec hsl) hvl'
+      rw [← hva]; exact hvv
+    rw [hfo] at hrd'
+    have hvev : Expr.evalList p s.env v.vals = some v'.vals := by rw [evalList_eq_mapM]; exact hvm
+    have hall : ∀ e ∈ v.vals, (e.eval p s.env).isSome :=
+      (evalList_isSome_iff p s.env v.vals).mp (by simp [hvev])
+    refine ⟨Nat.zero_le 2, gv, true, hg, hb, pathMapM_isSome p hp', fun _ => ⟨path', v'.vals, hp', hrd', ?_⟩,
+      fun h => by simp at h⟩
+    split
+    · exact hvev
+    · rw [evalList_select p hg hb v.vals hall]; simp [hvev]
 
 /-- After any other ledger statement, the facts the pass keeps hold. -/
 theorem go_other_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : List LFact}
@@ -510,85 +707,84 @@ theorem go_other_inv {g : Expr} {rs : List Var} {ops : List (Op Expr)} {fs : Lis
     (h : Exec.step p (oracles H wit) s (.ledger g rs ops) = some r) :
     LInv p (otherFacts g rs ops fs) r.env r.ledger := by
   have hframe := step_env_frame p _ h
-  -- the ledger state after: well formed, same call context
-  have hq : r.ledger.WF ∧ r.ledger.context = s.ledger.context := by
-    rcases step_ledger_cases p _ h with ⟨_, rfl⟩ | ⟨gv, _, ⟨_, hl, _⟩ | ⟨_, req, xs, _, hor, _⟩⟩
-    · exact ⟨hinv.1, rfl⟩
-    · rw [hl]; exact ⟨hinv.1, rfl⟩
-    · exact ⟨ledgerOracle_wf hor, ledgerOracle_context hor⟩
-  have hold : ∀ f ∈ forgetVars rs (fs.filter (·.n == 2)), f.Holds p r.env r.ledger := fun f hf => by
+  -- the ledger state after: well formed, same call context, and every part `frameKeeps` protects
+  have hq : r.ledger.WF ∧ r.ledger.context = s.ledger.context ∧
+      ∀ π, frameKeeps π ops = true → svWalk r.ledger.state π = svWalk s.ledger.state π := by
+    rcases step_ledger_cases p _ h with ⟨_, rfl⟩ | ⟨gv, _, ⟨_, hl, _⟩ | ⟨_, req, xs, hreq, hor, _⟩⟩
+    · exact ⟨hinv.1, rfl, fun _ _ => rfl⟩
+    · rw [hl]; exact ⟨hinv.1, rfl, fun _ _ => rfl⟩
+    · exact ⟨ledgerOracle_wf hor, ledgerOracle_context hor, fun π hk => frame_ledgerOracle H hk hreq hor⟩
+  have hold : ∀ f ∈ forgetVars rs (fs.filter (keepsFact ops)), f.Holds p r.env r.ledger := fun f hf => by
     obtain ⟨hf1, hf2⟩ := mem_forgetVars hf
-    obtain ⟨hf1, hn⟩ := List.mem_filter.mp hf1
-    have hn : f.n = 2 := by simpa using hn
-    refine ((hinv.2 f hf1).env p fun w hw => hframe w (by simpa [Stmt.lrBinds] using hf2 w hw)).ledger p ?_
-    rw [hn]; exact hq.2
+    obtain ⟨hf1, hk⟩ := List.mem_filter.mp hf1
+    have hfe := (hinv.2 f hf1).env p fun w hw => hframe w (by simpa [Stmt.lrBinds] using hf2 w hw)
+    simp only [keepsFact, Bool.or_eq_true, beq_iff_eq, Bool.and_eq_true] at hk
+    rcases hk with hn | ⟨hn, hk⟩
+    · exact hfe.ledger p (by rw [hn]; exact hq.2.1)
+    · exact hfe.frame p hn (hq.2.2 _ hk)
   refine ⟨hq.1, ?_⟩
   unfold otherFacts
   cases hrs : rs with
   | cons r₀ rs₀ => simp only; exact hrs ▸ hold
   | nil =>
+  subst hrs
   cases hcw : cellWrite? ops with
-  | none => simp only; exact hrs ▸ hold
   | some kv =>
-  obtain ⟨k, v⟩ := kv
-  cases hwf : writeFact g k v with
-  | none => simp only [hwf]; exact hrs ▸ hold
-  | some f =>
+    obtain ⟨k, v⟩ := kv
+    have hops := cellWrite?_spec hcw
+    cases hwf : writeFact g [k] v with
+    | none => simp only [hwf]; exact hold
+    | some f =>
       simp only [hwf]
       intro f' hf'
-      subst hrs
       rcases mem_addFact hf' with rfl | hf'
-      · obtain ⟨hsl, hvl, rfl⟩ := writeFact_spec hwf
-        have hops := cellWrite?_spec hcw
-        subst hops
-        rcases step_ledger_cases p _ h with ⟨hsk, _⟩ | ⟨gv, hg, ⟨hb, hl, ha, hgr⟩ | ⟨hb, req, xs, hreq, hor, ha, hgr⟩⟩
-        · simp at hsk
-        · simp [Exec.assign] at ha; rw [← ha] at hgr ⊢
-          obtain ⟨hkv, hvv⟩ := write_groups_isSome p hgr
-          have hc1 : (g == Expr.const 1) = false := by
-            cases hgc : g == Expr.const 1
-            · rfl
-            · have := eq_of_beq hgc; subst this
-              simp [Expr.eval] at hg; subst hg
-              have h1 : asBool (Fr.ofInt 1) = some true := rfl
-              rw [h1] at hb; simp at hb
-          refine ⟨Nat.zero_le 2, gv, false, hg, hb, ?_, fun h => by simp at h, fun _ => ?_⟩
-          · intro k' hk' x hx; simp at hk'; subst hk'; exact hkv x hx
-          · simp only [hc1, Bool.false_eq_true, if_false]
-            rw [evalList_select p hg hb v.vals hvv]; simp
+      · subst hops
+        refine write_holds p H wit hwf (by simp) (fun env act hg => ?_) (fun env req q q' xs hreq hor => ?_) h
+        · obtain ⟨h1, h2⟩ := write_groups_isSome p hg
+          exact ⟨fun k' hk' x hx => by simp at hk'; subst hk'; exact h1 x hx, h2⟩
         · rw [request_write] at hreq
-          cases hk : k.mapM (Expr.eval p s.env) with
+          cases hk : k.mapM (Expr.eval p env) with
           | none => simp [hk] at hreq
           | some k' =>
-            cases hv : v.mapM (Expr.eval p s.env) with
+            cases hv : v.mapM (Expr.eval p env) with
             | none => simp [hk, hv] at hreq
             | some v' =>
               simp [hk, hv] at hreq; subst hreq
-              cases xs with
-              | cons => simp [Exec.assign] at ha
-              | nil =>
-              simp [Exec.assign] at ha; rw [← ha]
-              simp only [oracles] at hor
               obtain ⟨vv, hvv⟩ := ledgerOracle_write_some hor
               have hrd := ledgerOracle_cellWrite_read hor v.align
-              obtain ⟨hva, hvm⟩ := aligned_mapM_vals _ _ _ hv
-              have hvl' : v'.vals.length = v.align.length := by rw [mapM_eval_length p hvm, hvl]
-              have hfo : fieldsOf v.align vv.atoms = some v'.vals := by
-                apply fieldsOf_ofFields v.align v'.vals vv _ (singleLimb_spec hsl) hvl'
-                rw [← hva]; exact hvv
-              rw [hvv, Option.bind_some, hfo] at hrd
-              have hvev : Expr.evalList p s.env v.vals = some v'.vals := by rw [evalList_eq_mapM]; exact hvm
-              have hall : ∀ e ∈ v.vals, (e.eval p s.env).isSome :=
-                (evalList_isSome_iff p s.env v.vals).mp (by simp [hvev])
-              refine ⟨Nat.zero_le 2, gv, true, hg, hb, ?_, fun _ => ⟨[k'], v'.vals, ?_, hrd, ?_⟩, fun h => by simp at h⟩
-              · intro k₀ hk₀ x hx; simp at hk₀; subst hk₀
-                have := (aligned_mapM_vals _ _ _ hk).2
-                rw [← evalList_eq_mapM] at this
-                exact (evalList_isSome_iff p s.env _).mp (by simp [this]) x hx
-              · rw [List.mapM_cons, hk]; rfl
-              · split
-                · exact hvev
-                · rw [evalList_select p hg hb v.vals hall]; simp [hvev]
+              rw [hvv, Option.bind_some] at hrd
+              exact ⟨[k'], v', vv, by rw [List.mapM_cons, hk]; rfl, rfl, hvv, hrd⟩
+      · exact hold f' hf'
+  | none =>
+  cases hmi : mapInsert? ops with
+  | none => simp only; exact hold
+  | some kkv =>
+    obtain ⟨k₁, k₂, v⟩ := kkv
+    have hops := mapInsert?_spec hmi
+    cases hwf : writeFact g [k₁, k₂] v with
+    | none => simp only [hwf]; exact hold
+    | some f =>
+      simp only [hwf]
+      intro f' hf'
+      rcases mem_addFact hf' with rfl | hf'
+      · subst hops
+        refine write_holds p H wit hwf (by simp) (fun env act hg => mapIns_groups_isSome p hg)
+          (fun env req q q' xs hreq hor => ?_) h
+        rw [request_mapIns] at hreq
+        cases h1 : k₁.mapM (Expr.eval p env) with
+        | none => simp [h1] at hreq
+        | some k₁' =>
+          cases h2 : k₂.mapM (Expr.eval p env) with
+          | none => simp [h1, h2] at hreq
+          | some k₂' =>
+            cases hv : v.mapM (Expr.eval p env) with
+            | none => simp [h1, h2, hv] at hreq
+            | some v' =>
+              simp [h1, h2, hv] at hreq; subst hreq
+              obtain ⟨vv, hvv⟩ := ledgerOracle_mapIns_some hor
+              have hrd := ledgerOracle_mapInsert_read hor v.align
+              rw [hvv, Option.bind_some] at hrd
+              exact ⟨[k₁', k₂'], v', vv, by simp [List.mapM_cons, h1, h2], rfl, hvv, hrd⟩
       · exact hold f' hf'
 
 theorem go_sound : ∀ (stmts : List Stmt) (fs : List LFact) (s t : Exec.State ω LedgerState),

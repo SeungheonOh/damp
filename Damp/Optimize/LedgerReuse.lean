@@ -9,17 +9,21 @@ Two rewrites, one forward scan:
   plain read of the same path, alignment and guard is still valid: its read
   variables are bound to the earlier ones.
 * **Read after write.** A plain read of the contract state along `[k]` after a
-  *cell write* `push false k; push true v; ins false 1` under the same guard,
+  *cell write* `push false k; push true v; ins false 1`, or along `[k₁, k₂]`
+  after a *map insert* `idx [k₁]; push k₂; push v; ins 1; ins 1` (`mapInsert?`), under the same guard,
   for a single-limb alignment `v.align` equal to the read's: its read
   variables are bound to the written operands (`select g e 0` unless `g` is the
   constant 1; operands of at most `maxExprSize` nodes, so the circuit grows by
   a bounded amount per rewritten read).
 
 What is known is a list of `LFact`s. A fact is forgotten when a variable it
-mentions is rebound; a fact about the contract state is forgotten at every
-ledger statement that is not a plain read (it may write); a fact about the
-call context survives every ledger statement, since no request changes the
-call context. A witness call (cross-contract calls included) cannot change the
+mentions is rebound. At a ledger statement that is not a plain read, a fact
+about the contract state survives only if its path begins with constant keys
+(at most `maxFramePath` of them) that the statement's program provably leaves
+alone (`frameKeeps`, `Damp/Optimize/LedgerFrame.lean`: a write of another
+field, of the effects, or another key of the same nested map, any read); a
+fact about the call context survives every ledger statement, since no request
+changes the call context. A witness call (cross-contract calls included) cannot change the
 ledger state in the executor's model, so it forgets only the facts mentioning
 its results.
 
@@ -29,6 +33,7 @@ statements, so its public transcript differs. It is `Pass.SoundLedger`
 keeps outputs, private transcript, private state and ledger state.
 -/
 import Damp.Optimize.Pass
+import Damp.Optimize.LedgerFrame
 import Damp.IR.LedgerCheck
 
 namespace Damp.IR
@@ -87,12 +92,17 @@ def singleLimb (a : List AlignAtom) : Bool :=
 /-- A plain read `dup n; idx ci false path; popeq c a (rs as variables)`,
     `n ≤ 2`, reading into distinct variables that the path does not mention,
     the `idx` cached only on the effects or the call context (`n ≥ 1`, whose
-    read cache is full): `(n, path, a)`. -/
+    read cache is full): `(n, path, a)`. Also a read of the contract state
+    through two uncached `idx` (`dup 0; idx p₁; idx p₂; popeq`, a `Map.lookup`
+    or a nested field), which is the plain read along `p₁ ++ p₂`. -/
 def plainRead? (rs : List Var) : List (Op Expr) → Option (Nat × List (Aligned Expr) × List AlignAtom)
   | [.dup n, .idx ci false path, .popeq _ a res] =>
       if n ≤ 2 && (!ci || 1 ≤ n) && !rs.isEmpty && res == rs.map Expr.var && decide rs.Nodup &&
           !((pathVars path).any rs.contains)
       then some (n, path, a) else none
+  | [.dup 0, .idx false false p₁, .idx false false p₂, .popeq _ a res] =>
+      if !rs.isEmpty && res == rs.map Expr.var && decide rs.Nodup && !((pathVars (p₁ ++ p₂)).any rs.contains)
+      then some (0, p₁ ++ p₂, a) else none
   | _ => none
 
 /-- A cell write `push false k; push true v; ins false 1`: `(k, v)`. -/
@@ -100,10 +110,17 @@ def cellWrite? : List (Op Expr) → Option (Aligned Expr × Aligned Expr)
   | [.push false k, .push true v, .ins false 1] => some (k, v)
   | _ => none
 
-/-- The fact a cell write establishes, if the pass may use it. -/
-def writeFact (g : Expr) (k v : Aligned Expr) : Option LFact :=
+/-- A map insert `idx [k₁] (pushing the path); push false k₂; push true v; ins 1; ins 1 (cached)`
+    (`Map.insert` on a top-level map, a write of a cell nested in a map or a
+    structure): `(k₁, k₂, v)`. -/
+def mapInsert? : List (Op Expr) → Option (Aligned Expr × Aligned Expr × Aligned Expr)
+  | [.idx false true [k₁], .push false k₂, .push true v, .ins false 1, .ins true 1] => some (k₁, k₂, v)
+  | _ => none
+
+/-- The fact a write of `v` at `path` establishes, if the pass may use it. -/
+def writeFact (g : Expr) (path : List (Aligned Expr)) (v : Aligned Expr) : Option LFact :=
   if singleLimb v.align && v.vals.length == v.align.length && v.vals.all (fun e => e.size ≤ maxExprSize) then
-    some { guard := g, n := 0, path := [k], align := v.align,
+    some { guard := g, n := 0, path, align := v.align,
            vals := if g == .const 1 then v.vals else v.vals.map fun e => .select g e (.const 0) }
   else none
 
@@ -128,14 +145,26 @@ def missFacts (g : Expr) (rs : List Var) (n : Nat) (path : List (Aligned Expr)) 
   if g.vars.any rs.contains then forgetVars rs fs
   else addFact { guard := g, n, path, align := a, vals := rs.map Expr.var } (forgetVars rs fs)
 
+/-- How many constant keys of a fact's path the frame analysis protects. -/
+def maxFramePath : Nat := 3
+
+/-- A fact survives a ledger statement running `ops`: it is about the call
+    context (no request changes it), or about the contract state below a
+    constant path that `ops` provably leaves alone (`frameKeeps`). -/
+def keepsFact (ops : List (Op Expr)) (f : LFact) : Bool :=
+  f.n == 2 || (f.n == 0 && frameKeeps (constPrefix maxFramePath f.path) ops)
+
 /-- The facts kept after any other ledger statement. -/
 def otherFacts (g : Expr) (rs : List Var) (ops : List (Op Expr)) (fs : List LFact) : List LFact :=
-  let fs := forgetVars rs (fs.filter (·.n == 2))
-  match rs, cellWrite? ops with
-  | [], some (k, v) => match writeFact g k v with
+  let fs := forgetVars rs (fs.filter (keepsFact ops))
+  match rs, cellWrite? ops, mapInsert? ops with
+  | [], some (k, v), _ => match writeFact g [k] v with
     | some f => addFact f fs
     | none => fs
-  | _, _ => fs
+  | [], none, some (k₁, k₂, v) => match writeFact g [k₁, k₂] v with
+    | some f => addFact f fs
+    | none => fs
+  | _, _, _ => fs
 
 /-- The scan. -/
 def ledgerReuseGo : List LFact → List Stmt → List Stmt

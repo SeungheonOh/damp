@@ -203,10 +203,10 @@ TOTAL --O3                                                        6620          
 
 | | compactc | Damp `--no-opt` | Damp default | Damp `--O2` | Damp `--O3` | `--O2 --ledger-opt` | `--O3 --ledger-opt` |
 |---|---|---|---|---|---|---|---|
-| instructions | 6940 | 7652 | 6826 | 6778 | 6589 | 5295 | 5106 |
-| rows | 533 476 | 507 125 | 504 667 | 504 543 | 465 427 | 500 208 | 461 092 |
-| sum of 2^k | 779 328 | 777 792 | 776 320 | 775 808 | 726 656 | 769 792 | 720 640 |
-| circuits with smaller k than compactc's | 0 | 3 | 3 | 5 | 7 | 16 | 18 |
+| instructions | 6940 | 7652 | 6826 | 6778 | 6589 | 4811 | 4622 |
+| rows | 533 476 | 507 125 | 504 667 | 504 543 | 465 427 | 456 871 | 417 754 |
+| sum of 2^k | 779 328 | 777 792 | 776 320 | 775 808 | 726 656 | 702 912 | 653 760 |
+| circuits with smaller k than compactc's | 0 | 3 | 3 | 5 | 7 | 22 | 24 |
 
 (`test/bench.sh`, columns O2+L and O3+L of `bench/report.py`. `--O2` and `--O3` include the emitter's
 `constrain_eq a (-k)` for `constrain (a + k) zero`, which took 4 instructions and 4 rows off each;
@@ -263,8 +263,8 @@ them: at `--O3` the guarantee is relative to those implementations.
 | default | `simplify, foldDivmod, bounds2, simplify, algebra, commuteOpt` | 6826 / 504 667 |
 | `--O2` | `simplify, foldDivmod, assertEq, asserts, mergeChecks, simplify, bounds2, simplify, algebra, forwardOpt, forwardAllOpt, commuteOpt, assertZero` | 6778 / 504 543 |
 | `--O3` | `simplify, foldHashes Crypto.prims`, then `--O2`, then `shareSelects, shareGuarded, hashRanges` | 6589 / 465 427 |
-| `--O2 --ledger-opt` | `--O2`, then `ledgerReuse, ledgerDeadStore` (`Pass.SoundLedger` only) | 5295 / 500 208 |
-| `--O3 --ledger-opt` | `--O3`, then `ledgerReuse, ledgerDeadStore` (`Pass.SoundLedgerFor Crypto.prims`) | 5106 / 461 092 |
+| `--O2 --ledger-opt` | `--O2`, then `ledgerReuse, optimizeFull, ledgerDeadStore` (`Pass.SoundLedger` only) | 4811 / 456 871 |
+| `--O3 --ledger-opt` | `--O3`, then `ledgerReuse, optimizeFull, ledgerDeadStore` (`Pass.SoundLedgerFor Crypto.prims`) | 4622 / 417 754 |
 
 ### Where the rows are
 
@@ -388,39 +388,101 @@ transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent i
 
 ### Opt-in ledger passes (`--ledger-opt`)
 
-`--ledger-opt` runs `ledgerReuse` (a ledger read whose answer is known, from an earlier read of the
-same path or a cell write of the same key just before, is replaced by that value) and then
-`ledgerDeadStore` (a cell write overwritten by the next ledger statement is dropped) after the
-level's passes. Unlike every other pass they change what the circuit sends to the ledger, so the
-public transcript and the verifier key change, and they are proved only against the Lean model of
-Midnight's VM, from a well-formed state: same outputs, private transcript, private state and final
-ledger state (`Pass.SoundLedger`; DESIGN.md §2.6, §4). The default level is never affected.
+`--ledger-opt` runs, after the level's passes, `ledgerReuse` (a ledger read whose answer is known
+is replaced by that value), the `--O2` passes again (`optimizeFull`), and `ledgerDeadStore` (a
+cell write overwritten by the next ledger statement is dropped). Unlike every other pass the two
+ledger passes change what the circuit sends to the ledger, so the public transcript and the
+verifier key change, and they are proved only against the Lean model of Midnight's VM, from a
+well-formed state: same outputs, private transcript, private state and final ledger state
+(`Pass.SoundLedger`; DESIGN.md §2.6, §4). The default level is never affected.
 
-Size (`test/ledger-opt.sh`, `--O2` against `--O2 --ledger-opt`): 27 circuits change, **1483
-instructions and 4335 rows** fewer; 11 more circuits end up in a smaller size class than compactc's (16 against 5; sum of
-2^k 775 808 -> 769 792). Most of the instructions are the Impact programs of reads that are no longer sent; rows
-move less because `impact` instructions are cheap in rows.
+What `ledgerReuse` knows: the answer of an earlier plain read (one `idx`, or two: a `Map.lookup`,
+a field of a structure), the operands of a cell write, and the value of a map insert at the same
+key (`push`ed key the same expression). A fact about the contract state survives a later ledger
+statement when the fact's path begins with constant keys that the statement's program provably
+leaves alone: `frameKeeps` (Damp/Optimize/LedgerFrame.lean) interprets the program's stack
+abstractly and accepts it when every write into the protected part uses a constant key whose atoms
+differ from the protected one (a write of another field, a counter or Merkle tree or list of
+another field, the effects, another constant key of the same nested map), or puts back a
+container modified only elsewhere; every read is accepted. `frame_ledgerOracle`
+(Damp/Proofs/Ledger/OptFrame.lean) proves it against the VM model: a successful request of such a
+program leaves `svWalk state π` unchanged. Running `optimizeFull` again then folds what was
+forwarded (constants, earlier values), which is where most of the rows below come from; the dead
+stores are found after that folding (a written value that became a constant may be dropped when
+it fits its alignment as one atom).
+
+Size (`test/ledger-opt.sh`, `--O2` against `--O2 --ledger-opt`): 30 circuits change, **1967
+instructions and 47 672 rows** fewer (before this round: 27 circuits, 1483 and 4335). The ledger
+rewrites alone (without the second `optimizeFull`) save 4613 rows, 278 more than before (impacts
+and public inputs no longer sent); the rest is the `--O2` passes on the forwarded values: `coracle.withdraw` 85 219 -> 61 751,
+`coracle.concede` 50 468 -> 38 740, `coracle.start` 59 565 -> 53 855, `adt_merkle.test_historic`
+21 142 -> 18 995 (hashes of what is now known equal are shared), `pm_19287.test` 2 581 -> 470.
+Totals (`test/bench.sh`): `--O2 --ledger-opt` 4811 instructions / 456 871 rows (was 5295 /
+500 208), `--O3 --ledger-opt` 4622 / 417 754 (was 5106 / 461 092); 22 circuits end up in a smaller
+size class than compactc's at `--O2 --ledger-opt` (5 at `--O2`; sum of 2^k 775 808 -> 702 912).
 
 Behaviour and gas (`executor/test/ledger-opt.mjs`, run by `test/ledger-opt.sh`): the benchmark calls
 through the real runtime against both builds, each from the ledger state its previous call left;
 results, ledger states, Zswap states and private transcripts are equal, and Midnight's ZKIR checker
-accepts the rewritten circuits' proof data (617 checks pass). Gas the runtime charged (`gasCost` of
-the call), summed over the 28 successful calls of changed circuits, `--O2` -> `--O2 --ledger-opt`
-(read and compute time in millions of the runtime's units):
+accepts the rewritten circuits' proof data; every circuit keeps its arguments and sends no more
+ledger programs and has no more ZKIR instructions; and `bench/ledger_headroom.py --classes` finds no
+read or dead store left that the passes handle (828 checks pass; 617 before). Gas the runtime
+charged (`gasCost` of the call), summed over the 30 successful calls of changed circuits, `--O2` ->
+`--O2 --ledger-opt` (read and compute time in millions of the runtime's units):
 
 | program | calls | readTime | computeTime (x10^9) | bytesWritten | bytesDeleted |
 |---|---|---|---|---|---|
-| `pm_19287` | 11 | 56 780 -> 8 330 | 540.06 -> 82.42 | 210 710 -> 36 626 | 209 908 -> 35 824 |
-| `coracle` | 4 | 5 355 -> 4 505 | 74.52 -> 61.79 | 8 580 -> 8 580 | 8 042 -> 8 042 |
+| `pm_19287` | 11 | 56 780 -> 5 950 | 540.06 -> 64.63 | 210 710 -> 32 680 | 209 908 -> 31 878 |
+| `coracle` | 4 | 5 355 -> 4 165 | 74.52 -> 59.29 | 8 580 -> 8 580 | 8 042 -> 8 042 |
 | `unshielded_tokens` | 6 | 0 -> 0 | 35.03 -> 26.38 | 0 -> 0 | 0 -> 0 |
-| `pm_20028` | 5 | 2 380 -> 1 190 | 22.11 -> 13.36 | 1 856 -> 1 856 | 1 848 -> 1 848 |
+| `pm_20028` | 5 | 2 380 -> 680 | 22.11 -> 9.61 | 1 856 -> 1 856 | 1 848 -> 1 848 |
 | `composable_inner` | 2 | 850 -> 510 | 7.47 -> 4.97 | 72 -> 72 | 72 -> 72 |
-| **total** | 28 | **65 365 -> 14 535** (-78 %) | **679.19 -> 188.91** (-72 %) | **221 218 -> 47 134** (-79 %) | **219 870 -> 45 786** (-79 %) |
+| `assert_misc` | 1 | 850 -> 340 | 5.35 -> 2.67 | 834 -> 834 | 582 -> 582 |
+| `vectors` | 1 | 425 -> 170 | 2.67 -> 1.34 | 404 -> 404 | 250 -> 250 |
+| **total** | 30 | **66 640 -> 11 815** (-82 %) | **687.21 -> 168.89** (-75 %) | **222 456 -> 44 426** (-80 %) | **220 702 -> 42 672** (-81 %) |
+
+Before this round (the same calls but `assert_misc` and `vectors`, unchanged then) `--ledger-opt`
+left `pm_19287` at 8 330 / 82.42 / 36 626 / 35 824, `coracle` at 4 505 / 61.79, `pm_20028` at
+1 190 / 13.36: the new facts (reads across writes of other fields, map inserts) and the constant
+dead stores account for the difference.
 
 `pm_19287` writes a cell, reads it back and writes it again in loops; after `ledgerReuse` forwards
 the reads, `ledgerDeadStore` drops the overwritten writes, which is where the bytes written and
-deleted go. Elsewhere the saving is reads (`coracle`, `pm_20028`, `composable_inner`) and the
-compute time of the Impact programs no longer sent.
+deleted go. Elsewhere the saving is reads (`coracle`, `pm_20028`, `composable_inner`, `assert_misc`,
+`vectors`) and the compute time of the Impact programs no longer sent.
+
+What is left, and what was measured and not done (`python3 -I bench/ledger_headroom.py BUILD
+--classes [--rows] [--sim OUT]`: the passes replayed in Python with the frame analysis, the
+remaining rewrites applied to the ZKIR for rows and to `contract.json` for gas):
+
+* **Dead stores across writes of other top-level fields** (21, all in `pm_19287`: a field written in
+  a loop with writes of other fields between): under 300 rows, and gas readTime -1 785, computeTime
+  -25.65 x10^9, bytesWritten -19 116 over its calls. Not done: in the model a map is a list, and
+  if the contract state were a map without the dropped write's key, the write appends it, a write
+  of another new key between appends after it, and the overwriting write replaces it in place, so
+  the final state lists the two keys in another order than without the dropped write (the runtime's
+  maps are unordered; the model's equality is not). A proof needs the key known to be present
+  (an earlier write or read of it succeeded) and a relational version of the frame analysis
+  (two runs, one state differing at one key); neither is done.
+* **One forwarded operand above the size cap** (`zkir_generation.test1`, 37 nodes, 10 rows).
+* **Byte strings over 31 bytes** (`Bytes 32` and more, structures holding them): no read after such
+  a write in the benchmark; 2 in the examples (`bytes.claim`, `bytes.store`, 26 rows). The
+  write-then-read round trip holds only for limbs in range (`Cell.write_read_ranges`), which the
+  pass cannot see.
+* **Counters** (a read after an increment of a known value), **`member` after `insert`**, guarded
+  dead stores, and a store of the value just read from the same field: none in the benchmark or the
+  examples.
+* **Merging adjacent ledger statements** into one program (same guard, the second not using what
+  the first reads; `--merge`): the ZKIR does not change (0 rows), but gas does, over all 97
+  successful benchmark calls: computeTime 585.18 -> 339.08 x10^9 (-42 %), bytesWritten 187 189 ->
+  42 439 (-77 %), readTime unchanged (every query writes the state back). Restricted to plain
+  reads and cell writes it is -6 % computeTime, to programs without cached instructions, branches
+  or swaps -10 %. Not done: one query is not two in the model in general (the read cache carries
+  over, a cached instruction of the second program can hit where it would miss alone; the effects
+  are decoded and re-encoded between two queries and not inside one; the first program's final
+  stack and strength are checked between two queries), so a proof needs a relational simulation of
+  the cache and the effects; the naive merge (without the condition on the second program's
+  operands) changes `composable_inner.add`'s ledger state, as the runtime confirmed.
 
 ### Ideas measured and not pursued
 

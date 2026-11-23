@@ -96,13 +96,18 @@ def Circuit.optimizeMax (c : Circuit) : Circuit := runPasses maxPasses c
 
 /-- `--ledger-opt`, run after a level's passes: rewrite the ledger statements
     themselves (`ledgerReuse`: reuse a value just read or written instead of
-    reading it again; `ledgerDeadStore`: drop a write that a later write to the
-    same cell overwrites). Not `Pass.Sound`: the circuit sends the ledger
-    different Impact programs, so its public transcript and verifier key
-    differ. Proved `Pass.SoundLedger` (`Damp/Proofs/Optimize/LedgerSound.lean`):
-    against the Lean model of Midnight's VM, from a well-formed ledger state,
-    the outputs, private transcript, private state and final ledger state are
-    those of the original. -/
-def ledgerPasses : List Pass := [Circuit.ledgerReuse, Circuit.ledgerDeadStore]
+    reading it again, across writes of other fields), then run the `--O2`
+    passes again (`optimizeFull`, `Pass.Sound`: the values `ledgerReuse`
+    forwards are constants or earlier values, which those passes fold and
+    share), then `ledgerDeadStore` (drop a write that a later write to the same
+    cell overwrites; it needs the written values folded to constants or
+    expressions that cannot fail).
+    Not `Pass.Sound` as a whole: the circuit sends the ledger different Impact
+    programs, so its public transcript and verifier key differ. Proved
+    `Pass.SoundLedger` (`Damp/Proofs/Optimize/LedgerSound.lean`): against the
+    Lean model of Midnight's VM, from a well-formed ledger state, the outputs,
+    private transcript, private state and final ledger state are those of the
+    original. -/
+def ledgerPasses : List Pass := [Circuit.ledgerReuse, Circuit.optimizeFull, Circuit.ledgerDeadStore]
 
 end Damp.IR

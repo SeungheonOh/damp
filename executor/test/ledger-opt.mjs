@@ -242,6 +242,30 @@ const calls = [
 const constructorArgs = { tiny: [5n], test01: [5n], coracle: [], threading: [], gas_cost: [], pm_19287: [] };
 
 const LEVELS = ['o2', 'lo'];
+
+// Static checks on every circuit of every program: the same circuits with the same arguments, and the
+// rewritten one sends at most as many ledger programs and has at most as many ZKIR instructions.
+{
+  const progs = (await fs.readdir(path.join(root, 'o2'), { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name);
+  for (const prog of progs) {
+    const spec = async (l) => JSON.parse(await fs.readFile(path.join(root, l, prog, 'contract.json'), 'utf-8'));
+    const [a, b] = [await spec('o2'), await spec('lo')];
+    report(JSON.stringify(a.circuits.map((c) => [c.name, c.args])) === JSON.stringify(b.circuits.map((c) => [c.name, c.args])),
+      `${prog}: same circuits and arguments`);
+    for (const ca of a.circuits) {
+      const cb = b.circuits.find((c) => c.name === ca.name);
+      if (!cb) continue;
+      const nl = (c) => c.body.filter((s) => s.kind === 'ledger' && s.ops.length > 0).length;
+      report(nl(cb) <= nl(ca), `${prog}.${ca.name}: no more ledger programs`, `${nl(ca)} -> ${nl(cb)}`);
+      try {
+        const z = async (l) => JSON.parse(await fs.readFile(path.join(root, l, prog, 'zkir', `${ca.name}.zkir`), 'utf-8'));
+        const [za, zb] = [await z('o2'), await z('lo')];
+        report(zb.instructions.length <= za.instructions.length, `${prog}.${ca.name}: no more ZKIR instructions`,
+          `${za.instructions.length} -> ${zb.instructions.length}`);
+      } catch { /* circuits without ZKIR (none expected) */ }
+    }
+  }
+}
 const attempt = async (f) => { try { return { value: await f() }; } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; } };
 const encodeState = (s) => toJson((s instanceof rt.ChargedState ? s.state : s.data.state).encode(), 0);
 const stateAfter = (run) => run.context.callContext.currentQueryContext.state;
@@ -298,7 +322,7 @@ for (const [name, circuit, argsOf, shouldSucceed] of calls) {
   const c = await load(name);
   const args = typeof argsOf === 'function' ? argsOf(c) : argsOf;
   const label = `${name}.${circuit}(${args.map((a) => toJson(a, 0)).join(', ')})`.replaceAll('"', '').slice(0, 110);
-  const changed = await changedCircuit(name, circuit);
+  const changed = process.env.LO_ALL ? true : await changedCircuit(name, circuit);
   const runs = {};
   for (const level of LEVELS) runs[level] = await attempt(() => c.impl[level].contract.circuits[circuit](circuitContext(circuit, c.impl[level]), ...args));
   const errs = LEVELS.filter((l) => runs[l].error);

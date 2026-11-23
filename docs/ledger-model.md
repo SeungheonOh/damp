@@ -8,7 +8,9 @@ instructions *do*. `Damp/Ledger/` is a Lean model of Midnight's on-chain VM on
 the fragment Damp emits; `test/vm.sh` checks it against the real VM; and
 `Damp/Proofs/Ledger/` proves what Damp's `Cell`, `Counter`, `Map` and `Set`
 operations do against it, as well as `LedgerList`, the Merkle trees, kernel
-reads and maps inside maps.
+reads, maps inside maps, every kernel operation that writes the effects, the
+token library's operations, and the cross-contract call assumption
+`--ledger-opt` relies on.
 
 | File | Contents |
 |---|---|
@@ -17,11 +19,15 @@ reads and maps inside maps.
 | `Damp/Ledger/Merkle.lean` | The root of a bounded Merkle tree (`merkleHooks`), for the `root` instruction |
 | `Damp/Proofs/Ledger/Basic.lean` | `emitted` (the instructions an operation emits), shared lemmas |
 | `Damp/Proofs/Ledger/{Cell,Counter,Map,Nested,List,MerkleSpec,Kernel}.lean` | The theorems below |
+| `Damp/Proofs/Ledger/Effects.lean` | The kernel operations that write the effects: claims, mints, unshielded inputs, outputs and spends, contract calls |
+| `Damp/Proofs/Ledger/Tokens.lean` | The token library (`Damp/Lang/Tokens.lean`) composed from them; the balance read |
+| `Damp/Proofs/Ledger/Calls.lean` | The cross-contract call assumption, stated (`CallIsolated`) and used (`runC_eq_run`, `Pass.SoundLedger.runC`) |
 | `Damp/Proofs/Ledger/Limbs.lean` | Byte strings over 31 bytes: the write-then-read round trip for every alignment |
 | `Damp/Proofs/Ledger/Executor.lean` | The executor's theorems instantiated with the modelled ledger |
 | `Damp/Proofs/Interface/LedgerLogic.lean` | A program logic for circuit bodies run by the executor, ledger and witnesses included (`XRuns`) |
 | `Examples/LedgerProofs.lean` | Contract-level theorems about `vault.spend` and `counter.bump`, end to end |
 | `Test/Vm.lean`, `executor/test/vm-vectors.mjs`, `test/vm.sh` | The differential test |
+| `executor/test/call-isolation.mjs`, `test/calls-isolation.sh` | The call assumption tested on the runtime |
 
 ## The authority
 
@@ -138,7 +144,14 @@ rejected by the runtime as not `u32`); `addi` and `subi` exchanged; `dup`
 8 with well-formed and ill-formed keys and values (an `Either` with both sides
 set, tags 2 and 3, a 33-byte hash, an `Fr` equal to the modulus, `u64` and
 `u128` overflows, three, five or seven atoms, a map as value, other
-alignments, one key under two alignments). The calls include `tokens.mintUTo`
+alignments, one key under two alignments), and 58 running the kernel's
+effect-writing sequences exactly as Damp emits them (`claimIn`, `addIn`,
+`claimContractCall`) on effects that already hold entries (a query context
+left by an earlier query): a claim repeated, a call claimed third and with
+its sequence number taken, an addition to an existing entry with sums
+`2^64 - 1` and `2^64`, a present `u128` amount of `2^100` or an addition of
+`2^64` (both fail: the VM adds `u64`s), two additions in one query, keys with
+both sides set, and every slot written in one transaction. The calls include `tokens.mintUTo`
 and `tokens.sendU` with one-sided and two-sided `Either` arguments. Each runs
 through the real VM twice: `runProgram` (final
    stack with strengths, values read) and `QueryContext.query` (new state,
@@ -152,10 +165,10 @@ Result (the count varies by a few vectors between runs, since some example
 calls sample random values):
 
 ```
-26942 vectors (12378 succeed in the real VM)
-VM (runProgram):         26942 agree, 0 disagree
-query (QueryContext):    26942 agree, 0 disagree (770 rejected by the runtime's typed decoding of the effects)
-effects after a query:   6752 of 6752 successful queries agree
+26995 vectors (12421 succeed in the real VM)
+VM (runProgram):         26995 agree, 0 disagree
+query (QueryContext):    26995 agree, 0 disagree (779 rejected by the runtime's typed decoding of the effects)
+effects after a query:   6793 of 6793 successful queries agree
 ALL AGREE
 ```
 
@@ -187,8 +200,10 @@ definition in `Damp/Lang/Ledger.lean` emits, taken by running it), evaluated
 as the executor sends them (`Exec.request p env`), run through
 `ledgerOracle H` for any root hook `H`. The ledger state `σ` is well formed
 (`σ.WF`: its effects are as the runtime re-encodes them, now for all nine
-slots; no theorem statement had to change, since no specification writes the
-effects, but `WF` now holds of fewer states) and its contract
+slots; the field specifications did not have to change when the decoding of
+all nine slots was modelled, since they do not write the effects, but `WF`
+now holds of fewer states; the effect-writing ones of `Effects.lean` rely on
+it) and its contract
 state is `.array fields`; the field is top level (`path = [fieldKey index]`),
 so its index is below 256. Each theorem has the form
 `∃ req, (emitted op).bind (Exec.request p env) = some req ∧ ledgerOracle H req σ = ...`.
@@ -301,6 +316,71 @@ corollary states it with `merkleRootAt`.
 * `effectEntry_spend_both_sides`, `decodeEffects_spend_both_sides`: effects whose slot 8 holds a key whose
   `PublicAddress` has both sides non-zero do not decode, so a query leaving them fails.
 
+`Effects.lean`, the kernel operations that write the effects. The effects of
+a well-formed state are `.array es`, nine maps; the theorem for slot `i` takes
+`es[i]? = some (.map m)`. Each gives the oracle's answer: nothing is read, and
+the new state is `{ σ with effects := .array (es.set i (.map m')) }`, so the
+contract state and the call context are unchanged and only slot `i` changes.
+`m'` is written with `assocSet` (an existing entry for the key replaced in
+place, a new one added at the end) in the form the runtime re-encodes
+(`decodeEffects_set`). Keys are the atoms the request carries: `kv` with
+`AV.ofFields [.bytes 32] ks = some kv` for a `Bytes 32` (any hash the circuit
+computed; nothing is assumed about it):
+
+* `Kernel.claimZswapNullifier_spec`, `Kernel.claimZswapCoinReceive_spec`,
+  `Kernel.claimZswapCoinSpend_spec` (slots 0, 1, 2):
+  `= some ([], { σ with effects := .array (es.set i (.map (assocSet kv .null m))) })`. They never fail.
+* `Kernel.claimContractCall_spec` (slot 3), the address, entry point and
+  commitment stored as `kv` (`[bytes 32, bytes 32, field]`):
+  `= if m.length < 2^64 then some ([], { σ with effects := .array (es.set 3 (.map (assocSet ⟨alignContractCall, m.length :: kv.atoms⟩ .null m))) }) else none`:
+  the key is the sequence number (the number of claims before) and the triple.
+* The additions, `addReq_spec` (slots 4 to 8): with `old` the entry's amount
+  (`effAmount m kv`, 0 when absent) and `a` the amount,
+  `= if (assocGet kv m).isNone ∨ old + a < 2^64 then some ([], { σ with effects := .array (es.set i (.map (assocSet kv (amountCell i (old + a)) m))) }) else none`,
+  `amountCell` the runtime's `u64` (slots 4, 5) or `u128` (6 to 8). The VM
+  adds with `u64` arithmetic even for the `u128` amounts: an absent entry
+  takes any amount below `2^128`, an existing one fails unless the sum fits
+  64 bits (the runtime agrees: the new vectors above). Instances:
+  `Kernel.mintShielded_spec` (4), `Kernel.mintUnshielded_spec` (5),
+  `Kernel.incUnshieldedInputs_spec` (6), `Kernel.incUnshieldedOutputs_spec`
+  (7), `Kernel.claimUnshieldedCoinSpend_spec` (8), for a key that is a
+  well-formed `TokenType` (`tokenTypeOk`) or `(TokenType, PublicAddress)`
+  (`spendKeyOk`); with one that is not, `Kernel.incUnshieldedInputs_badKey`,
+  `Kernel.incUnshieldedOutputs_badKey`, `Kernel.claimUnshieldedCoinSpend_badKey`
+  (`addReq_badKey`): `= none`. An amount too wide for its alignment fails the
+  request (`addReq_wide`).
+* `Kernel.checkpoint_spec`: `ckpt` reads nothing and changes nothing (`= some ([], σ)`).
+
+`Tokens.lean`, the token library. **No hash fact is assumed**: commitments,
+nullifiers and token types are whatever the circuit computes with the
+executor's `Prims`; the theorems take their field elements as given.
+
+* `tokenKey_left`: `left c`, the key of every unshielded operation, is stored
+  as `(1, c, 0)`, a well-formed `TokenType`, so those operations never fail on
+  their key; `spendKey_left`: the spend key `(left c, r)` is well formed
+  exactly when `r` is a well-formed `PublicAddress`
+  (`sendUnshielded_badRecipient`: otherwise the request fails).
+* `receiveUnshielded_runs`, end to end through the executor (`XRuns`): under a
+  guard that holds, it completes exactly when `(1, c, 0)` is new in slot 6 or
+  the sum fits 64 bits, keeps the private state, and leaves
+  `{ σ with effects := .array (es.set 6 …) }`.
+* `addReq_seq`, `sendUnshielded_requests`, `mintUnshielded_requests`: the two
+  additions of `sendUnshielded` (slots 7 and 8) and of `mintUnshieldedToken`
+  (5 and 8) in sequence: they succeed exactly when each does on its own map,
+  and then both slots are updated.
+* `claims_compose`: any sequence of Zswap claims (32-byte keys, slots 0 to 2;
+  what `receiveShielded`, `sendShielded`, `mergeCoin` and `mintShieldedToken`
+  claim) never fails and adds each key to its slot.
+* `EffectsOnly`: every effect-writing kernel request changes neither the
+  contract state nor the call context (`claimReq_effectsOnly`,
+  `addReq_effectsOnly`, `callClaimReq_effectsOnly`), and neither does any
+  sequence of them (`effectsOnly_chain`, which also keeps `WF`).
+* `Kernel.balance_spec`: the balance of a token type when the transaction
+  started (context slot 5): `[0]` when absent, the entry read as `u128`
+  otherwise; the ledger unchanged.
+
+`Calls.lean`, the call assumption: see "Cross-contract calls" below.
+
 `Executor.lean`: `oracles_ledger`, `run_accepted_vm`, `run_accepted_by_zkir_vm`
 (`Exec.run_accepted` and `Exec.run_accepted_by_zkir` with `oracles H w`, the
 executor whose ledger is the modelled VM).
@@ -390,14 +470,79 @@ uniform. `Bytes 0` takes no field element in a circuit but one in the executor's
 conversion (`atomWidth` is at least 1), so a ledger cell of `Bytes 0` (or a
 structure containing one) cannot be written.
 
+## Cross-contract calls
+
+To the executor's definition a call of another contract is a witness
+(`docs/calls.md`): `Exec.step` asks `O.witness`, whose type
+(`String → List Fr → ω → Option (List Fr × ω)`) gives it neither the caller's
+ledger state nor a way to return one, so `Exec.run` threads the caller's
+ledger state unchanged across the call (`step_witness_ledger`,
+`step_bind_ledger`; the claim that follows changes only effects slot 3,
+`Kernel.claimContractCall_spec`). `--ledger-opt`'s theorem
+(`Pass.SoundLedger`) is about that executor. The real executor runs the
+callee (`callWitness` in `executor/src/executor.mjs`).
+
+`Damp/Proofs/Ledger/Calls.lean` states the assumption. `runC` is the executor
+whose calls are answered by the most general call oracle
+`C : String → List Fr → ω → σ → Option (List Fr × ω × σ)`, given the caller's
+ledger state and returning one (every other statement as `Exec.step`). The
+assumption:
+
+```lean
+def CallIsolated (C : CallOracle ω σ) (c : String → List Fr → ω → Option (List Fr × ω)) : Prop :=
+  ∀ n args w l, C n args w l = (c n args w).map fun (r, w') => (r, w', l)
+```
+
+the answer and the private state do not depend on the caller's ledger state,
+and it comes back unchanged (contract state, effects and call context). Under
+it, `runC_eq_run`: `runC p C O = Exec.run p (O.withCalls c)`, so every theorem
+about `Exec.run` applies; in particular `Pass.SoundLedger.runC`: a pass sound
+against the ledger keeps outputs, private transcript, private state and
+ledger state of `runC`, against the modelled ledger, from a well-formed state,
+for every isolated call oracle.
+
+`test/calls-isolation.sh` tests the assumption on the runtime. It logs every
+query of every contract taking part in a call (`QueryContext.prototype.query`
+wrapped: address, instructions, contract state and effects before and
+after) and checks that each contract's queries thread: each starts from the
+contract state and effects its previous query left. The one exception is the
+runtime's own claim of a call made by a Damp caller, which the executor
+undoes and the caller's circuit makes again from the same state with the same
+instructions; the check recognises it and counts it. Contracts of
+`Examples/Calls.lean`, run by Damp's executor, and `back`, compiled by compactc
+from the script (it calls `bump` of the contract stored in its ledger):
+
+| call | outcome |
+|---|---|
+| `caller.bump(5)`: the callee (`adder`) writes its own state | completes; caller 4 queries, 1 undone runtime claim; caller's state and effects the same across the call |
+| `caller.twice(1, 2)`: one callee twice | completes; the second call sees what the first left in the callee; caller unchanged across both |
+| `top.go(9)`: `top → relay → adder` | completes; `top` and `relay` (caller and callee) unchanged across their calls |
+| `back.addTo(7)`: `back` (compactc) `→ caller.bump` (Damp, as a callee) `→ adder` | completes; all three thread |
+| `caller.via(back, 4)`: `caller → back → caller`, re-entrant | refused: "Contract re-entrancy detected" (the runtime's `assertNoReentrancy`), before the inner `caller.bump` runs; nothing of the call survives |
+| `caller.via(caller, 4)`: a contract calling itself | refused the same way |
+
+and a forged log, in which the caller's state changes during the call, is
+reported (the check has teeth). So re-entrancy cannot change the caller's
+state mid-call: the runtime refuses it (compact-runtime 0.21.0, the version
+the executor runs). This is a test of the runtime the executor uses, not a
+proof; and it says nothing of a runtime that would allow re-entry.
+
 ## Not done, and what would make it easier
 
-* No theorems yet for the kernel's effect-writing operations
-  (`claimZswap*`, `mint*`, `claimUnshieldedCoinSpend`, `inc*`,
-  `claimContractCall`) or the balance reads, a `Set` inside a `Map`, Merkle
-  `insertHashIndex`, or ADTs nested deeper than a counter or map in a map.
-  The specifications are for top-level fields (`path = [fieldKey i]`) plus
-  those two nestings.
+* No theorems yet for a `Set` inside a `Map`, Merkle `insertHashIndex`, or
+  ADTs nested deeper than a counter or map in a map. The specifications are
+  for top-level fields (`path = [fieldKey i]`) plus those two nestings.
+* The shielded token operations (`mintShieldedToken`, `sendShielded`,
+  `mergeCoin`, `receiveShielded`) and `sendUnshielded` / `mintUnshieldedToken`
+  are stated at the level of the ledger requests they send
+  (`Tokens.lean`), not end to end through the executor: that needs `XRuns`
+  rules for zero-width witnesses (`createZswap*`) and their `if%` / `cond`
+  bodies. `receiveUnshielded` is end to end. `balanceLessThan` and
+  `balanceGreaterThan` have no theorem (they compare with `lt`, `u64` only).
+* The coin-storing operations (`Cell.writeCoin`, `Map.insertCoin`,
+  `Set.insertCoin`, `LedgerList.pushFrontCoin`, reading the context's
+  commitment indices) have no theorem.
+* The duplicate-key ordering gap (above, "What is abstracted") remains.
 * A `popeq` carries Damp's own alignment, under which the executor reads the
   value back; the VM does not check it against the value's alignment, so the
   read-back theorems take the stored value's atoms as given.

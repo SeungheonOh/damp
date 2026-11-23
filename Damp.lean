@@ -28,6 +28,7 @@ import Damp.Optimize.MergeChecks
 import Damp.Optimize.ShareHashes
 import Damp.Optimize.LedgerReuse
 import Damp.Optimize.LedgerDeadStore
+import Damp.Optimize.LedgerFrame
 import Damp.Optimize.InlineAll
 import Damp.Optimize.AssertEq
 import Damp.Optimize.Commute
@@ -102,6 +103,11 @@ import Damp.Proofs.Ledger.MerkleSpec
 import Damp.Proofs.Ledger.Kernel
 import Damp.Proofs.Ledger.OptEffects
 import Damp.Proofs.Ledger.OptVm
+import Damp.Proofs.Ledger.OptFrame
+import Damp.Proofs.Ledger.OptRead
+import Damp.Proofs.Ledger.Effects
+import Damp.Proofs.Ledger.Calls
+import Damp.Proofs.Ledger.Tokens
 import Damp.Proofs.Optimize.LedgerSound
 import Damp.Proofs.Optimize.LedgerReuseBase
 import Damp.Proofs.Optimize.LedgerReuse

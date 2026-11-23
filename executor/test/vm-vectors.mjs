@@ -546,6 +546,69 @@ for (const [n, c] of distinct.entries()) {
     [...put(6, [T, [1n, h, 0n]], u128(5n)), ...put(6, [[b(8), b(32), b(32)], [1n, h, 0n]], u128(5n))]);
   addVector('synthetic effects: one key, two alignments, other values', 'synthetic', qc0,
     [...put(6, [T, [1n, h, 0n]], u128(5n)), ...put(6, [[b(8), b(32), b(32)], [1n, h, 0n]], u128(6n))]);
+
+  // The kernel's effect-writing operations exactly as Damp emits them
+  // (Damp/Lang/Ledger.lean, `claimIn`, `addIn`, `claimContractCall`; their
+  // theorems are in Damp/Proofs/Ledger/Effects.lean), run on effects that
+  // already hold entries: a query context left by an earlier query, whose
+  // effects are as the runtime re-encodes them. This reaches the `addIn`
+  // branch that adds to an existing entry (u64 arithmetic, also for the u128
+  // amounts of slots 6 to 8), claims repeated, and a call claimed after others.
+  const claimIn = (slot, x) => put(slot, [[b(32)], [x]], nul);
+  const addIn = (slot, key, w, amt) => [{ swap: { n: 0 } },
+    { idx: { cached: true, pushPath: true, path: [{ tag: 'value', value: av([b(1)], [BigInt(slot)]) }] } },
+    cell(key[0], key[1]), { dup: { n: 1 } }, { dup: { n: 1 } }, 'member', cell([b(w)], [amt]), { swap: { n: 0 } }, 'neg',
+    { branch: { skip: 4 } }, { dup: { n: 2 } }, { dup: { n: 2 } }, { idx: { cached: true, pushPath: false, path: [{ tag: 'stack' }] } },
+    'add', { ins: { cached: true, n: 2 } }, { swap: { n: 0 } }];
+  const claimCall = (a, e, c) => [{ swap: { n: 0 } },
+    { idx: { cached: true, pushPath: true, path: [{ tag: 'value', value: av([b(1)], [3n]) }] } },
+    { dup: { n: 0 } }, 'size', cell([b(32), b(32), f], [a, e, c]), { concat: { cached: true, n: 160 } }, nul,
+    { ins: { cached: true, n: 2 } }, { swap: { n: 0 } }];
+  const after = (qc, ops) => qc.query(ops, costModel).context;
+  const M64 = (1n << 64n) - 1n;
+  const tok = [T, [1n, h, 0n]];
+  const spendKey = [[...T, ...T], [1n, h, 0n, 1n, a, 0n]];
+  const kernel = [];   // [name, starting query context, program]
+  for (const slot of [0, 1, 2]) {
+    const q1 = after(qc0, claimIn(slot, h));
+    kernel.push([`claim slot ${slot}, fresh`, qc0, claimIn(slot, h)]);
+    kernel.push([`claim slot ${slot}, again`, q1, claimIn(slot, h)]);
+    kernel.push([`claim slot ${slot}, another`, q1, claimIn(slot, H)]);
+  }
+  {
+    const q1 = after(qc0, claimCall(a, h, 5n));
+    const q2 = after(q1, claimCall(a, h, 6n));
+    kernel.push(['call claim, first', qc0, claimCall(a, h, 5n)]);
+    kernel.push(['call claim, second', q1, claimCall(a, h, 6n)]);
+    kernel.push(['call claim, third, max values', q2, claimCall(H, H, P - 1n)]);
+    // An entry whose sequence number collides with the next claim's.
+    const qx = after(qc0, put(3, [C, [1n, a, h, 7n]], nul));
+    kernel.push(['call claim, sequence number taken', qx, claimCall(a, h, 7n)]);
+  }
+  for (const [slot, key, w] of [[4, [[b(32)], [h]], 8], [5, [[b(32)], [h]], 8], [6, tok, 16], [7, tok, 16], [8, spendKey, 16]]) {
+    kernel.push([`add slot ${slot}, absent`, qc0, addIn(slot, key, w, 5n)]);
+    kernel.push([`add slot ${slot}, absent, max`, qc0, addIn(slot, key, w, w === 8 ? M64 : (1n << 128n) - 1n)]);
+    const q5 = after(qc0, addIn(slot, key, w, 5n));
+    kernel.push([`add slot ${slot}, present`, q5, addIn(slot, key, w, 7n)]);
+    kernel.push([`add slot ${slot}, present, sum 2^64-1`, q5, addIn(slot, key, w, M64 - 5n)]);
+    kernel.push([`add slot ${slot}, present, sum 2^64`, q5, addIn(slot, key, w, M64 - 4n)]);
+    kernel.push([`add slot ${slot}, present, other key`, q5, addIn(slot, slot <= 5 ? [[b(32)], [H]] : slot < 8 ? [T, [0n, 0n, h]] : [[...T, ...T], [1n, h, 0n, 0n, 0n, u]], w, 7n)]);
+    kernel.push([`add slot ${slot}, twice in one query`, qc0, [...addIn(slot, key, w, 5n), ...addIn(slot, key, w, 6n)]]);
+    if (w === 16) {
+      const qBig = after(qc0, addIn(slot, key, w, 1n << 100n));
+      kernel.push([`add slot ${slot}, present 2^100, add 1`, qBig, addIn(slot, key, w, 1n)]);
+      kernel.push([`add slot ${slot}, present 5, add 2^64`, q5, addIn(slot, key, w, 1n << 64n)]);
+      kernel.push([`add slot ${slot}, key with both sides set`, qc0, addIn(slot, slot < 8 ? [T, [1n, h, h]] : [[...T, ...T], [1n, h, 0n, 0n, a, u]], w, 5n)]);
+    }
+  }
+  // All of them in one transaction's effects: every slot written, then each again.
+  {
+    let q = qc0;
+    for (const [, , ops] of kernel.filter(([name]) => / absent$|fresh$|call claim, first/.test(name))) q = after(q, ops);
+    kernel.push(['all slots, then a claim and an addition', q, [...claimIn(0, H), ...addIn(6, tok, 16, 9n)]]);
+  }
+  for (const [name, qc, ops] of kernel) addVector(`synthetic kernel effects: ${name}`, 'synthetic', qc, ops);
+  console.error(`${kernel.length} kernel effect vectors`);
 }
 
 fs.writeFileSync(path.join(outDir, 'vectors.json'), JSON.stringify({ values, vectors }));

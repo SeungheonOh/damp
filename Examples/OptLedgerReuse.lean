@@ -104,8 +104,8 @@ private def same (c : Circuit) (inputs : List Nat) : Bool := run c inputs == run
 
 private def c1 := mk 1 [rd one 1 10, wr one 2 (.add (.var 10) (.var 0)), rd one 2 11, rd one 1 12, ctx 13, ctx 15]
   [.var 11, .var 12, .var 13, .var 16]
--- the write of field 2 makes the pass forget what it knew of field 1 (no frame reasoning yet)
-#guard after c1 == "LLBLLBB"
+-- the write of field 2 leaves what the pass knows of field 1 (frame reasoning, `frameKeeps`)
+#guard after c1 == "LLBBLBB"
 #guard same c1 [5]
 #guard run c1 [5] != "fails"
 -- a guard off: the reads are zeros, on both sides

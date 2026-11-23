@@ -1,6 +1,7 @@
 /-
-`--ledger-opt`: the ledger passes (`ledgerPasses`: `ledgerReuse`, then
-`ledgerDeadStore`) after a level's passes.
+`--ledger-opt`: the ledger passes (`ledgerPasses`: `ledgerReuse`, then the
+`--O2` passes again, `optimizeFull`, then `ledgerDeadStore`) after a level's
+passes.
 
 * The ledger passes are sound against the modelled ledger
   (`ledgerPasses_soundLedger`) and keep the ledger check
@@ -64,8 +65,9 @@ theorem Pass.SoundLedgerFor.after_soundFor {p : Prims} {f g : Pass} (hf : Pass.S
 theorem ledgerPasses_soundLedger' : ∀ f ∈ ledgerPasses, Pass.SoundLedger f := by
   intro f hf
   simp only [ledgerPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
-  rcases hf with h | h <;> subst h
+  rcases hf with h | h | h <;> subst h
   · exact Circuit.ledgerReuse_soundLedger
+  · exact Circuit.optimizeFull_sound.soundLedger
   · exact Circuit.ledgerDeadStore_soundLedger
 
 /-- The ledger passes, in order, are sound against the modelled ledger. -/
@@ -77,8 +79,9 @@ theorem ledgerPasses_keepsLedger : Pass.KeepsLedger (runPasses ledgerPasses) := 
   refine runPasses_keepsLedger _ ?_
   intro f hf
   simp only [ledgerPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
-  rcases hf with h | h <;> subst h
+  rcases hf with h | h | h <;> subst h
   · exact Circuit.ledgerReuse_checkLedger
+  · exact Circuit.optimizeFull_checkLedger
   · exact Circuit.ledgerDeadStore_checkLedger
 
 /-- The default level, then the ledger passes, is sound against the modelled ledger. -/
