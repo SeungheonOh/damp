@@ -809,7 +809,11 @@ theorem go_sound : ∀ (stmts : List Stmt) (fs : List LFact) (s t : Exec.State �
     | witness g name args outs sh =>
       exact emit_case p _ _ rest _ _ s t hobs
         (fun r h => inv_quiet p _ hinv h (by intros; simp) (fun f hf => by
-          obtain ⟨h1, h2⟩ := mem_forgetVars hf; exact ⟨h1, by simpa [Stmt.lrBinds] using h2⟩))
+          obtain ⟨h1, h2⟩ := mem_forgetVars hf
+          refine ⟨?_, by simpa [Stmt.lrBinds] using h2⟩
+          split at h1
+          · exact (List.mem_filter.mp h1).1
+          · exact h1))
         (ih _)
     | ledger g rs ops =>
       cases hpr : plainRead? rs ops with

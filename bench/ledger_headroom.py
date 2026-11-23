@@ -481,7 +481,11 @@ def sim_reuse(c, cname):
         k = s['kind']
         if k == 'bind': forget({s['var']}); continue
         if k == 'witness':
-            forget({o['var'] for o in s['outs']}); continue
+            forget({o['var'] for o in s['outs']})
+            if s['name'] == 'createZswapOutput' or s['name'].startswith('call:'):
+                # `keepsAcrossWitness`: a fact about the call context's slot 1 (`com_indices`) is forgotten
+                facts = [f for f in facts if f['n'] != 2 or (f['pi'] and f['pi'][0][1] != (1,))]
+            continue
         if k != 'ledger' or (not s['ops'] and not s['reads']): continue
         g = canon(s['guard'])
         pr = plain_read(s)
@@ -582,7 +586,11 @@ def sim_dead(c):
             if not frame_keeps([kc], t['ops']): break
             pr = plain_read(t)
             if pr and const_prefix(pr[1])[:1] == [kc]: break
-            if touches_root(t['ops']): cls.append('across-root-writes')
+            if touches_root(t['ops']):
+                # a write of another top-level field: a map insert or counter step (whose success
+                # implies the field is present, so the contract state's entry order is kept), or
+                # anything else
+                cls.append('across-root-writes' if (map_insert2(t) or counter_incr(t)) else 'across-root-cellwrites')
             elif not pr: cls.append('across-other')
             else: cls.append('across-reads')
     return rem
@@ -797,12 +805,19 @@ def run(ops, ts, check, fuel=None):
 def boundary(ts):
     return (len(ts) == 3 and ts[0][1] is True and ts[1][0] == ('o', 1) and ts[1][1] is False and ts[1][2]
             and ts[2][0] == ('o', 0) and ts[2][1] is False and ts[2][2])
-def why_not(p1, p2):
+def effect_slots(ops):
+    """The effects slots a program writes: `swap 0; idx (cached, pushing its path) [slot]`."""
+    return {int(ops[i + 1]['path'][0]['vals'][0]['value']) for i in range(len(ops) - 1)
+            if ops[i]['kind'] == 'swap' and ops[i]['n'] == 0 and ops[i + 1]['kind'] == 'idx' and ops[i + 1]['pushPath']}
+
+def why_not(p1, p2, eff=False):
     try:
         ends = run(p1, INIT, False)
     except Fail as e:
         return 'p1:' + str(e)
     for t in ends:
+        if eff and len(t) == 3 and t[1][0] != ('o', 1):
+            t = [t[0], (('o', 1),) + tuple(t[1][1:]), t[2]]
         if not boundary(t):
             if len(t) != 3: return 'p1-height'
             if t[0][1] is not True: return 'p1-weakstate'
@@ -854,24 +869,113 @@ def m_uses(s):
     return m_vars({k: v for k, v in s.items() if k not in ('reads', 'outs', 'var')})
 
 
+def rw_sets(ops):
+    """(reads, writes) of a program: constant top-level keys of the contract state, 'eff' (the effects),
+    'ctx' (the call context), '*' (anything). A tag interpretation: ('root',) the state, ('top', k) inside
+    its field k, ('eff',), ('ctx',), ('v',) anything else."""
+    R, W = set(), set()
+    def key_of(a):
+        k = const_key(a)
+        return k if k else None
+    def area(t):
+        return {'root': '*', 'top': t[1] if len(t) > 1 else '*', 'eff': 'eff', 'ctx': 'ctx'}.get(t[0])
+    def go(i, ts, fuel):
+        if fuel == 0: R.add('*'); W.add('*'); return
+        while i < len(ops):
+            o = ops[i]; k = o['kind']; i += 1
+            try:
+                if k == 'dup': ts = [ts[o['n']]] + ts
+                elif k == 'swap':
+                    n = o['n'] + 1; ts = list(ts); ts[0], ts[n] = ts[n], ts[0]
+                elif k in ('idx', 'idxStack'):
+                    keys = [key_of(a) for a in o['path']]
+                    if k == 'idxStack': keys.append(None); ts = ts[1:]
+                    curr, ts = ts[0], ts[1:]
+                    for kk in keys:
+                        if k == 'idx' and o['pushPath']: ts = [('v',), curr] + ts
+                        if curr[0] == 'root':
+                            R.add(kk if kk else '*'); curr = ('top', kk) if kk else ('top',)
+                        elif curr[0] in ('top', 'eff', 'ctx'):
+                            R.add(area(curr))
+                        else: curr = ('v',)
+                    ts = [curr] + ts
+                elif k == 'ins':
+                    curr, ts = ts[0], ts[1:]
+                    for _ in range(o['n']):
+                        key, cont, ts = ts[0], ts[1], ts[2:]
+                        if cont[0] == 'root':
+                            W.add('*' if key[0] != 'k' else key[1]); curr = cont
+                        elif cont[0] in ('top', 'eff', 'ctx'):
+                            W.add(area(cont)); curr = cont
+                        else: curr = ('v',)
+                    ts = [curr] + ts
+                elif k == 'rem':
+                    key, cont, ts = ts[0], ts[1], ts[2:]
+                    if cont[0] == 'root': W.add('*' if key[0] != 'k' else key[1])
+                    elif cont[0] in ('top', 'eff', 'ctx'): W.add(area(cont))
+                    ts = [cont] + ts
+                elif k == 'push':
+                    kk = key_of(o['value']); ts = [('k', kk) if kk else ('v',)] + ts
+                elif k in ('pushNull', 'pushState'): ts = [('v',)] + ts
+                elif k == 'branch':
+                    ts = ts[1:]; go(i + o['skip'], ts, fuel - 1)
+                elif k == 'jmp': i += o['skip']
+                elif k in ('popeq', 'pop', 'log'):
+                    if ts[0][0] in ('root', 'top', 'eff', 'ctx'): R.add(area(ts[0]))
+                    ts = ts[1:]
+                elif k in ('lt', 'eq', 'and', 'or', 'add', 'sub', 'concat', 'concatCached', 'member'):
+                    for t in ts[:2]:
+                        if t[0] in ('root', 'top', 'eff', 'ctx'): R.add(area(t))
+                    ts = [('v',)] + ts[2:]
+                elif k in ('type', 'size', 'neg', 'root', 'addi', 'subi'):
+                    if ts[0][0] in ('root', 'top', 'eff', 'ctx'): R.add(area(ts[0]))
+                    ts = [('v',)] + ts[1:]
+                elif k == 'ckpt': pass
+                else: R.add('*'); W.add('*'); return
+            except IndexError:
+                R.add('*'); W.add('*'); return
+        if not ts or ts[0][0] != 'root': W.add('*')
+    go(0, [('root',), ('eff',), ('ctx',)], 64)
+    return R, W
+
+def l_commutes(a, b):
+    """Two programs commute: neither writes what the other reads or writes; at most one writes the effects."""
+    ra, wa = rw_sets(a); rb, wb = rw_sets(b)
+    def meet(x, y): return '*' in x and y - {'ctx'} or '*' in y and x - {'ctx'} or bool(x & y)
+    return not (meet(wa, rb | wb) or meet(wb, ra | wa))
+
+
 def main_merge(src, dst, mode):
     """Merge ledger statements with the same guard, the second not using what the first reads, under
     `mode`: all / simple / nocache (adjacent only), seq (adjacent, `mergeable` and the other conditions
     of `mergeInto`), seqgap (seq, also across statements that are not ledger statements and commute
     with the second, as `Circuit.ledgerMerge` does)."""
     stats = collections.Counter()
-    def ok(a, b):
-        if canon(a['guard']) != canon(b['guard']): stats['guard'] += 1; return False
-        if m_uses(b) & set(a['reads']): stats['dep'] += 1; return False
-        if mode == 'all': return True
-        if mode == 'simple': return simple(a['ops']) and simple(b['ops'])
-        if mode == 'nocache': return nocache(a['ops']) and nocache(b['ops'])
-        if set(a['reads']) & set(b['reads']) or m_vars(a['ops']) & set(b['reads']): stats['dep'] += 1; return False
-        if len(a['ops']) + len(b['ops']) > 160: stats['size'] += 1; return False
-        w = why_not(a['ops'], b['ops'])
-        if w: stats[w] += 1; return False
+    base, *flags = mode.split('+')
+    flags = set(flags)
+    def ok(a, b, count=True):
+        st = stats if count else collections.Counter()
+        if canon(a['guard']) != canon(b['guard']): st['guard'] += 1; return False
+        if m_uses(b) & set(a['reads']): st['dep'] += 1; return False
+        if base == 'all': return True
+        if base == 'simple': return simple(a['ops']) and simple(b['ops'])
+        if base == 'nocache': return nocache(a['ops']) and nocache(b['ops'])
+        if set(a['reads']) & set(b['reads']) or m_vars(a['ops']) & set(b['reads']): st['dep'] += 1; return False
+        if len(a['ops']) + len(b['ops']) > 160 and 'nocap' not in flags: st['size'] += 1; return False
+        w = why_not(a['ops'], b['ops'], eff='eff' in flags)
+        if w is None and 'eff05' in flags and effect_slots(a['ops']) - {0, 1, 2, 3, 4, 5}: w = 'p1-effects-6-8'
+        if w == 'p2:ins miss' and 'miss' in flags: w = None
+        if w: st[w] += 1; return False
         return True
-    gap_ok = mode == 'seqgap'
+    gap_ok = base == 'seqgap' or 'gap' in flags
+    def gap_free(g):
+        # a built-in witness that changes the query context (`createZswapOutput` inserts its commitment
+        # into the call context's `com_indices`), or a cross-contract call: a ledger statement may not
+        # move above it (`nozswap`); no witness at all (`nowit`)
+        if g['kind'] != 'witness': return True
+        if 'nowit' in flags: return False
+        if 'nozswap' in flags and (g['name'] == 'createZswapOutput' or g['name'].startswith('call:')): return False
+        return True
     n = 0
     for d in sorted(glob.glob(os.path.join(src, '*'))):
         name = os.path.basename(d)
@@ -887,10 +991,23 @@ def main_merge(src, dst, mode):
                         between.append(out[j]); j -= 1
                     if j >= 0 and out[j]['ops'] and (gap_ok or not between) and len(between) <= 64 and all(
                             not (m_uses(s) & m_binds(g)) and not (m_binds(s) & (m_uses(g) | m_binds(g)))
-                            for g in between) and ok(out[j], s):
+                            for g in between) and all(gap_free(g) for g in between) and ok(out[j], s):
                         out[j] = {**out[j], 'reads': out[j]['reads'] + s['reads'], 'ops': out[j]['ops'] + s['ops']}
                         n += 1
                         continue
+                    if 'reorder' in flags and j >= 0:
+                        # move `s` above earlier statements (ledger ones it commutes with, `l_commutes`)
+                        # into an earlier ledger statement it can merge with
+                        merged = False
+                        for k in range(len(out) - 1, max(-1, len(out) - 66), -1):
+                            x = out[k]
+                            if x['kind'] == 'ledger' and x['ops'] and k < j and ok(x, s, count=False):
+                                out[k] = {**x, 'reads': x['reads'] + s['reads'], 'ops': x['ops'] + s['ops']}
+                                n += 1; stats['reordered'] += 1; merged = True; break
+                            if (m_uses(s) & m_binds(x)) or (m_binds(s) & (m_uses(x) | m_binds(x))): break
+                            if x['kind'] == 'ledger' and x['ops'] and not l_commutes(s['ops'], x['ops']): break
+                            if x['kind'] not in ('ledger', 'bind', 'assert', 'constrain', 'witness') or not gap_free(x): break
+                        if merged: continue
                 out.append(s)
             circ['body'] = out
         json.dump(c, open(os.path.join(od, 'contract.json'), 'w'))

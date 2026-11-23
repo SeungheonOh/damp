@@ -1,7 +1,7 @@
 /-
 `--ledger-opt`: the ledger passes (`ledgerPasses`: `ledgerReuse`, then the
 `--O2` passes again, `optimizeFull`, then `ledgerDeadStore`, then
-`ledgerMerge`) after a level's passes.
+`ledgerHoist`, then `ledgerMerge`) after a level's passes.
 
 * The ledger passes are sound against the modelled ledger
   (`ledgerPasses_soundLedger`) and keep the ledger check
@@ -23,6 +23,7 @@ import Damp.Proofs.Optimize.LedgerReuse
 import Damp.Proofs.Optimize.LedgerDeadStore
 import Damp.Proofs.Optimize.LedgerReuseCheck
 import Damp.Proofs.Optimize.LedgerMerge
+import Damp.Proofs.Optimize.LedgerHoist
 
 namespace Damp.IR
 open Damp.Zkir (Prims)
@@ -66,10 +67,11 @@ theorem Pass.SoundLedgerFor.after_soundFor {p : Prims} {f g : Pass} (hf : Pass.S
 theorem ledgerPasses_soundLedger' : ∀ f ∈ ledgerPasses, Pass.SoundLedger f := by
   intro f hf
   simp only [ledgerPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
-  rcases hf with h | h | h | h <;> subst h
+  rcases hf with h | h | h | h | h <;> subst h
   · exact Circuit.ledgerReuse_soundLedger
   · exact Circuit.optimizeFull_sound.soundLedger
   · exact Circuit.ledgerDeadStore_soundLedger
+  · exact Circuit.ledgerHoist_soundLedger
   · exact Circuit.ledgerMerge_soundLedger
 
 /-- The ledger passes, in order, are sound against the modelled ledger. -/
@@ -81,10 +83,11 @@ theorem ledgerPasses_keepsLedger : Pass.KeepsLedger (runPasses ledgerPasses) := 
   refine runPasses_keepsLedger _ ?_
   intro f hf
   simp only [ledgerPasses, List.mem_cons, List.not_mem_nil, or_false] at hf
-  rcases hf with h | h | h | h <;> subst h
+  rcases hf with h | h | h | h | h <;> subst h
   · exact Circuit.ledgerReuse_checkLedger
   · exact Circuit.optimizeFull_checkLedger
   · exact Circuit.ledgerDeadStore_checkLedger
+  · exact Circuit.ledgerHoist_checkLedger
   · exact Circuit.ledgerMerge_checkLedger
 
 /-- The default level, then the ledger passes, is sound against the modelled ledger. -/

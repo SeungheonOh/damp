@@ -42,6 +42,9 @@ private def after (c : Circuit) : String := shape c.ledgerDeadStore
 #guard after (mk 1 [wr 1 (.var 0), wrA one (fieldKey 1) [.bytes 40] [.var 0, .var 0]] []) == "L"
 -- a run of writes keeps the last
 #guard after (mk 1 [wr 1 (.var 0), wr 1 (.var 0), wr 1 (.var 0)] []) == "L"
+-- not across `createZswapOutput` or a contract call (`ctxWitness`)
+#guard after (mk 1 [wr 1 (.var 0), .witness one "createZswapOutput" [] [] (.tuple []), wr 1 (.var 0)] []) == "LWL"
+#guard after (mk 1 [wr 1 (.var 0), .witness one "call:I.c" [] [] (.tuple []), wr 1 (.var 0)] []) == "LWL"
 
 /-! ### The side conditions stop it -/
 

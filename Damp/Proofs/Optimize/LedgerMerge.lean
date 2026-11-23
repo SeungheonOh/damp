@@ -654,13 +654,15 @@ theorem ledger_step_private (O : Exec.Oracles ω σ) {s r : Exec.State ω σ} {g
           simp at h; subst h; rfl
 
 /-- **A ledger statement and a statement that is not one commute**, when
-    neither reads or binds what the other binds. -/
+    neither reads or binds what the other binds. (`lcommutes` also refuses the
+    witnesses that change the runtime's query context, `ctxWitness`, which the
+    model's witnesses cannot do: that condition is not needed here.) -/
 theorem step_commute (O : Exec.Oracles ω σ) (x : Stmt) (hx : x.isLedger = false) (g : Expr) (rs : List Var)
     (ops : List (Op Expr)) (hne : ops ≠ []) (hc : lcommutes (.ledger g rs ops) x = true) (s : Exec.State ω σ) :
     (Exec.step p O s x).bind (fun r => Exec.step p O r (.ledger g rs ops)) =
       (Exec.step p O s (.ledger g rs ops)).bind (fun r => Exec.step p O r x) := by
   simp only [lcommutes, Bool.and_eq_true, Bool.not_eq_true', List.any_eq_false, Bool.or_eq_false_iff] at hc
-  obtain ⟨hc1, hc2⟩ := hc
+  obtain ⟨⟨-, hc1⟩, hc2⟩ := hc
   obtain ⟨o, hW, ho⟩ := step_patch p O x hx s
   rw [ho s (fun _ _ => rfl) rfl]
   -- after the ledger statement, `x` sees what it saw before

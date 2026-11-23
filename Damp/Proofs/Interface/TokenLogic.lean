@@ -269,6 +269,30 @@ theorem XRuns.when_someOp {c : Boolean} {m : CircuitM Unit} {ops : List (Impact.
       (fun _ _ w l => w = st.private_ ∧ l = if gb && cb then σ₁ else st.ledger) :=
   (XRuns.when_ledgerOpE hm hops hg hc hreq).conseq (by simp) fun _ _ _ _ h => ⟨h.1, guarded_step' h.2⟩
 
+/-- **A guarded ledger operation that reads nothing and whose answer is
+    `o.map fun q => ([], f q)`** (the form of the coin-storing operations, `o`
+    the qualified coin): under a guard meaning `gb` it completes exactly when
+    `gb → o.isSome`, and leaves `f q` for the `q` in `o` if `gb`, the ledger
+    unchanged otherwise. -/
+theorem XRuns.mapOp {m : CircuitM Unit} {ops : List (Impact.Op Expr)} (hm : m = Damp.ledgerOp [] ops)
+    {s : Build} {st : Exec.State ω σ} {gb : Bool} {β : Type} {o : Option β} {f : β → σ}
+    (hops : ops ≠ []) (hg : GuardIs p s st.runState gb)
+    (hreq : ∀ e, Agree s.next st.env e →
+      ∃ req, (Ledger.emitted m).bind (Exec.request p e) = some req ∧
+        O.ledger req st.ledger = o.map fun q => ([], f q)) :
+    XRuns p O m s st (gb = true → o.isSome = true)
+      (fun _ _ w l => w = st.private_ ∧ (if gb then ∃ q, o = some q ∧ l = f q else l = st.ledger)) :=
+  (XRuns.ledgerOpE hm hops hg hreq).conseq
+    (by cases o <;> simp)
+    fun _ _ _ l h => ⟨h.1, by
+      cases gb with
+      | false => simpa using h.2
+      | true =>
+        simp only [ite_true] at h ⊢
+        cases o with
+        | none => simp at h
+        | some q => simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq, true_and] at h; exact ⟨q, rfl, h.2.symm⟩⟩
+
 /-! ## Conveniences -/
 
 theorem Quiet.castTo {m : Nat} (a : Uint m) (k : Nat) : Quiet (a.castTo k) := by

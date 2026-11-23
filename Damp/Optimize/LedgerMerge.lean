@@ -16,7 +16,9 @@ the instructions of a ledger statement `L₂` at the end of an earlier one `L₁
   (`widthOk`);
 * only statements that are not ledger statements (at most `mergeWindow`) lie
   between them, and `L₂` can move above them: it does not read what they
-  bind, and they neither read nor bind what it reads (`lcommutes`);
+  bind, they neither read nor bind what it reads, and none is a witness that
+  changes the query context in the runtime (`ctxWitness`: `createZswapOutput`
+  inserts its commitment into the call context) (`lcommutes`);
 * the two programs pass `mergeable`, below.
 
 One request is not two requests in a row. Between two requests the runtime
@@ -28,10 +30,11 @@ abstract interpretation of the two programs (`mcheck`, all paths through
 their branches) that makes the difference invisible:
 
 * `ops₁` ends, on every path, with exactly three stack entries: a strong one
-  on top, below it the effects exactly as they were at the start (so they are
-  already in decoded form) and weak and fully cached, and at the bottom the
-  call context exactly as it was, weak and fully cached (`mboundary`);
-  every jump of `ops₁` stays inside `ops₁`;
+  on top, below it the effects in the form the runtime re-encodes them to
+  (tag `dec`: as they were at the start, or changed only by writes of entries
+  already in their slot's form, `insv`), weak and fully cached, and at the
+  bottom the call context exactly as it was, weak and fully cached
+  (`mboundary`); every jump of `ops₁` stays inside `ops₁`;
 * every cached instruction of `ops₂` (`idx`, `ins`, `rem` with the cached
   flag, `idxStack`) hits the cache in any run from a state whose effects and
   call context are fully cached, whatever the contract state's cache: it
@@ -42,24 +45,38 @@ their branches) that makes the difference invisible:
 Then `ops₂` behaves after `ops₁` exactly as it does alone after the first
 request (`Damp/Proofs/Ledger/OptMerge.lean`, `ledgerOracle_merge`). Each
 stack entry gets a tag (`MTag`): what its value is (`orig i`: initial value
-`i`, `key k`: a cell holding the constant `k`), its strength if known, whether
-its cache key is fully cached, and the constant keys at which it was visited.
+`i`, `key k`: a cell holding the constant `k`, `cell al`: a cell of alignment
+`al`, `nul`, `dec`: effects in decoded form, `dmap i`: the decoded map of
+slot `i`), its strength if known, whether its cache key is fully cached, and
+the constant keys at which it was visited. The effects stay `dec` through the
+claims of slots 0 to 2 (a 32-byte hash mapped to null) and the mints of slots
+4 and 5 (a 32-byte hash mapped to a `u64` cell); a `TokenType` key (slots 6 to
+8) is in its slot's form only for some values, and is not followed.
 
 Not a `Pass.Sound` pass: the circuit sends fewer requests, so its public
 transcript (grouping of instructions into requests) and gas differ. It is
 `Pass.SoundLedger` (`Damp/Proofs/Optimize/LedgerMerge.lean`).
 -/
 import Damp.Optimize.LedgerFrame
+import Damp.Ledger.Query
 
 namespace Damp.IR
 open Damp.Impact Damp.Ledger
 
 /-- What the merge analysis knows of a stack entry's value. -/
 inductive MVal where
-  /-- Initial stack value `i` (0 the call context, 1 the effects, 2 the contract state). -/
+  /-- Initial stack value `i` (0 the call context, 2 the contract state). -/
   | orig (i : Nat)
   /-- A cell holding exactly this value. -/
   | key (k : AV)
+  /-- A cell holding a valid aligned value of this alignment (a pushed operand). -/
+  | cell (al : List Zkir.AlignAtom)
+  /-- Null. -/
+  | nul
+  /-- Effects in the form the runtime re-encodes them to (`decodeEffects v = some v`). -/
+  | dec
+  /-- The map of slot `i` of such effects, in the same form (`effectMap i m = some m`). -/
+  | dmap (i : Nat)
   | other
   deriving DecidableEq, Inhabited
 
@@ -79,7 +96,40 @@ def MTag.new : MTag := ⟨.other, some true, true, []⟩
 def mkeyVal (k : Aligned Expr) : MVal :=
   match constAV k with
   | some kv => .key kv
-  | none => .other
+  | none => .cell k.align
+
+/-! The effects' decoded form through the instructions that write them (`Kernel.claimZswapNullifier`
+and the other claims of slots 0 to 2 insert `hash ↦ null`, `mintShielded`/`mintUnshielded` add a
+`u64` amount at a hash in slots 4 and 5: `Damp/Lang/Ledger.lean`). An entry written into a decoded
+slot map stays decoded when its key and value are already in the slot's own form. -/
+
+/-- A key in slot `i`'s form: a 32-byte hash for slots 0 to 2, 4 and 5 (or a constant that is). -/
+def effKeyOk (i : Nat) : MVal → Bool
+  | .key kv => effectKey i kv == some kv
+  | .cell al => (i ≤ 2 || i == 4 || i == 5) && al == [.bytes 32]
+  | _ => false
+
+/-- A value in slot `i`'s form: null for the sets (slots 0 to 3), a `u64` cell for the mints (4, 5). -/
+def effValOk (i : Nat) : MVal → Bool
+  | .nul => i ≤ 3
+  | .key kv => (i == 4 || i == 5) && kv.align == [.bytes 8] && kv.atoms.length == 1 && kv.toU64.isSome
+  | .cell al => (i == 4 || i == 5) && al == [.bytes 8]
+  | _ => false
+
+/-- The value `idx` finds at key `key` of `curr`. -/
+def idxv (curr key : MVal) : MVal :=
+  match curr, key with
+  | .dec, .key kv => match kv.toU8 with
+    | some i => .dmap i
+    | none => .other
+  | _, _ => .other
+
+/-- The value `ins` builds: `curr` inserted at `key` into `cont`. -/
+def insv (cont key curr : MVal) : MVal :=
+  match cont, key, curr with
+  | .dmap i, k, v => if effKeyOk i k && effValOk i v then .dmap i else .other
+  | .dec, .key kv, .dmap i => if kv.toU8 == some i then .dec else .other
+  | _, _, _ => .other
 
 /-- A literal key of an `idx` path: a weak cell, cache key `None`. -/
 def litTag (k : Aligned Expr) : MTag := ⟨mkeyVal k, some false, true, []⟩
@@ -109,7 +159,7 @@ def midx (check cached push : Bool) : List MTag → MTag → List MTag → Optio
   | k :: ks, curr, ts =>
       if check && cached && !mhit curr k then none
       else
-        midx check cached push ks ⟨.other, curr.strong, curr.fc, []⟩
+        midx check cached push ks ⟨idxv curr.v k.v, curr.strong, curr.fc, []⟩
           (if push then { k with fc := true, vis := [] } :: { curr with vis := addVis k.v curr.vis } :: ts else ts)
 
 /-- The loop of `ins`: the strength and full caching of the result. -/
@@ -117,7 +167,7 @@ def mins (check cached : Bool) : Nat → MTag → List MTag → Option (MTag × 
   | 0, curr, ts => some (curr, ts)
   | n + 1, curr, key :: cont :: ts =>
       if check && cached && !mhit cont key then none
-      else mins check cached n ⟨.other, sand curr.strong cont.strong, curr.fc && cont.fc, []⟩ ts
+      else mins check cached n ⟨insv cont.v key.v curr.v, sand curr.strong cont.strong, curr.fc && cont.fc, []⟩ ts
   | _ + 1, _, _ => none
 
 /-- Pop `n` entries and push a fresh value. -/
@@ -137,9 +187,11 @@ def mstep (check : Bool) : Op Expr → List MTag → Option (List MTag)
   | .rem c, key :: cont :: ts =>
       if check && c && !mhit cont key then none else some ({ cont with v := .other } :: ts)
   | .push st v, ts => some (⟨mkeyVal v, some st, true, []⟩ :: ts)
-  | .pushNull st, ts | .pushState st _, ts => some (⟨.other, some st, true, []⟩ :: ts)
+  | .pushNull st, ts => some (⟨.nul, some st, true, []⟩ :: ts)
+  | .pushState st _, ts => some (⟨.other, some st, true, []⟩ :: ts)
   | .popeq .., _ :: ts | .pop, _ :: ts | .log, _ :: ts => some ts
-  | .lt, ts | .eq, ts | .and, ts | .or, ts | .add, ts | .sub, ts | .member, ts
+  | .add, ts => if 2 ≤ ts.length then some (⟨.cell [.bytes 8], some true, true, []⟩ :: ts.drop 2) else none
+  | .lt, ts | .eq, ts | .and, ts | .or, ts | .sub, ts | .member, ts
   | .concat _, ts | .concatCached _, ts => mpopPush 2 ts
   | .type, ts | .size, ts | .neg, ts | .root, ts | .addi _, ts | .subi _, ts => mpopPush 1 ts
   | .ckpt, ts => some ts
@@ -165,18 +217,19 @@ def mcheck (check : Bool) (fin : List MTag → Bool) : Nat → List (Op Expr) �
 /-- The stack a request starts with (top first): the contract state, strong;
     the effects and the call context, weak and fully cached. -/
 def minit : List MTag :=
-  [⟨.orig 2, some true, false, []⟩, ⟨.orig 1, some false, true, []⟩, ⟨.orig 0, some false, true, []⟩]
+  [⟨.orig 2, some true, false, []⟩, ⟨.dec, some false, true, []⟩, ⟨.orig 0, some false, true, []⟩]
 
 /-- What the first program must leave for the second to run as after a request of its own. -/
 def mboundary : List MTag → Bool
   | [st, eff, ctx] =>
-      st.strong == some true && eff.v == .orig 1 && eff.strong == some false && eff.fc &&
+      st.strong == some true && eff.v == .dec && eff.strong == some false && eff.fc &&
         ctx.v == .orig 0 && ctx.strong == some false && ctx.fc
   | _ => false
 
-/-- The largest merged program, and the most branches in it (each doubles the paths checked). -/
-def maxMergeOps : Nat := 160
-def maxMergeBranches : Nat := 6
+/-- The largest merged program, and the most branches in it (each doubles the paths checked:
+    `mcheck` explores at most `2 ^ 8` paths of at most `1024` instructions). -/
+def maxMergeOps : Nat := 1024
+def maxMergeBranches : Nat := 8
 
 /-- `ops₂` may run after `ops₁` in the same request (see the file header). -/
 def mergeable (ops₁ ops₂ : List (Op Expr)) : Bool :=
@@ -220,6 +273,9 @@ def Stmt.isLedger : Stmt → Bool
 
 /-- The ledger statement `s` may move above `x`. -/
 def lcommutes (s x : Stmt) : Bool :=
+  (match x with
+    | .witness _ name _ _ _ => !ctxWitness name
+    | _ => true) &&
   !(s.mUses.any x.mBinds.contains) && !(s.mBinds.any fun v => x.mUses.contains v || x.mBinds.contains v)
 
 /-- `.ledger g rs₁ ops₁` followed by `s`, as one statement. -/

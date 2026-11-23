@@ -357,9 +357,10 @@ carries that side condition.
 | `MergeChecks` | `mergeChecks` (`--O2`, `--O3`): a check repeated under complementary guards (`assert (select b c 1)` and `assert (select !b c 1)`, or `constrain (select b x 0) r` and its `!b` twin when 0 passes `r`), which Compact's `if (b) { assert(x != y) } else { assert(y != x) }` produces, becomes one `assert (select b c c)` (`constrain (select b x x) r`) at the first's place, which `Simplify` reduces to `assert c` when `b` is known to be 0 or 1; the second is dropped. Only when nothing between them rebinds a variable of the second; `!b` is recognised from a binding `n := select b 0 1` whose variables are not rebound |
 | `ShareHashes` | `shareSelects` and `shareGuarded` (`--O3` only): one hash for the two arms of a conditional. `select c (H as) (H bs)` becomes `H (select c as bs)` componentwise; and in two ledger statements guarded by `c` and `!c` whose operands are the hashes `phash as` and `phash bs`, both operands become `phash (select c as bs)`, which the emitter computes once (a ledger statement evaluates its operands whatever its guard and uses them only when the guard is 1). Exact for the transient hash and any hash functions; for the persistent hash only when the inputs differ in constants that fit their byte slots and the hash refuses exactly the inputs that do not fit their alignment, as `Crypto.prims` does, hence `Pass.SoundFor Crypto.prims` |
 | `HashRanges` | `hashRanges` (`--O3` only): drops a range check that a later persistent hash of the same value implies (see `--O3` below) |
-| `LedgerReuse` | `ledgerReuse` (`--ledger-opt` only): drops a ledger read whose answer is already known, binding its variables to the earlier read's (a repeated plain read of the same path under the same guard) or to the operands of a cell write of the same key just before (single-limb values). Also reads through two `idx` steps (a `Map.lookup`, a field of a structure: `ledgerOracle_read2`), and learns the value of a map insert at the same key (`ledgerOracle_mapInsert_read`, `Damp/Proofs/Ledger/OptRead.lean`). A fact about the contract state survives a ledger statement that may write when `frameKeeps` (`Damp/Optimize/LedgerFrame.lean`), a syntactic frame check that interprets the statement's program on an abstract stack, shows it leaves the fact's storage alone (every write uses a constant key that differs from the fact's path; `frame_ledgerOracle`, `Damp/Proofs/Ledger/OptFrame.lean`); otherwise it is forgotten. Facts about the call context survive; a fact is forgotten when a variable it mentions is rebound. Rewrites the ledger statements themselves: not `Pass.Sound`, see below |
-| `LedgerDeadStore` | `ledgerDeadStore` (`--ledger-opt` only): drops a cell write under the constant guard 1, with a constant key and a value that cannot fail (or constants that fit their alignment), when the next ledger statement (within a bounded window of bindings, checks and witness calls) is a write of the same key under guard 1 |
-| `LedgerMerge` | `ledgerMerge` (`--ledger-opt` only, the last ledger pass): appends the instructions of a ledger statement to an earlier one, so that two requests become one (`.ledger g (rs₁ ++ rs₂) (ops₁ ++ ops₂)`). Every request writes the contract state back and re-encodes the effects, so `n` small requests cost far more than one running the same instructions. Allowed by a syntactic check (`mergeInto`, with the abstract interpretation `mcheck` in `Damp/Optimize/LedgerMerge.lean`): the same guard; the operands of each statement do not mention the other's reads; the first program ends with the stack in its starting shape and the effects unchanged; every cached instruction of the second hits. Also across up to 64 non-ledger statements (binds, assertions, range checks, witness calls) that commute with the second statement; merged programs are capped at 160 instructions and 6 branches. Changes no row and no ZKIR instruction, only gas (`ledgerOracle_merge`, `Damp/Proofs/Ledger/OptMerge.lean`; `step_merge`, `step_commute`, `Damp/Proofs/Optimize/LedgerMerge.lean`) |
+| `LedgerReuse` | `ledgerReuse` (`--ledger-opt` only): drops a ledger read whose answer is already known, binding its variables to the earlier read's (a repeated plain read of the same path under the same guard) or to the operands of a cell write of the same key just before (single-limb values). Also reads through two `idx` steps (a `Map.lookup`, a field of a structure: `ledgerOracle_read2`), and learns the value of a map insert at the same key (`ledgerOracle_mapInsert_read`, `Damp/Proofs/Ledger/OptRead.lean`). A fact about the contract state survives a ledger statement that may write when `frameKeeps` (`Damp/Optimize/LedgerFrame.lean`), a syntactic frame check that interprets the statement's program on an abstract stack, shows it leaves the fact's storage alone (every write uses a constant key that differs from the fact's path; `frame_ledgerOracle`, `Damp/Proofs/Ledger/OptFrame.lean`); otherwise it is forgotten. Facts about the call context survive, except at a witness barrier (`ctxWitness`, `Damp/Optimize/LedgerFrame.lean`: `createZswapOutput` and every cross-contract call `call:…`), where it forgets those about context slot 1 (`com_indices`) or about a path whose first key is not constant (`keepsAcrossWitness`); a fact is forgotten when a variable it mentions is rebound. Rewrites the ledger statements themselves: not `Pass.Sound`, see below |
+| `LedgerDeadStore` | `ledgerDeadStore` (`--ledger-opt` only): drops a cell write under the constant guard 1, with a constant key and a value that cannot fail (or constants that fit their alignment), when the next ledger statement (within a bounded window of bindings, checks and witness calls) is a write of the same key under guard 1; it does not look past a witness barrier (`createZswapOutput`, `call:…`) |
+| `LedgerHoist` | `ledgerHoist` (`--ledger-opt` only, just before `ledgerMerge`; `Damp/Optimize/LedgerHoist.lean`): moves a read of the call context (`dup 2; idx _ false path; popeq`) up to right after the nearest earlier ledger statement with the same guard that it can merge with (`mergeInto`), above at most 64 statements that commute with it. Only context reads move, so two statements that write the ledger are never reordered; it never moves above a witness barrier. A context read answers on the call context and leaves the ledger alone, so it commutes with any ledger statement that neither reads nor binds its variables (`step_ctx_patch`, `step_commute_ctx`; `Circuit.ledgerHoist_soundLedger`, `Circuit.ledgerHoist_checkLedger`, `Damp/Proofs/Optimize/LedgerHoist.lean`). Changes no row and no instruction; it only lets `ledgerMerge` merge more |
+| `LedgerMerge` | `ledgerMerge` (`--ledger-opt` only, the last ledger pass): appends the instructions of a ledger statement to an earlier one, so that two requests become one (`.ledger g (rs₁ ++ rs₂) (ops₁ ++ ops₂)`). Every request writes the contract state back and re-encodes the effects, so `n` small requests cost far more than one running the same instructions. Allowed by a syntactic check (`mergeInto`, with the abstract interpretation `mcheck` in `Damp/Optimize/LedgerMerge.lean`): the same guard; the operands of each statement do not mention the other's reads; the first program ends with the stack in its starting shape and the effects unchanged; every cached instruction of the second hits. Also across up to 64 non-ledger statements (binds, assertions, range checks, witness calls) that commute with the second statement, but never above a witness barrier (`createZswapOutput`, `call:…`: in the runtime they change the call context, see the `--ledger-opt` paragraph below). Also merges after a program that writes the effects (claims in slots 0 to 2, mints in slots 4 and 5) when the writes keep the effects in the form the runtime re-encodes them to (`effKeyOk`, `effValOk`, `idxv_ok`, `insv_ok` in `Damp/Proofs/Ledger/OptMerge.lean`). Merged programs are capped at 1024 instructions and 8 branches. Changes no row and no ZKIR instruction, only gas (`ledgerOracle_merge`, `Damp/Proofs/Ledger/OptMerge.lean`; `step_merge`, `step_commute`, `Damp/Proofs/Optimize/LedgerMerge.lean`) |
 | emitter | writes `constrain (a + k) zero` (what `assertZero` produces for `assert (a == k)`) as one `constrain_eq a (−k)` with no `add`, one row less (`Emit.zeroShift`; covered by `circuitCore_correct`); shares equal expressions; drops unused bindings (`Emit.pruneDeadBinds`: one backward liveness pass, which is already a fixpoint, since a dropped binding adds nothing to the live set; it counts the variables of witness arguments as live, though they are not emitted) |
 
 Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
@@ -402,7 +403,7 @@ Three levels (`Damp/Optimize/Pipeline.lean`), and what each guarantees:
 `--ledger-opt` (opt-in, with the default level, `--O2` or `--O3`; refused
 with `--no-opt`) runs `ledgerPasses` (`ledgerReuse`, `optimizeFull` (the `--O2`
 passes again, which fold what `ledgerReuse` forwarded, so the default level with
-`--ledger-opt` also gets them), `ledgerDeadStore`, then `ledgerMerge`)
+`--ledger-opt` also gets them), `ledgerDeadStore`, `ledgerHoist`, then `ledgerMerge`)
 after the level's passes: the shipped circuit is
 `runPasses ledgerPasses (level.pass c)` (`buildPassWith level true`). These
 passes change what the circuit sends to the ledger: fewer reads, fewer writes,
@@ -410,9 +411,25 @@ and (`ledgerMerge`) fewer requests: two ledger statements become one query when
 a syntactic check allows it, which changes no instruction and no row, only gas.
 Over the 99 successful calls of `test/ledger-opt.sh` (`LO_ALL=1`; docs/benchmarks.md,
 "Merging ledger statements"), computeTime goes from 1 116.07 (`--O2`) to 597.74
-(`--O2 --ledger-opt` without `ledgerMerge`) to 304.17 x10^9 with it (-49 % from the merge),
-and bytesWritten from 365 235 to 187 205 to 44 121 (-76 % from the merge); read time
-does not change. 44 circuits are merged, ledger programs 502 -> 214.
+(`--O2 --ledger-opt` without `ledgerMerge`) to 304.17 x10^9 with the merge as first
+implemented (-49 % from the merge), and bytesWritten from 365 235 to 187 205 to 44 121
+(-76 %); read time does not change. 44 circuits were merged then, ledger programs 502 -> 214.
+Merging after effects writes, the larger cap and `ledgerHoist` bring the final figures to
+283.23 x10^9 computeTime, 40 321 bytesWritten and 172 requests (867 at `--O2`; docs/benchmarks.md,
+"Effects writes, the size cap, hoisting context reads, the witness barrier").
+
+*The witness barrier.* The model of the VM and the executor treat every witness as leaving
+the ledger state alone. In the real runtime the built-in `createZswapOutput` inserts the coin's
+commitment into the call context (`com_indices`, which a coin-storing write such as `writeCoin`
+reads back), and a cross-contract call (`call:` witnesses) runs another contract. So the ledger
+passes treat these witnesses as barriers (`ctxWitness`, `Damp/Optimize/LedgerFrame.lean`):
+`ledgerMerge` and `ledgerHoist` never move a ledger statement above one, `ledgerReuse` forgets
+facts about context slot 1 (or with a non-constant first key) at one (`keepsAcrossWitness`),
+`ledgerDeadStore` does not look past one. This restriction is syntactic and outside the proof:
+`Pass.SoundLedger` is proved against the model, which does not capture it, and each restriction
+only removes rewrites. Without it `ledgerMerge` could produce a circuit the runtime refuses, for a
+program that calls `createZswapOutput` and then stores the coin; `test/ledger-opt.sh` has a
+contract (`lo_barrier`) that fails without the barrier.
 What that guarantees, and what it does not:
 
 - *Guaranteed* (`Pass.SoundLedger`, `Damp/Proofs/Optimize/LedgerSound.lean`):
@@ -426,7 +443,10 @@ What that guarantees, and what it does not:
   the shipped circuit, accepts what the executor records on it, passes the
   ledger check (`ledgerPasses_keepsLedger`), meets the producer obligations
   and reads back.
-- *Not guaranteed*: the public transcript and the public inputs are different
+- *Not guaranteed*: that a ledger pass respects what the runtime does at a witness
+  (`createZswapOutput` writes the call context, a `call:` runs another contract): the
+  barrier above is a syntactic check outside the proof, tested by `lo_barrier`, not proved;
+  the public transcript and the public inputs are different
   (that is the point), so the verifier key is different and a run of the
   original's transcript is not one the new ZKIR accepts; nothing is proved
   against a ledger other than the model (a ledger that answered two identical
@@ -435,7 +455,7 @@ What that guarantees, and what it does not:
   docs/benchmarks.md).
 
 Every pass but `foldHashes`, `shareSelects`, `shareGuarded`, `hashRanges`
-and the three ledger passes is proved sound (`Pass.Sound`,
+and the four ledger passes is proved sound (`Pass.Sound`,
 `Damp/Proofs/Optimize/Sound.lean`): for every circuit, with no hypothesis on
 it, and for every choice of hash functions `p : Prims` (the IR semantics is
 parameterized by them), the pass changes neither what a run produces that
@@ -450,7 +470,7 @@ equalities at that one `p`. A sound pass is sound for every `p`
 (`runPasses_soundFor`), so `--O3` is `Pass.SoundFor Crypto.prims`
 (`Circuit.optimizeMax_soundFor`). The ledger passes are `Pass.SoundLedger`
 (`Circuit.ledgerReuse_soundLedger`, `Circuit.ledgerDeadStore_soundLedger`,
-`Circuit.ledgerMerge_soundLedger`), a
+`Circuit.ledgerHoist_soundLedger`, `Circuit.ledgerMerge_soundLedger`), a
 third and weaker notion: the executor only, against the modelled ledger, from
 a well-formed state, up to the public transcript. A sound pass is sound
 against the ledger (`Pass.Sound.soundLedger`) and these compose, so the
@@ -662,7 +682,7 @@ with or without `--ledger-opt` (`buildPassWith_checkLedger`, from
 |---|---|---|
 | `Pass.Sound f` | for every hash functions `p`: `Circuit.run` and `Exec.run` (every oracle) on `f c` give what they give on `c`, up to `observable` (outputs, transcripts, active public inputs, private and ledger state) | every pass of the default level and `--O2` |
 | `Pass.SoundFor p f` | the same at one `p` | `foldHashes p`; `shareSelects`, `shareGuarded`, `hashRanges` at `Crypto.prims`; so `--O3` |
-| `Pass.SoundLedger f` (`Pass.SoundLedgerFor p f` at one `p`) | for every `p`, hooks, witnesses, inputs, private state and well-formed ledger state: `Exec.run` against the modelled ledger on `f c` completes exactly when on `c`, with the same `ledgerObservable` (outputs, private transcript, private state, ledger state); not the public transcript or public inputs | `ledgerReuse`, `ledgerDeadStore`, `ledgerMerge`; so the default level or `--O2` with `--ledger-opt` (`buildPass_soundLedger`); `--O3` with it at `Crypto.prims` (`buildPass_soundLedgerFor`) |
+| `Pass.SoundLedger f` (`Pass.SoundLedgerFor p f` at one `p`) | for every `p`, hooks, witnesses, inputs, private state and well-formed ledger state: `Exec.run` against the modelled ledger on `f c` completes exactly when on `c`, with the same `ledgerObservable` (outputs, private transcript, private state, ledger state); not the public transcript or public inputs | `ledgerReuse`, `ledgerDeadStore`, `ledgerHoist`, `ledgerMerge`; so the default level or `--O2` with `--ledger-opt` (`buildPass_soundLedger`); `--O3` with it at `Crypto.prims` (`buildPass_soundLedgerFor`) |
 
 Each implies the next (`Pass.Sound.soundFor`, `Pass.Sound.soundLedger`,
 `Pass.SoundFor.soundLedgerFor`), and each composes.
@@ -686,7 +706,7 @@ is the case with no `disclose` on the way to the public inputs.
 | `Exec.run_none` | a call fails only if the inputs are not the circuit's, an oracle gave no usable answer, or the circuit rejects every transcript beginning with exactly what the executor recorded and was answered |
 | `Exec.optimize_correct` | on the optimized circuit the executor completes exactly when it would on the original and leaves the same outputs, transcripts, active public inputs, private state and ledger state |
 | `Circuit.bounds_sound`, `Circuit.algebra_sound`, `Circuit.asserts_sound`, `Circuit.simplify_sound`, `Circuit.foldDivmod_sound`, `Circuit.assertEq_sound`, `Circuit.commuteOpt_sound`, `Circuit.forwardAllOpt_sound`, ... | each pass is sound by itself, for every circuit; `Circuit.optimize_sound` and `Circuit.optimizeFull_sound` follow by composition, and `compile_complete_full` is the end-to-end statement at `--O2` |
-| `Circuit.ledgerReuse_soundLedger`, `Circuit.ledgerDeadStore_soundLedger`, `Circuit.ledgerMerge_soundLedger` (with `Damp.Ledger.ledgerOracle_merge`: one request running two statements' instructions behaves as the two, under the `mergeInto` check; `Circuit.ledgerMerge_checkLedger`: the merged statements stay well formed), `ledgerPasses_soundLedger`, `Circuit.optimizeFull_ledger_soundLedger` | `--ledger-opt`: against the modelled ledger, from a well-formed state, the executor on the rewritten circuit completes exactly when on the original, with the same outputs, private transcript, private state and ledger state (`Pass.SoundLedger`) |
+| `Circuit.ledgerReuse_soundLedger`, `Circuit.ledgerDeadStore_soundLedger`, `Circuit.ledgerHoist_soundLedger` (`Circuit.ledgerHoist_checkLedger`: the statements stay well formed; a context read commutes with a ledger statement that does not read or bind its variables), `Circuit.ledgerMerge_soundLedger` (with `Damp.Ledger.ledgerOracle_merge`: one request running two statements' instructions behaves as the two, under the `mergeInto` check; `Circuit.ledgerMerge_checkLedger`: the merged statements stay well formed), `ledgerPasses_soundLedger`, `Circuit.optimizeFull_ledger_soundLedger` | `--ledger-opt`: against the modelled ledger, from a well-formed state, the executor on the rewritten circuit completes exactly when on the original, with the same outputs, private transcript, private state and ledger state (`Pass.SoundLedger`) |
 | `Circuit.foldHashes_soundFor`, `Circuit.optimizeMax_soundFor`, `Exec.optimizeMax_correct` | folding hashes with `p` is sound for runs with `p`; so `--O3` changes nothing observable, in `Circuit.run` or in the executor, for runs with `Damp.Crypto.prims` |
 | `Exec.optimize_asks_same` | and asks the witnesses and the ledger the same questions in the same order |
 | `Exec.step_ledger_agrees`, `Exec.run_groups_fromLedger` | the public inputs a call records are the field encoding of the instructions it sent to the ledger, with the ledger's answers filled in |
@@ -725,10 +745,24 @@ run end to end through the executor with new `XRuns` rules (`Interface/TokenLogi
 ZKIR accepts the proof data); the
 cross-contract call assumption `--ledger-opt` relies on is stated and shown to compose
 with `Pass.SoundLedger` in `Ledger/Calls.lean` (`CallIsolated`, `runC_eq_run`), and
-tested by `test/calls-isolation.sh`; not yet proved: the shielded mint, merge
-and send theorems with their guard off (they hold with it on), and the
-coin-storing operations (`writeCoin`, `insertCoin`, `pushFrontCoin`), which have
-no VM-level specification; the theorem list, and what
+tested by `test/calls-isolation.sh`; the shielded mint, merge and send theorems hold
+under a guard of either value (`Ledger/TokensRunsG.lean`: `mintShieldedToken_runsG`,
+`mergeCoin_runsG`, `mergeCoinImmediate_runsG`, `sendShielded_runsG`,
+`sendImmediateShielded_runsG`, with the `_off` cases); the coin-storing operations
+(`Cell.writeCoin`, `Map.insertCoin`, `Set.insertCoin`, `LedgerList.pushFrontCoin`) have VM-level
+specifications (`Ledger/Coins.lean`: `qualifyAV`, `qualifyAV_index`, `Cell.writeCoin_spec`, ...;
+a qualified coin over the 91 byte bound is refused, as the runtime refuses it) and run end to
+end through the executor (`Ledger/CoinsRuns.lean`: `Cell.writeCoin_runs`, `Map.insertCoin_runs`,
+`Set.insertCoin_runs`, `LedgerList.pushFrontCoin_runs`); the whole-contract `spend_shipped`
+(`Examples/CoinProofs.lean`, `tokens.spend`: sends a coin, stores it and the change coin) is
+stated like `deposit_shipped`. Because the model cannot show the commitment index being filled
+in mid-call (the same witness gap, below), the coin-storing theorems take the index map from the
+starting state. `Ledger/NestedDeep.lean` adds a `Set` inside a `Map` (`Map.set_insert_spec`,
+`Map.set_remove_spec`, `Map.set_member_spec`, `Map.set_size_spec`), the Merkle tree's
+`MerkleTree.insertHashIndex_spec`/`_full` and a depth-3 counter
+(`Map.map_counter_increment_spec`). Not yet proved: a general nested-path theorem,
+`HistoricMerkleTree.insertHashIndex`, and containers other than `Map`, `Set` and `Counter`
+inside a `Map`; the theorem list, and what
 the model abstracts, are in [docs/ledger-model.md](docs/ledger-model.md):
 gas is not modelled; nested
 the `Counter` theorems assume the amount fits 32 bits; write-then-read is
@@ -767,7 +801,17 @@ What the proofs do not give:
   tested against the runtime (`test/vm.sh`, about 27,000 vectors, the kernel's
   effect-writing sequences included), and the rewritten builds are run
   through the real runtime against `--O2` (`test/ledger-opt.sh`), not proved
-  equal to it. Gas is measured, not modelled. A cross-contract call is, to the
+  equal to it. Gas is measured, not modelled. *The witness gap:* the model, like the
+  executor, lets every witness leave the ledger state alone, but in the runtime
+  `createZswapOutput` inserts the coin commitment into the call context
+  (`com_indices`) and a `call:` witness runs another contract. The ledger passes
+  avoid moving or forgetting across those witnesses by a syntactic check
+  (`ctxWitness`, `Damp/Optimize/LedgerFrame.lean`) that is outside the proof;
+  `Pass.SoundLedger` does not cover it. Before the check, `ledgerMerge` could produce
+  a circuit the runtime refuses for a program that calls `createZswapOutput` and
+  then stores the coin; `lo_barrier` in `test/ledger-opt.sh` fails without it. The
+  same gap is why the coin-storing theorems take the commitment index map from the
+  starting state. A cross-contract call is, to the
   proof, a witness, which can neither see nor change the caller's ledger
   state. `Damp/Proofs/Ledger/Calls.lean` states this as an assumption,
   `CallIsolated` (a call's answer does not depend on the caller's ledger

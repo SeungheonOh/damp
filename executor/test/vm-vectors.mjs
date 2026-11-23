@@ -609,6 +609,86 @@ for (const [n, c] of distinct.entries()) {
   }
   for (const [name, qc, ops] of kernel) addVector(`synthetic kernel effects: ${name}`, 'synthetic', qc, ops);
   console.error(`${kernel.length} kernel effect vectors`);
+
+  // The coin-storing operations exactly as Damp emits them (Damp/Lang/Tokens.lean: `Cell.writeCoin`,
+  // `Map.insertCoin`, `Set.insertCoin`, `LedgerList.pushFrontCoin`; theorems in
+  // Damp/Proofs/Ledger/Coins.lean): the commitment is looked up in the context's commitment indices
+  // (`insertCommitment`, context slot 1) and the index found is appended to the coin with `concat cached
+  // 91`. Commitments present at indices from 0 to 2^64 - 1 and absent; coins with short and 32-byte nonces
+  // and colors and values up to 2^128 - 1, so that the qualified coin's serialized size crosses the bound.
+  {
+    const fk = (i) => av([b(1)], [BigInt(i)]);
+    const fkey = (i) => ({ tag: 'value', value: fk(i) });
+    const coinCell = ([n, c, v]) => cell([b(32), b(32), b(16)], [n, c, v]);
+    const cmCell = (x) => cell([b(32)], [x]);
+    const qualify = (depth, x, coin) => [{ dup: { n: depth } }, cmCell(x),
+      { idx: { cached: true, pushPath: false, path: [fkey(1), { tag: 'stack' }] } }, coinCell(coin), { swap: { n: 0 } },
+      { concat: { cached: true, n: 91 } }];
+    const writeCoin = (i, x, coin) => [cell([b(1)], [BigInt(i)]), ...qualify(3, x, coin), { ins: { cached: false, n: 1 } }];
+    const insertCoin = (path, k, x, coin) => [{ idx: { cached: false, pushPath: true, path: path.map(fkey) } }, cell([f], [k]),
+      ...qualify(3 + 2 * path.length, x, coin), { ins: { cached: false, n: 1 } }, { ins: { cached: true, n: path.length } }];
+    const setInsertCoin = (path, x, coin) => [{ idx: { cached: false, pushPath: true, path: path.map(fkey) } },
+      ...qualify(2 + 2 * path.length, x, coin), { push: { storage: true, value: { tag: 'null' } } },
+      { ins: { cached: false, n: 1 } }, { ins: { cached: true, n: path.length } }];
+    const pushFrontCoin = (path, x, coin) => [{ idx: { cached: false, pushPath: true, path: path.map(fkey) } }, { dup: { n: 0 } },
+      { idx: { cached: false, pushPath: false, path: [fkey(2)] } }, { addi: { immediate: 1 } },
+      st({ tag: 'array', content: [{ tag: 'null' }, { tag: 'null' }, { tag: 'null' }] }), cell([b(1)], [0n]),
+      ...qualify(5 + 2 * path.length, x, coin), { ins: { cached: true, n: 1 } }, { swap: { n: 0 } }, cell([b(1)], [2n]),
+      { swap: { n: 0 } }, { ins: { cached: true, n: 1 } }, { swap: { n: 0 } }, cell([b(1)], [1n]), { swap: { n: 0 } },
+      { ins: { cached: true, n: path.length + 1 } }];
+    const u64cell = (x) => cellJs(8, x);
+    const emptyList = () => ocrt.StateValue.newArray().arrayPush(ocrt.StateValue.newNull()).arrayPush(ocrt.StateValue.newNull()).arrayPush(u64cell(0n));
+    const fields = ocrt.StateValue.newArray()
+      .arrayPush(ocrt.StateValue.newNull())
+      .arrayPush(ocrt.StateValue.newMap(new ocrt.StateMap()))
+      .arrayPush(ocrt.StateValue.newMap(new ocrt.StateMap()))
+      .arrayPush(emptyList());
+    const hexOf = (x) => Array.from(natLe(x)).concat(Array(32).fill(0)).slice(0, 32).map((y) => y.toString(16).padStart(2, '0')).join('');
+    const qcWith = (entries) => {
+      let q = new ocrt.QueryContext(new ocrt.ChargedState(fields), ocrt.dummyContractAddress());
+      for (const [x, i] of entries) q = q.insertCommitment(hexOf(x), i);
+      return q;
+    };
+    const cmA = H - 2n, cmB = 0x77n << 200n, cmAbsent = 0xabcdn;
+    const coins = {
+      zero: [0n, 0n, 0n], small: [3n, 4n, 5n], full: [H, H - 1n, 5n], 'full 2^64': [H, H - 1n, 1n << 64n],
+      'full 2^88': [H, H - 1n, 1n << 88n], 'full 2^100': [H, H - 1n, 1n << 100n], 'full max': [H, H - 1n, (1n << 128n) - 1n],
+    };
+    const indices = [0n, 1n, 1n << 32n, 1n << 40n, 1n << 48n, 1n << 56n, (1n << 64n) - 1n];
+    const coinVecs = [];
+    for (const i of indices) {
+      const q = qcWith([[cmA, i], [cmB, 9n]]);
+      for (const [cn, coin] of Object.entries(coins)) coinVecs.push([`writeCoin, index ${i}, coin ${cn}`, q, writeCoin(0, cmA, coin)]);
+    }
+    const q7 = qcWith([[cmA, 7n], [cmB, 1n << 40n]]);
+    coinVecs.push(['writeCoin, commitment absent', q7, writeCoin(0, cmAbsent, coins.small)]);
+    coinVecs.push(['writeCoin, no commitments at all', qcWith([]), writeCoin(0, cmA, coins.small)]);
+    coinVecs.push(['writeCoin, commitment under another alignment', q7,
+      writeCoin(0, cmA, coins.small).map((op) => (op.push?.value?.content?.value?.length === 1 && op.push.value.content.alignment[0].value.length === 32
+        ? cell([b(33)], [cmA]) : op))]);
+    coinVecs.push(['writeCoin, second commitment', q7, writeCoin(0, cmB, coins.full)]);
+    coinVecs.push(['writeCoin into a map field', q7, writeCoin(1, cmA, coins.small)]);
+    coinVecs.push(['writeCoin, field index out of range', q7, writeCoin(9, cmA, coins.small)]);
+    coinVecs.push(['writeCoin twice', q7, [...writeCoin(0, cmA, coins.small), ...writeCoin(0, cmB, coins.full)]]);
+    for (const [cn, coin] of [['small', coins.small], ['full 2^100', coins['full 2^100']], ['full max', coins['full max']]]) {
+      for (const [x, lbl] of [[cmA, 'index 7'], [cmB, 'index 2^40'], [cmAbsent, 'absent']]) {
+        coinVecs.push([`insertCoin, ${lbl}, coin ${cn}`, q7, insertCoin([1], 42n, x, coin)]);
+        coinVecs.push([`set insertCoin, ${lbl}, coin ${cn}`, q7, setInsertCoin([2], x, coin)]);
+        coinVecs.push([`pushFrontCoin, ${lbl}, coin ${cn}`, q7, pushFrontCoin([3], x, coin)]);
+      }
+    }
+    coinVecs.push(['insertCoin twice, same key', q7, [...insertCoin([1], 42n, cmA, coins.small), ...insertCoin([1], 42n, cmB, coins.small)]]);
+    coinVecs.push(['set insertCoin twice', q7, [...setInsertCoin([2], cmA, coins.small), ...setInsertCoin([2], cmB, coins.small)]]);
+    coinVecs.push(['pushFrontCoin twice', q7, [...pushFrontCoin([3], cmA, coins.small), ...pushFrontCoin([3], cmB, coins.full)]]);
+    coinVecs.push(['insertCoin on a list field', q7, insertCoin([3], 42n, cmA, coins.small)]);
+    coinVecs.push(['pushFrontCoin on a map field', q7, pushFrontCoin([1], cmA, coins.small)]);
+    for (const [name, qc, ops] of coinVecs) addVector(`synthetic coin storage: ${name}`, 'synthetic', qc, ops);
+    // And the usual variants of one program per operation.
+    for (const [name, qc, ops] of [coinVecs[1], ...coinVecs.filter(([n]) => /index 7, coin small$/.test(n))]) {
+      for (const v of programVariants(ops)) addVector(`synthetic coin storage: ${name}`, v.kind, qc, v.ops);
+    }
+    console.error(`${coinVecs.length} coin-storage vectors`);
+  }
 }
 
 fs.writeFileSync(path.join(outDir, 'vectors.json'), JSON.stringify({ values, vectors }));

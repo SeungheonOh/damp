@@ -166,6 +166,14 @@ def otherFacts (g : Expr) (rs : List Var) (ops : List (Op Expr)) (fs : List LFac
     | none => fs
   | _, _, _ => fs
 
+/-- A fact that survives `createZswapOutput` or a contract call (`ctxWitness`): about the contract
+    state, or about a part of the call context other than slot 1 (`com_indices`, which the
+    runtime's `createZswapOutput` extends). -/
+def keepsAcrossWitness (f : LFact) : Bool :=
+  f.n != 2 || (match constPrefix 1 f.path with
+    | [kv] => kv.atoms != [1]
+    | _ => false)
+
 /-- The scan. -/
 def ledgerReuseGo : List LFact → List Stmt → List Stmt
   | _, [] => []
@@ -173,7 +181,10 @@ def ledgerReuseGo : List LFact → List Stmt → List Stmt
       match s with
       | .bind v _ _ => s :: ledgerReuseGo (forgetVars [v] fs) rest
       | .assert .. | .constrain .. => s :: ledgerReuseGo fs rest
-      | .witness _ _ _ outs _ => s :: ledgerReuseGo (forgetVars (outs.map Prod.fst) fs) rest
+      | .witness _ name _ outs _ =>
+          -- `createZswapOutput` or a call may change the call context in the runtime (`ctxWitness`)
+          s :: ledgerReuseGo (forgetVars (outs.map Prod.fst) (if ctxWitness name then fs.filter keepsAcrossWitness
+            else fs)) rest
       | .ledger g rs ops =>
           match plainRead? rs ops with
           | some (n, path, a) =>

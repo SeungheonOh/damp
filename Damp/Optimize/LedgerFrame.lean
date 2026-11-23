@@ -159,4 +159,17 @@ def constPrefix : Nat → List (Aligned Expr) → List AV
       | some kv => kv :: constPrefix n ks
       | none => []
 
+/-- The witnesses that are barriers for every ledger pass. The model's witnesses do not touch the
+    ledger (`Exec.Oracles.witness` sees only the private state), but in the runtime the built-in
+    `createZswapOutput` inserts its coin's commitment into the call context's `com_indices`
+    (`insertCommitment`, compact-runtime `zswap.js`), which a later coin-storing write
+    (`writeCoin`, `insertCoin`, ...) reads back; and a cross-contract call (`call:…`) runs another
+    contract (its isolation from the caller's state is the assumption `CallIsolated`,
+    Damp/Proofs/Ledger/Calls.lean). The other built-ins, `createZswapInput` and `ownPublicKey`,
+    work only on the call's Zswap local state, which no ledger statement reads. No ledger pass
+    moves a ledger statement above one of these, merges two statements across one, or keeps a fact
+    about the call context's `com_indices` across one. -/
+def ctxWitness (name : String) : Bool :=
+  name == "createZswapOutput" || name.startsWith "call:"
+
 end Damp.IR

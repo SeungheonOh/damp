@@ -21,11 +21,15 @@ token library's operations, and the cross-contract call assumption
 | `Damp/Proofs/Ledger/{Cell,Counter,Map,Nested,List,MerkleSpec,Kernel}.lean` | The theorems below |
 | `Damp/Proofs/Ledger/Effects.lean` | The kernel operations that write the effects: claims, mints, unshielded inputs, outputs and spends, contract calls |
 | `Damp/Proofs/Ledger/Tokens.lean` | The token library (`Damp/Lang/Tokens.lean`) composed from them; the balance read |
+| `Damp/Proofs/Ledger/{Coins,CoinsRuns}.lean` | The coin-storing operations (`writeCoin`, `insertCoin`, `pushFrontCoin`): VM specifications and end to end |
+| `Damp/Proofs/Ledger/TokensRunsG.lean` | The shielded mint, merge and send end to end under a guard of either value |
+| `Damp/Proofs/Ledger/NestedDeep.lean` | A `Set` inside a `Map`, `MerkleTree.insertHashIndex`, a counter two maps down |
 | `Damp/Proofs/Ledger/Calls.lean` | The cross-contract call assumption, stated (`CallIsolated`) and used (`runC_eq_run`, `Pass.SoundLedger.runC`) |
 | `Damp/Proofs/Ledger/Limbs.lean` | Byte strings over 31 bytes: the write-then-read round trip for every alignment |
 | `Damp/Proofs/Ledger/Executor.lean` | The executor's theorems instantiated with the modelled ledger |
 | `Damp/Proofs/Interface/LedgerLogic.lean` | A program logic for circuit bodies run by the executor, ledger and witnesses included (`XRuns`) |
 | `Examples/LedgerProofs.lean` | Contract-level theorems about `vault.spend` and `counter.bump`, end to end |
+| `Examples/TokenProofs.lean`, `Examples/CoinProofs.lean` | Contract-level theorems about `tokens.deposit`, `caller.bump` and `tokens.spend` (a shielded send and a `writeCoin`) |
 | `Test/Vm.lean`, `executor/test/vm-vectors.mjs`, `test/vm.sh` | The differential test |
 | `executor/test/call-isolation.mjs`, `test/calls-isolation.sh` | The call assumption tested on the runtime |
 
@@ -151,7 +155,16 @@ left by an earlier query): a claim repeated, a call claimed third and with
 its sequence number taken, an addition to an existing entry with sums
 `2^64 - 1` and `2^64`, a present `u128` amount of `2^100` or an addition of
 `2^64` (both fail: the VM adds `u64`s), two additions in one query, keys with
-both sides set, and every slot written in one transaction. The calls include `tokens.mintUTo`
+both sides set, and every slot written in one transaction; and 88 running the coin-storing
+operations exactly as Damp emits them (`writeCoin`, `insertCoin`, `Set.insertCoin`,
+`pushFrontCoin`, with the usual program variants of one of each) on query
+contexts whose commitment indices (`insertCommitment`, context slot 1) hold the
+commitment at indices from 0 to `2^64 - 1`, or do not hold it, for coins with short
+and 32-byte nonces and colors and values up to `2^128 - 1`. The runtime refuses
+the qualified coin when its serialized size passes `concat`'s bound of 91 bytes
+("exceeded structure bounds": e.g. 32-byte nonce and color, a value of `2^64` and
+an index of `2^32`; the maximum value at any index), and an absent commitment
+("expected a cell, received null"); the model agrees on all of them. The calls include `tokens.mintUTo`
 and `tokens.sendU` with one-sided and two-sided `Either` arguments. Each runs
 through the real VM twice: `runProgram` (final
    stack with strengths, values read) and `QueryContext.query` (new state,
@@ -165,10 +178,10 @@ Result (the count varies by a few vectors between runs, since some example
 calls sample random values):
 
 ```
-26995 vectors (12421 succeed in the real VM)
-VM (runProgram):         26995 agree, 0 disagree
-query (QueryContext):    26995 agree, 0 disagree (779 rejected by the runtime's typed decoding of the effects)
-effects after a query:   6793 of 6793 successful queries agree
+27350 vectors (12553 succeed in the real VM)
+VM (runProgram):         27350 agree, 0 disagree
+query (QueryContext):    27350 agree, 0 disagree (791 rejected by the runtime's typed decoding of the effects)
+effects after a query:   6865 of 6865 successful queries agree
 ALL AGREE
 ```
 
@@ -307,6 +320,37 @@ corollary states it with `merkleRootAt`.
 * `HistoricMerkleTree.checkRoot_spec`: `[Fr.ofBool (assocGet ⟨[.field], [rv.val]⟩ past).isSome]`.
 * `HistoricMerkleTree.resetHistory_spec`: the past roots become `.map [(ρ, .null)]`, `ρ` the current root.
 
+`NestedDeep.lean`:
+
+* A `Set` inside a `Map` (`(← mp.lookup k)`, path `[fieldKey i, k]`, the entry for `kv` holding `.map m₂`,
+  the element stored as `xv`): `Map.set_insert_spec` (`.map (assocSet kv (.map (assocSet xv .null m₂)) m)`),
+  `Map.set_remove_spec` (`assocErase xv m₂`), `Map.set_member_spec` (`[Fr.ofBool (assocGet xv m₂).isSome]`),
+  `Map.set_size_spec` (`[Fr.ofNat m₂.length]`); the reads leave the ledger unchanged.
+* `MerkleTree.insertHashIndex_spec` (`insertIndex x i` is `insertHashIndex (leafHash x) i`), `i` evaluating to
+  `j` with `j < 2^d` and `j + 1 < 2^64`, the tree `[.bmt d leaves, .cell ⟨a, [ff]⟩]`: the field becomes
+  `[.bmt d (assocSet j x leaves), if ff < j + 1 then .cell (AV.ofU64 (j + 1)) else .cell ⟨a, [ff]⟩]`;
+  `MerkleTree.insertHashIndex_full`: with `d < 64` and `2^d ≤ j` the request fails.
+* A counter two maps down (`(← (← mp.lookup k).lookup k₂)`, path `[fieldKey i, k, k₂]`):
+  `Map.map_counter_increment_spec` (`if n + j < 2^64 then … (assocSet kv (.map (assocSet kv₂ (.cell (AV.ofU64
+  (n + j))) m₂)) m) … else none`).
+
+`Coins.lean`, the coin-storing operations. Each pushes the commitment of the
+coin it stores (`cmv`, the 32-byte atom of `coinCommitment coin recipient`),
+looks it up in the context's commitment indices (`cfs[1]? = some (.map idx)`),
+and appends what it finds to the coin (`cv`, as the VM holds it) with `concat
+cached 91`. `qualifyAV cv idx cmv` is the result: `none` when the commitment
+has no entry (or one that is not a cell), `⟨cv.align ++ w.align, cv.atoms ++
+w.atoms⟩` for the entry `.cell w` when `w.size + cv.size ≤ 91`, `none`
+otherwise. Nothing is read, and only the field changes:
+
+* `Cell.writeCoin_spec`: `= (qualifyAV cv idx cmv).map fun q => ([], σ.setField c.index (.cell q))`.
+* `Map.insertCoin_spec`: `… (.map (assocSet kv (.cell q) m))`; `Set.insertCoin_spec`: `… (.map (assocSet q .null m))`;
+  `LedgerList.pushFrontCoin_spec`: `… (listRepr (q :: xs))` (for `xs.length + 1 < 2^64`).
+* `qualifyAV_absent`: no entry, the request fails. `qualifyAV_index`: for the entry the runtime stores (`AV.ofU64 n`,
+  `n < 2^64`), `qualifyAV cv idx cmv = if (AV.ofU64 n).size + cv.size ≤ 91 then AV.ofFields (alignOf
+  QualifiedShieldedCoinInfo) (coinFs ++ [Fr.ofNat n]) else none`: exactly what `Cell.write` of the qualified coin
+  `(coin, n)` would store.
+
 `Kernel.lean`, the call context an array `cfs` (0: own address, 2: block time `τ < 2^64`):
 
 * `Kernel.self_spec`: `some (ys, σ)`, `ys` the address cell read as `[bytes 32]`.
@@ -427,6 +471,20 @@ gives, `selfOr`), so they must evaluate there too.
   `sendSEffects`; the change coin's commitment claimed in slots 2 and 1 only
   when there is change: the `cond`'s `else` branch runs under the guard
   `change ≠ 0`).
+* Under a guard meaning `gb` (`TokensRunsG.lean`): `mintShieldedToken_runsG`,
+  `mergeCoin_runsG`, `mergeCoinImmediate_runsG`, `sendShielded_runsG`,
+  `sendImmediateShielded_runsG`, from the `_off` theorems (guard off: the call
+  completes, nothing is asked, private state and ledger unchanged; the result
+  is what the circuit computes from a zero address, a checked cast or
+  subtraction meaning 0, so `sendShielded` returns `(none, sent)`) and the
+  theorems above. The hashes are taken over `selfOr gb selfFs`, the witness
+  answers are needed only when `gb`.
+* The coin-storing operations (`CoinsRuns.lean`, guard `gb`, rule `XRuns.mapOp`):
+  `Cell.writeCoin_runs`, `Map.insertCoin_runs`, `Set.insertCoin_runs`,
+  `LedgerList.pushFrontCoin_runs`: with the commitment the circuit hashes
+  (`phashFs` of `ccPre`) pushed as `cmv`, complete iff `gb → (qualifyAV cv idx
+  cmv).isSome`; then the field holds the qualified coin (`if gb then ∃ q, … else
+  l = σ`).
 * `XRuns.contractCall` (`CallLogic.lean`, guard on), the oracle's answer to
   the call `resFs ++ [rand]` given: completes iff fewer than `2^64` calls were
   claimed; the result means `resFs`; effects slot 3 gets
@@ -439,7 +497,17 @@ Contract-level (`Examples/TokenProofs.lean`), stated for any successful
 (`shipped_run`, `shipped_of`), each ending with the shipped ZKIR accepting the
 proof data: `deposit_shipped` (`tokens.deposit`: `receiveShielded` and a
 `Cell.write` of the coin) and `bump_shipped` (`caller.bump`, run by `runC` under
-`CallIsolated`: the call claimed in slot 3 and `last` holding the result).
+`CallIsolated`: the call claimed in slot 3 and `last` holding the result);
+`spend_shipped` (`Examples/CoinProofs.lean`, `tokens.spend`: `held.read`,
+`sendShielded`, `last.write` of the coin sent, and under `if% r.change.isSome`
+a `kernel.self()` read and `held.writeCoin` of the change): completes iff the
+inputs pass their range checks, the value is at most the held coin's, and,
+with change, the change's commitment has an index in the context and the
+qualified coin fits the bound; the ledger is `sendShielded`'s effects, `last`
+the coin sent, and with change `held` the qualified change (`SpendOutcome`).
+To Damp's executor a witness cannot change the ledger, so the index the real
+runtime inserts when `createZswapOutput` commits is, to the theorem, part of
+the context the call starts with.
 
 
 `Calls.lean`, the call assumption: see "Cross-contract calls" below.
@@ -592,22 +660,35 @@ proof; and it says nothing of a runtime that would allow re-entry.
 
 ## Not done, and what would make it easier
 
-* No theorems yet for a `Set` inside a `Map`, Merkle `insertHashIndex`, or
-  ADTs nested deeper than a counter or map in a map. The specifications are
-  for top-level fields (`path = [fieldKey i]`) plus those two nestings.
-* `mintShieldedToken`, `sendShielded`, `sendImmediateShielded`, `mergeCoin`,
-  `mergeCoinImmediate` are proved end to end with the operation's own guard
-  on only (inside, `sendShielded`'s change branch is proved for both guard
-  values); the guard-off case needs the same bookkeeping with every operation
-  off, as `receiveShielded_runs` and the unshielded theorems do. `sendUnshielded` and
-  `mintUnshieldedToken` with a recipient whose `Either` has both sides set fail
-  (`sendUnshielded_badRecipient`); the end-to-end theorems assume a
-  well-formed spend key.
-* The coin-storing operations (`Cell.writeCoin`, `Map.insertCoin`,
-  `Set.insertCoin`, `LedgerList.pushFrontCoin`, reading the context's
-  commitment indices with `idx` on a stack key and `concat cached 91`) have no
-  VM-level specification yet, so no end-to-end theorem.
-* The duplicate-key ordering gap (above, "What is abstracted") remains.
+* Nesting is proved per depth: one level (a counter, map or set in a map),
+  two levels for a counter (`Map.map_counter_increment_spec`). A general
+  theorem for a path of any length (`idx pushPath` down a chain of maps, an
+  operation, `ins cached` back up) needs an induction over `idxWalk` and
+  `insLoop` with an invariant on the read cache (`CTree.visit` marks each
+  prefix of the path, `CTree.contains` then holds for it, and `insCache`
+  builds the cache key of the rebuilt value); the per-depth theorems avoid it
+  because `vm_simp` evaluates the cache on concrete paths. A `MerkleTree`,
+  `LedgerList` or `HistoricMerkleTree` inside a `Map`, and
+  `HistoricMerkleTree.insertHashIndex`, have no theorem yet.
+* The coin-storing operations are proved on top-level fields (and `Map` /
+  `Set` / `LedgerList` at their default path); `insertCoin` on a nested map is not.
+* Damp's executor cannot model the commitment index `createZswapOutput`
+  inserts into the query context (a witness, to `Exec.step`, cannot change the
+  ledger state): the coin-storing theorems take the context's index map as
+  given, which is the state a real call reaches only after its own
+  `createZswapOutput` committed.
+* `sendUnshielded` and `mintUnshieldedToken` with a recipient whose `Either`
+  has both sides set fail (`sendUnshielded_badRecipient`); the end-to-end
+  theorems assume a well-formed spend key.
+* The duplicate-key ordering gap ("What is abstracted") cannot be closed in the
+  model: which of two entries decoding to one key the runtime keeps depends on
+  the order of its map, which is ordered by a hash of each key's
+  serialization, not modelled. It does not arise for the requests Damp emits:
+  every effect-writing operation writes its slot's canonical alignment
+  (`[bytes 32]`, `alignTokenType`, `alignTokenType ++ alignPublicAddress`,
+  `alignContractCall`), into effects that are already canonical in a
+  well-formed state, so no two entries decode to one key; the specifications of
+  `Effects.lean` give their results exactly, without reference to the order.
 * A `popeq` carries Damp's own alignment, under which the executor reads the
   value back; the VM does not check it against the value's alignment, so the
   read-back theorems take the stored value's atoms as given.

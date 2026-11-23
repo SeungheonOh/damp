@@ -390,8 +390,9 @@ transcript), 30 / 30 312 constant hashes (folded at `--O3`), 3351 / 0 adjacent i
 
 `--ledger-opt` runs, after the level's passes, `ledgerReuse` (a ledger read whose answer is known
 is replaced by that value), the `--O2` passes again (`optimizeFull`), `ledgerDeadStore` (a cell
-write overwritten by the next ledger statement is dropped) and `ledgerMerge` (consecutive ledger
-statements with the same guard run as one request). Unlike every other pass the ledger passes
+write overwritten by the next ledger statement is dropped), `ledgerHoist` (a read of the call
+context moves up to an earlier ledger statement it can be merged with) and `ledgerMerge`
+(consecutive ledger statements with the same guard run as one request). Unlike every other pass the ledger passes
 change what the circuit sends to the ledger, so the public transcript and the verifier key change,
 and they are proved only against the Lean model of Midnight's VM, from a well-formed state: same
 outputs, private transcript, private state and final ledger state (`Pass.SoundLedger`; DESIGN.md
@@ -509,9 +510,10 @@ variables as its `popeq`s give field elements; and the abstract interpretation `
 per stack entry: initial value / constant cell / unknown, strength, fully cached, constant keys
 visited) shows that
 
-* on every path the first program ends with three entries: a strong one, the effects *unchanged*
-  (so already in decoded form), weak and fully cached, and the call context unchanged, weak and
-  fully cached, and all its jumps stay inside it;
+* on every path the first program ends with three entries: a strong one, the effects in decoded
+  form (tag `dec`: unchanged, or changed only by writes of entries already in their slot's form,
+  below), weak and fully cached, and the call context unchanged, weak and fully cached, and all its
+  jumps stay inside it;
 * every cached instruction of the second program hits in any run from a state whose effects and
   context are fully cached, whatever the contract state's cache: it works on a fully cached entry
   (effects, context, a pushed or computed value, anything read from those) or on a container an
@@ -524,7 +526,9 @@ cache and cache keys are (`runR_er`); and the stack after the first program has 
 and strengths of the fresh stack. Merging also crosses statements that are not ledger statements
 (binds, assertions, range checks, witness calls; at most 64), when the second ledger statement
 does not read what they bind and they neither read nor bind what it reads (`step_commute`: the two
-orders give equal executor states). Merged programs are capped at 160 instructions and 6 branches.
+orders give equal executor states), and none is `createZswapOutput` or a contract call (the witness
+barrier, below). Merged programs are capped at 1024 instructions and 8 branches (160 and 6 before
+this round).
 The executor's state after a merge is equal to the original's, public transcript and public inputs
 included (`lmergeGo_steps`).
 
@@ -540,8 +544,9 @@ zerocash_core, compute time in 10^9 units, from 580.24, bytes written from 183 2
 | all adjacent, operand condition only (`all`, NOT sound: see below) | 233 | 338.70 (-42 %) | 42 439 |
 | `mcheck`, also across other statements (`seqgap`, implemented) | 289 | 286.53 (-51 %) | 39 409 |
 
-The adjacent pairs `mcheck` refuses: 18 whose first program writes the effects (a later program
-would see them unencoded), 4 over the size cap, 1 cached `ins` that would miss. Merging across other
+The adjacent pairs `mcheck` refused before this round: 18 whose first program writes the effects
+(merged now when the writes keep the decoded form, below), 4 over the size cap (raised, below), 1
+cached `ins` that would miss. Merging across other
 statements without `mcheck` (`all` with gaps) changes `coracle`'s results in the runtime (5 calls).
 
 *Measured* (`LO_OUT=... ./test/ledger-opt.sh`, which builds `nm`, the `--O2 --ledger-opt` build
@@ -562,10 +567,96 @@ Over the 48 calls of the circuits `ledgerMerge` changes: computeTime 494.19 -> 2
 bytesWritten 176 886 -> 33 802. Read time does not change: a merged request reads the same cells
 (the read cache is not charged differently for a cached hit here).
 
-Not done: merging when the first program writes the effects (it would need the effects writes
-shown to keep the decoded form: keys of the slot's type and alignment, no duplicate after
-re-encoding), and reordering ledger statements past each other (frame-independent statements, to
-bring mergeable ones together); 4 pairs exceed the size cap.
+#### Effects writes, the size cap, hoisting context reads, the witness barrier
+
+*Merging after a write of the effects.* The merge analysis tags the effects `dec` (in the form the
+runtime re-encodes them to, `decodeEffects v = some v`) at the start of a request and follows the
+tag through `idx` at a constant slot (the slot's map, `dmap i`) and `ins` of an entry whose key and
+value are already in the slot's form (`effKeyOk`, `effValOk`: a 32-byte hash mapped to null in
+slots 0 to 2, a 32-byte hash mapped to a `u64` cell in slots 4 and 5, where `add` makes a `u64`
+cell), and back into the effects at the same slot (`insv`; `idxv_ok`, `insv_ok` in
+Damp/Proofs/Ledger/OptMerge.lean, from `effectMap_assocSet` and `decodeEffects` slot by slot).
+`ledgerOracle_merge` then needs only that the effects after the first program decode to
+themselves, not that they are unchanged. Not followed: `TokenType` keys (slots 6 to 8: decoded only
+if the atoms are a well-formed `TokenType`, a property of the values), slot 3 (contract-call keys),
+a value of another width. Examples/OptLedgerMergeEffects.lean has each case.
+
+*Hoisting.* `Circuit.ledgerHoist` (Damp/Optimize/LedgerHoist.lean) pulls a read of the call
+context (`dup 2; idx _ false path; popeq`) up to right after the nearest earlier ledger statement
+with the same guard that it merges with (`mergeInto`), above at most 64 statements that commute
+with it (`lcommutes`, no empty ledger statement). Such a read answers `readSpec 2` on the call
+context and leaves the ledger as it was, and no request changes the call context, so on the
+executor it is a patch of the variables it binds that commutes with any ledger statement that
+neither reads nor binds them (`step_ctx_patch`, `step_commute_ctx`, up to the public transcript;
+`Circuit.ledgerHoist_soundLedger`, Damp/Proofs/Optimize/LedgerHoist.lean). Only reads of the
+context move, so two statements that write the ledger are never reordered and the order of the
+effects' entries (which in the model follows the order of the writes, `assocSet` appending a new
+key) never changes.
+
+*The witness barrier.* The model's witnesses do not touch the ledger (`Exec.Oracles.witness` sees
+only the private state). In the runtime the built-in `createZswapOutput` inserts its coin's
+commitment into the call context's `com_indices` (`insertCommitment`, compact-runtime `zswap.js`),
+and a coin-storing write (`writeCoin`, `insertCoin`, ...) reads it back from there
+(`idxStack` on the context). The model cannot see the difference, so the proofs do not prevent a
+ledger statement from moving above such a witness; the runtime then refuses the call ("expected a
+cell, received null"). This was reachable with `ledgerMerge` as committed in 353606e: a circuit
+`Kernel.self; if b { count.write 1 }; n = count.read; createZswapOutput(coin, self);
+held.writeCoin(coin, self)` (`lo_barrier.store`, built by test/ledger-opt.sh) had the coin-storing
+write merged into the read's request, above the witness, and both calls of it fail in the runtime
+with the merge as committed then (reproduced with `ledger_headroom.py --merge ... seqgap`, which has
+no barrier). The syntactic restriction that covers it (`ctxWitness`, Damp/Optimize/LedgerFrame.lean:
+`createZswapOutput` and every cross-contract call `call:…`; `createZswapInput` and `ownPublicKey`
+work only on the Zswap local state, which no ledger statement reads):
+
+* `ledgerMerge` and `ledgerHoist` (`lcommutes`) never move a ledger statement above one;
+* `ledgerReuse` forgets every fact about the call context's slot 1 (`com_indices`, or a path that
+  does not start with a constant key) at one (`keepsAcrossWitness`); facts about the contract
+  state and the other context slots survive (contract calls: `CallIsolated`);
+* `ledgerDeadStore` does not look for the overwriting write past one.
+
+Each restriction only removes rewrites, so the proofs are unchanged in substance. Tested by
+`lo_barrier` in `executor/test/ledger-opt.mjs` (a direct `createZswapOutput` and a
+`receiveShielded`, each followed by `writeCoin` and reads, a failing call), which fails on a build
+without the barrier and passes with it.
+
+*Measured* (gas of the 99 successful benchmark calls, `LO_ALL=1 LO_OUT=... ./test/ledger-opt.sh`,
+`lo_barrier` excluded; requests counted by wrapping `QueryContext.query`; rows and instructions do
+not change):
+
+| | readTime (10^6) | computeTime (10^9) | bytesWritten | requests |
+|---|---|---|---|---|
+| `--O2` | 137 190 | 1 116.07 | 365 235 | 867 |
+| `--O2 --ledger-opt` before this round | 82 365 | 304.17 | 44 121 | 191 |
+| + merging after effects writes | 82 365 | 291.27 | 44 121 | 179 |
+| + cap 1024 instructions / 8 branches | 82 365 | 286.45 | 40 321 | 175 |
+| + `ledgerHoist` | 82 365 | 284.30 | 40 321 | 173 |
+| final (barrier `createZswapOutput`/`call:` only) | 82 365 | **283.23** | **40 321** | **172** |
+
+(The middle rows were measured with `createZswapInput` also a barrier; dropping it, as justified
+above, gave the last 1.07 x10^9.) Predicted by `bench/ledger_headroom.py --merge ... MODE` before
+implementing (modes `seqgap+eff+eff05+nozswap+nocap+reorder` and parts, gas from the simulated
+builds): effects -12.89 (slots 6 to 8 would add -1.07), cap -3.62 (one refused cached `ins` is in
+`adt_merkle.test_historic`, which always fails: 0), hoisting -2.15 x10^9.
+
+*Not done: dead stores across writes of other top-level fields* (21, `pm_19287`). After merging
+they are worth much less than before it: -1.97 x10^9 computeTime, -1 785 x10^6 readTime, 0 bytes
+written, 255 rows, 63 instructions (simulated: `--classes --only across-root --sim`, then the
+merge). 9 of them cross only map inserts of other fields (`across-root-writes`: -0.84 x10^9, -765
+x10^6, 99 rows); a map insert succeeds only if its field is present, so the contract state's entry
+order is kept even when the state is a map, and a proof needs a closed form of the map-insert
+request on any state and its commutation with `setCell`. The other 12 cross cell writes of other
+fields (`across-root-cellwrites`), unsound in the model when the state is a map holding neither
+key (the order of the two keys changes).
+
+*What is left, measured.* Same-guard merging is exhausted: merging every adjacent pair with the
+same guard with no check at all (`--merge OUT all+gap`, not sound) reaches 283.41 x10^9 with the
+dead stores above, the passes 283.23 without them. The 172 requests of the 99 calls are at most 73
+more than one per call; at about 1.1 x10^9 computeTime per request (nm -> lo: 259 requests fewer,
+294.8 x10^9), merging statements with different guards (16 adjacent pairs) or with a read feeding
+the next statement's operands (5), which needs another transformation (a guard as an Impact branch;
+reads consumed inside the program), is worth at most about 80 x10^9 computeTime; the dead stores
+above at most 3.8 x10^9 of read and compute time and 255 rows; nothing else measured remains in
+these passes.
 
 ### Ideas measured and not pursued
 

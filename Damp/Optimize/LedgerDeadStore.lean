@@ -6,7 +6,8 @@ A write `push false k; push true v; ins false 1` under the constant guard 1,
 with a constant key `k` and a value of one field element whose expression
 cannot fail (`Expr.total []` of `Simplify`), or of constants that fit their
 alignment as one atom (`droppableValue`), is dropped when the next ledger statement, after
-any number of bindings, assertions, range checks and witness calls (at most
+any number of bindings, assertions, range checks and witness calls other than
+the built-in ones and cross-contract calls (`ctxWitness`) (at most
 `deadStoreWindow` statements), is a cell write of the same key, also under the
 constant guard 1. Only what the dropped write would have left can differ, and
 the second write replaces it; a failure of the first write (the key does not
@@ -59,6 +60,7 @@ def overwrites (k : Aligned Expr) : Nat → List Stmt → Bool
       match s with
       | .ledger (.const 1) [] [.push false k', .push true _, .ins false 1] => alignedSame k' k
       | .ledger .. => false
+      | .witness _ name _ _ _ => !ctxWitness name && overwrites k n rest
       | _ => overwrites k n rest
 
 def deadStoreGo : List Stmt → List Stmt

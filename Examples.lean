@@ -31,6 +31,9 @@ import Examples.OptLedgerDeadStore
 import Examples.OptLedgerFrame
 import Examples.OptLedgerMerge
 import Examples.TokenProofs
+import Examples.OptLedgerMergeEffects
+import Examples.OptLedgerHoist
+import Examples.CoinProofs
 import Examples.Casts
 import Examples.EmitAgrees
 import Examples.Semantics

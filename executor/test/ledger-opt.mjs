@@ -1,9 +1,10 @@
 // Differential test of the opt-in ledger passes (`--ledger-opt`: `Circuit.ledgerReuse`, the `--O2`
-// passes again, `Circuit.ledgerDeadStore`, `Circuit.ledgerMerge`; Damp/Optimize/Ledger*.lean)
+// passes again, `Circuit.ledgerDeadStore`, `Circuit.ledgerHoist`, `Circuit.ledgerMerge`;
+// Damp/Optimize/Ledger*.lean)
 // through the real runtime. The same calls as test/bench.mjs (values, witnesses and calls copied from
 // it) are made against the Damp builds of each benchmark program:
 //   o2: `lake exe damp-bench --O2`,
-//   nm: the same with the ledger passes but `Circuit.ledgerMerge` (optional; test/ledger-opt.sh
+//   nm: the same with the ledger passes but `Circuit.ledgerHoist` and `Circuit.ledgerMerge` (optional; test/ledger-opt.sh
 //       builds it), and
 //   lo: `lake exe damp-bench --O2 --ledger-opt`,
 // each starting from the ledger state its own previous call left. zerocash_core's calls need Merkle
@@ -29,6 +30,13 @@ import { checkProofData } from '../harness/check.mjs';
 import { toJson, proofDataOf } from '../harness/json.mjs';
 
 const root = path.resolve(process.argv[2]);
+
+// Requests (`QueryContext.query`) the runtime ran, counted per build over the calls whose gas is summed.
+let queries = 0;
+{
+  const q = rt.QueryContext.prototype.query;
+  rt.QueryContext.prototype.query = function (...a) { queries++; return q.apply(this, a); };
+}
 const COIN_PK = '3c'.repeat(32);
 
 let failures = 0, checks = 0;
@@ -237,6 +245,17 @@ const calls = [
   ['proof_data', 'test1', [], true],
   ['proof_data', 'test2', [], true],
 
+  // The witness barrier (test/ledger-opt.sh builds lo_barrier): `createZswapOutput` inserts the
+  // coin's commitment into the call context, which the coin-storing write then reads; merging that
+  // write into the earlier request (above the witness) makes the runtime refuse it.
+  ['lo_barrier', 'peek', [], true],
+  ['lo_barrier', 'store', [coin(11, red, 5n), true], true],
+  ['lo_barrier', 'peek', [], true],
+  ['lo_barrier', 'store', [coin(14, red, 7n), false], true],
+  ['lo_barrier', 'receive', [coin(12, red, 6n)], true],
+  ['lo_barrier', 'peek', [], true],
+  ['lo_barrier', 'store', [coin(13, red, 1n << 128n), false], false],
+
   ['zkir_generation', 'increment', [], true],
   ['zkir_generation', 'test1', [range(10, (i) => BigInt(250 - 7 * i))], true],
   ['zkir_generation', 'test1', [[...range(9), 256n]], false],
@@ -338,16 +357,22 @@ const zero = () => Object.fromEntries(FIELDS.map((f) => [f, 0n]));
 const gas = { o2: zero(), lo: zero() };
 const mgas = { nm: zero(), lo: zero() };
 const gasRows = [], mgasRows = [];
+const requests = { o2: 0, lo: 0 };
 let changedCalls = 0, mergedCalls = 0, sample = null;
 for (const [name, circuit, argsOf, shouldSucceed] of calls) {
   if (name === 'composable_outer') continue;
   if (name === 'zerocash_core' && !(await exists(path.join(COMPACT, name, 'contract', 'index.js')))) continue;
+  if (!(await exists(path.join(root, 'o2', name)))) continue;
   const c = await load(name);
   const args = typeof argsOf === 'function' ? argsOf(c) : argsOf;
   const label = `${name}.${circuit}(${args.map((a) => toJson(a, 0)).join(', ')})`.replaceAll('"', '').slice(0, 110);
   const changed = process.env.LO_ALL ? true : await changedCircuit(name, circuit);
-  const runs = {};
-  for (const level of LEVELS) runs[level] = await attempt(() => c.impl[level].contract.circuits[circuit](circuitContext(circuit, c.impl[level]), ...args));
+  const runs = {}, nq = {};
+  for (const level of LEVELS) {
+    const q0 = queries;
+    runs[level] = await attempt(() => c.impl[level].contract.circuits[circuit](circuitContext(circuit, c.impl[level]), ...args));
+    nq[level] = queries - q0;
+  }
   const errs = LEVELS.filter((l) => runs[l].error);
   if (errs.length > 0) {
     report(errs.length === LEVELS.length && !shouldSucceed, `${label}: both refuse${shouldSucceed ? ' (expected to succeed)' : ''}`,
@@ -386,6 +411,7 @@ for (const [name, circuit, argsOf, shouldSucceed] of calls) {
     const go = gasOf(runs.o2), gl = gasOf(runs.lo);
     if (go !== null && gl !== null) {
       for (const f of FIELDS) { gas.o2[f] += go[f]; gas.lo[f] += gl[f]; }
+      requests.o2 += nq.o2; requests.lo += nq.lo;
       gasRows.push([label, go, gl]);
     }
   }
@@ -398,6 +424,7 @@ for (const [l, a, b] of gasRows) {
 }
 console.log('gas over those calls (o2 -> lo):');
 for (const f of FIELDS) console.log(`  ${f}: ${gas.o2[f]} -> ${gas.lo[f]} (saved ${gas.o2[f] - gas.lo[f]})`);
+console.log(`  requests: ${requests.o2} -> ${requests.lo}`);
 if (LEVELS.includes('nm')) {
   console.log(`\n${mergedCalls} successful calls of circuits ledgerMerge changed (nm -> lo)`);
   for (const [l, a, b] of mgasRows) {

@@ -188,10 +188,13 @@ theorem overwrites_spec {k : Aligned Expr} : ∀ {n : Nat} {rest : List Stmt}, o
         · rename_i h1 h2 _
           exfalso
           first | exact h2 g rs ops rfl | exact h1 g rs ops rfl | exact absurd rfl (h2 g rs ops) | simp_all
+        · simp_all
       | bind v hint e => exact quiet (by intros; simp) (by simpa [overwrites] using h)
       | assert c m => exact quiet (by intros; simp) (by simpa [overwrites] using h)
       | constrain e r => exact quiet (by intros; simp) (by simpa [overwrites] using h)
-      | witness g name args outs sh => exact quiet (by intros; simp) (by simpa [overwrites] using h)
+      | witness g name args outs sh =>
+        simp only [overwrites, Bool.and_eq_true] at h
+        exact quiet (by intros; simp) h.2
 
 /-! ## The window -/
 

@@ -70,8 +70,9 @@ private def opsOf : Stmt → List (Op Expr)
 #guard mergeable (opsOf (inc 4)) (opsOf (inc 4))
 #guard mergeable (opsOf (wr 1 (.var 0))) (opsOf (eff (.var 0)))
 #guard mergeable (opsOf (wr 1 (.var 0))) (opsOf (ctx 12))
--- a first program that changes the effects: the second would see them before they are re-encoded
-#guard !mergeable (opsOf (eff (.var 0))) (opsOf (wr 1 (.var 0)))
+-- a first program that changes the effects, keeping them in the form the runtime re-encodes them
+-- to (Examples/OptLedgerMergeEffects.lean has the side conditions)
+#guard mergeable (opsOf (eff (.var 0))) (opsOf (wr 1 (.var 0)))
 -- a cached read of the contract state misses in a request of its own, not after a write of it
 #guard !mergeable (opsOf (wr 1 (.var 0))) (opsOf (rdCached 1 10))
 -- a first program leaving four entries, or a weak value as the contract state
@@ -94,8 +95,8 @@ private def opsOf : Stmt → List (Op Expr)
 #guard after (mk 1 [rd 1 10, .bind 20 "t" (.add (.var 10) (.const 1)), wr 2 (.var 20)] []) == "LBL"
 -- different guards
 #guard after (mk 1 [wr 1 (.var 0), .ledger (.var 0) [] (opsOf (wr 2 (.var 0)))] []) == "LL"
--- the effects first, then a state write: not merged; the other way round: merged
-#guard after (mk 1 [eff (.var 0), wr 1 (.var 0)] []) == "LL"
+-- the effects first, then a state write, and the other way round: merged
+#guard after (mk 1 [eff (.var 0), wr 1 (.var 0)] []) == "L"
 #guard after (mk 1 [wr 1 (.var 0), eff (.var 0)] []) == "L"
 
 /-! ### Runs through the executor against the VM model -/
@@ -120,7 +121,7 @@ private def same (c : Circuit) (inputs : List Nat) : Bool := run c inputs == run
 
 private def c1 := mk 1 [wr 1 (.var 0), wr 2 (.var 0), inc 4, ins 3 (fk 5) (.var 0), rd 1 10, ctx 11,
   look 3 (fk 5) 12, eff (.var 0), rd 2 13] [.var 10, .var 11, .var 12, .var 13]
-#guard after c1 == "LL"
+#guard after c1 == "L"
 #guard same c1 [5]
 #guard run c1 [5] != "fails"
 -- a write of a field that does not exist fails, merged or not
@@ -154,8 +155,10 @@ private def opCount (c : Circuit) : List Nat := c.body.toList.map fun s => (opsO
 
 #guard after (chain 32) == "L"
 #guard opCount (chain 32).ledgerMerge == [96]
-#guard opCount (chain 64).ledgerMerge == [159, 33]
-#guard (opCount (chain 64).ledgerMerge).all (· ≤ maxMergeOps)
+#guard opCount (chain 64).ledgerMerge == [192]
+-- 400 writes (1200 instructions): cut where the next one would pass `maxMergeOps`
+#guard opCount (chain 400).ledgerMerge == [1023, 177]
+#guard (opCount (chain 400).ledgerMerge).all (· ≤ maxMergeOps)
 private def σ₁ : LedgerState := { σ₀ with state := .array (List.replicate 70 (.cell ⟨[.field], [1]⟩)) }
 #guard runAt σ₁ (chain 64) [3] == runAt σ₁ (chain 64).ledgerMerge [3]
 #guard runAt σ₁ (chain 64) [3] != "fails"

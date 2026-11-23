@@ -25,6 +25,7 @@ The proof:
   which changes nothing in either run) does the same in both.
 -/
 import Damp.Proofs.Ledger.OptFrame
+import Damp.Proofs.Ledger.Effects
 import Damp.Optimize.LedgerMerge
 
 set_option linter.unusedSimpArgs false
@@ -342,11 +343,180 @@ theorem Cache.visit_in (c : Cache) (k : CKey) (hk : ∀ n p, k = some (n, p) →
 
 /-! ## What the tags claim -/
 
+/-- An aligned value of alignment `al` whose atoms fit it (what `AV.ofFields al` builds). -/
+def AlignFits (al : List Zkir.AlignAtom) (kv : AV) : Prop :=
+  kv.align = al ∧ kv.atoms.length = al.length ∧ ∀ p ∈ al.zip kv.atoms, atomFits p.1 p.2 = true
+
 /-- What a value tag claims, `V i` being initial value `i`. -/
 def _root_.Damp.IR.MVal.Ok (V : Nat → SV) : MVal → SV → Prop
   | .orig i, v => v = V i
   | .key k, v => v = .cell k
+  | .cell al, v => ∃ kv, v = .cell kv ∧ AlignFits al kv
+  | .nul, v => v = .null
+  | .dec, v => decodeEffects v = some v
+  | .dmap i, v => ∃ m, v = .map m ∧ effectMap i m = some m
   | .other, _ => True
+
+/-! ### The effects' decoded form, through `idx` and `ins` -/
+
+theorem ofFields_fits : ∀ {al : List Zkir.AlignAtom} {vs : List Fr} {kv : AV}, AV.ofFields al vs = some kv →
+    AlignFits al kv
+  | [], vs, kv, h => by simp [AV.ofFields] at h; subst h; simp [AlignFits]
+  | a :: as, vs, kv, h => by
+      obtain ⟨rest, hr, hfit, rfl⟩ := ofFields_cons_inv h
+      obtain ⟨h1, h2, h3⟩ := ofFields_fits hr
+      refine ⟨by simp [h1], by simp [h2], ?_⟩
+      intro p hp
+      simp only [List.zip_cons_cons, List.mem_cons] at hp
+      rcases hp with rfl | hp
+      · exact hfit
+      · exact h3 p hp
+
+/-- Every slot of decoded effects is a decoded map. -/
+theorem dec_slot {es : List SV} (h : decodeEffects (.array es) = some (.array es)) {i : Nat} {x : SV}
+    (hx : es[i]? = some x) : ∃ m, x = .map m ∧ effectMap i m = some m := by
+  rw [decodeEffects_array] at h
+  split at h
+  · simp only [Option.map_eq_some_iff] at h
+    obtain ⟨es', hm, hes⟩ := h
+    cases hes
+    obtain ⟨y, hy, hy'⟩ := mapM_zipIdx_get slotDecode es 0 i es x hm hx
+    rw [hx] at hy'; cases hy'
+    cases x with
+    | map m =>
+      simp only [slotDecode, Nat.zero_add, Option.map_eq_some_iff] at hy
+      obtain ⟨m', hm', he⟩ := hy
+      cases he
+      exact ⟨m, rfl, hm'⟩
+    | _ => simp [slotDecode] at hy
+  · simp at h
+
+theorem dec_array {v : SV} (h : decodeEffects v = some v) : ∃ es, v = .array es ∧ es.length = 9 := by
+  cases v with
+  | array es =>
+    rw [decodeEffects_array] at h
+    split at h
+    · exact ⟨es, rfl, by assumption⟩
+    · simp at h
+  | _ => simp [decodeEffects] at h
+
+section EffDec
+variable {V : Nat → SV}
+
+/-- `idx` at a slot of decoded effects finds that slot's decoded map. -/
+theorem idxv_ok {ct kt : MVal} {cv res : SV} {k : AV} (hc : ct.Ok V cv) (hk : kt.Ok V (.cell k))
+    (h : svStep cv k = some res) : (idxv ct kt).Ok V res := by
+  unfold idxv
+  split
+  · rename_i kv
+    simp only [MVal.Ok] at hc hk
+    cases hk
+    split
+    · rename_i i hi
+      obtain ⟨es, rfl, -⟩ := dec_array hc
+      simp only [svStep, hi, Option.bind_eq_bind, Option.bind_some] at h
+      exact dec_slot hc h
+    · trivial
+  · trivial
+
+theorem effKey_ok {i : Nat} {kt : MVal} {k : AV} (hk : kt.Ok V (.cell k)) (h : effKeyOk i kt = true) :
+    effectKey i k = some k := by
+  unfold effKeyOk at h
+  split at h
+  · simp only [MVal.Ok] at hk; cases hk; simpa using h
+  · rename_i al
+    simp only [Bool.and_eq_true, beq_iff_eq] at h
+    obtain ⟨hi, rfl⟩ := h
+    obtain ⟨kv, hkv, hal, hlen, hfit⟩ := hk
+    cases hkv
+    obtain ⟨al', atoms⟩ := k
+    simp only at hal hlen; subst hal
+    match atoms, hlen, hfit with
+    | [x], _, hfit =>
+      have hx : x < 2 ^ 256 := by simpa [atomFits] using hfit (.bytes 32, x) (by simp)
+      have hi' : i ≤ 2 ∨ i = 4 ∨ i = 5 := by simp only [Bool.or_eq_true, decide_eq_true_eq, beq_iff_eq] at hi; omega
+      simp [effectKey, hi', AV.toHash, hx, AV.ofHash]
+  · simp at h
+
+theorem effVal_ok {i : Nat} {vt : MVal} {x : SV} (hv : vt.Ok V x) (h : effValOk i vt = true) :
+    effectValue i x = some x := by
+  unfold effValOk at h
+  split at h
+  · simp only [MVal.Ok] at hv; subst hv
+    simp only [decide_eq_true_eq] at h
+    simp [effectValue, h]
+  · rename_i kv
+    simp only [MVal.Ok] at hv; subst hv
+    simp only [Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq, Option.isSome_iff_exists] at h
+    obtain ⟨⟨⟨hi, hal⟩, hlen⟩, y, hy⟩ := h
+    have h3 : ¬ i ≤ 3 := by omega
+    obtain ⟨al, atoms⟩ := kv
+    simp only at hal hlen; subst hal
+    match atoms, hlen, hy with
+    | [z], _, hy =>
+      simp only [AV.toU64] at hy
+      split at hy
+      · cases hy; simp [effectValue, h3, hi, AV.toU64, *, AV.ofU64]
+      · simp at hy
+  · rename_i al
+    simp only [Bool.and_eq_true, Bool.or_eq_true, beq_iff_eq] at h
+    obtain ⟨hi, rfl⟩ := h
+    obtain ⟨kv, rfl, hal, hlen, hfit⟩ := hv
+    have h3 : ¬ i ≤ 3 := by omega
+    obtain ⟨al', atoms⟩ := kv
+    simp only at hal hlen; subst hal
+    match atoms, hlen, hfit with
+    | [z], _, hfit =>
+      have hz : z < 2 ^ 64 := by simpa [atomFits] using hfit (.bytes 8, z) (by simp)
+      simp [effectValue, h3, hi, AV.toU64, hz, AV.ofU64]
+  · simp at h
+
+/-- `ins` keeps the effects decoded when the key and value are in the slot's form. -/
+theorem insv_ok {cnt kt ct : MVal} {cv x next : SV} {k : AV} (hcn : cnt.Ok V cv) (hk : kt.Ok V (.cell k))
+    (hc : ct.Ok V x) (h : insNext cv k x = some next) : (insv cnt kt ct).Ok V next := by
+  cases cnt with
+  | dmap i =>
+    simp only [insv]
+    split
+    · rename_i hok
+      simp only [Bool.and_eq_true] at hok
+      obtain ⟨m, rfl, hm⟩ := hcn
+      simp only [insNext, Option.some.injEq] at h; subst h
+      have he : effectEntry i k x = some (k, x) := by
+        simp [effectEntry, effVal_ok hc hok.2, effKey_ok hk hok.1]
+      exact ⟨_, rfl, effectMap_assocSet he hm⟩
+    · trivial
+  | dec =>
+    cases kt with
+    | key kv =>
+      cases ct with
+      | dmap i =>
+        simp only [insv]
+        split
+        · rename_i hki
+          simp only [MVal.Ok] at hk; cases hk
+          simp only [beq_iff_eq] at hki
+          obtain ⟨m', rfl, hm'⟩ := hc
+          simp only [MVal.Ok] at hcn
+          obtain ⟨es, rfl, hl⟩ := dec_array hcn
+          simp only [insNext, hki, Option.bind_eq_bind, Option.bind_some] at h
+          split at h
+          · rename_i hil
+            simp only [Option.some.injEq] at h; subst h
+            simp only [MVal.Ok]
+            rw [decodeEffects_array] at hcn ⊢
+            simp only [hl, ite_true, Option.map_eq_some_iff] at hcn
+            obtain ⟨es', hmap, hes⟩ := hcn
+            cases hes
+            have hs : slotDecode (.map m', 0 + i) = some (.map m') := by simp [slotDecode, hm']
+            simp [List.length_set, hl, mapM_zipIdx_set slotDecode es 0 i es _ _ hmap hil hs]
+          · simp at h
+        · trivial
+      | _ => simp [insv, MVal.Ok]
+    | _ => simp [insv, MVal.Ok]
+  | _ => simp [insv, MVal.Ok]
+
+end EffDec
 
 /-- The root of a cache key exists. -/
 def KeyIn (c : Cache) (k : CKey) : Prop := ∀ n p, k = some (n, p) → n < c.length
@@ -448,7 +618,13 @@ theorem mkeyVal_ok {k : Aligned Expr} {p : Prims} {env : Env} {k' : Aligned Fr}
     (mkeyVal k).Ok V (.cell kv) := by
   unfold mkeyVal
   cases hc : constAV k with
-  | none => trivial
+  | none =>
+    have hal : k'.align = k.align := by
+      simp only [Aligned.mapM, Option.bind_eq_bind] at hk
+      obtain ⟨vs, -, h⟩ := bind_some_elim hk
+      simp at h; subst h; rfl
+    simp only [AV.ofAligned] at hkv
+    exact ⟨kv, rfl, hal ▸ ofFields_fits hkv⟩
   | some kv' =>
     have := constAV_eval hc hk
     rw [hkv] at this; cases this
@@ -521,6 +697,13 @@ theorem exec_new (H : Hooks) {s s' : VmState} {op : ROp} {k n : Nat} (hop : op.n
     simp [ROp.exec, VmState.pushNew, VmState.push, VmState.popU64, VmState.popCell, VmState.popBool,
       VmState.pop, Option.bind_eq_some_iff] at h <;>
     grind
+
+/-- `add` pushes a `u64` cell. -/
+theorem exec_add_val (H : Hooks) {s s' : VmState} {k : Nat} (h : ROp.add.exec H s = some (s', k)) :
+    ∃ x, x < 2 ^ 64 ∧ s'.stack = ⟨.cell (AV.ofU64 x), true, none⟩ :: s.stack.drop 2 := by
+  simp [ROp.exec, VmState.pushNew, VmState.push, VmState.popU64, VmState.popCell,
+    VmState.pop, Option.bind_eq_some_iff] at h
+  grind
 
 /-- Only `idx` and `ins` change the cache. -/
 theorem exec_cache (H : Hooks) {s s' : VmState} {op : ROp} {k : Nat}
@@ -766,9 +949,11 @@ theorem midx_ok {check cached pp : Bool} :
                     exact Cache.visit_in _ _ hin
                   · exact hle.2.1 _ (hc.2.2.2.1 kv hmem)
                 · exact hle.2.1 _ (hc.2.2.2.1 kv hkv')
-            have hc2 : (⟨.other, ct.strong, ct.fc, []⟩ : MTag).Ok V (s.cache.visit (curr.key.push k)).1
+            have hkey : key.val = .cell k := by
+              cases hkk : key.val <;> simp [hkk, SV.asCell] at hkv; rw [hkv]
+            have hc2 : (⟨idxv ct.v kt.v, ct.strong, ct.fc, []⟩ : MTag).Ok V (s.cache.visit (curr.key.push k)).1
                 { val := res, strong := curr.strong, key := curr.key.push k } :=
-              ⟨trivial, hc.2.1, fun f => Cache.get_full_push _ _ k (hle.1 _ (hc.2.2.1 f)), by simp, hin.mono hle⟩
+              ⟨idxv_ok hc.1 (hkey ▸ hk.1.1) hsv, hc.2.1, fun f => Cache.get_full_push _ _ k (hle.1 _ (hc.2.2.1 f)), by simp, hin.mono hle⟩
             have ih := midx_ok keys kts
               { (if pp then (s.push curr).push { key with key := none } else s) with
                     cache := (s.cache.visit (curr.key.push k)).1 }
@@ -829,10 +1014,12 @@ theorem mins_ok {check cached : Bool} :
                 refine ⟨fun hch => by simp [hb_eq hch, hnb, hn], fun s' curr' cc' h => ?_⟩
                 split at h <;> simp [hn] at h
               | some next =>
-                have hc2 : LoopOk V ⟨.other, sand ct.strong cnt.strong, ct.fc && cnt.fc, []⟩
+                have hkey : key.val = .cell k := by
+                  cases hkk : key.val <;> simp [hkk, SV.asCell] at hkv; rw [hkv]
+                have hc2 : LoopOk V ⟨insv cnt.v kt.v ct.v, sand ct.strong cnt.strong, ct.fc && cnt.fc, []⟩
                     { val := next, strong := curr.strong && cont.strong, key := curr.key }
                     (insCache (({ s with stack := rest } : VmState).cache.get cont.key) k cc) := by
-                  refine ⟨trivial, sand_ok hc.2.1 hts.2.1.2.1, fun f => ?_⟩
+                  refine ⟨insv_ok hts.2.1.1 (hkey ▸ hts.1.1) hc.1 hn, sand_ok hc.2.1 hts.2.1.2.1, fun f => ?_⟩
                   simp only [Bool.and_eq_true] at f
                   have h1 := hc.2.2 f.1
                   have h2 := hts.2.1.2.2.1 f.2
@@ -875,7 +1062,19 @@ theorem mstep_ok (H : Hooks) {p : Prims} {env : Env} {op : Op Expr} {r : ROp} (h
     (∀ s' k, r.exec H s = some (s', k) → k = 0 ∧ MAgrees V s'.cache ts' s'.stack) := by
   obtain ⟨op', hop, hr⟩ := hr
   cases op with
-  | lt | eq | and | or | add | sub | member | type | size | neg | root | concat _ | concatCached _ =>
+  | add =>
+    simp [Op.mapM] at hop; subst hop; simp [Exec.blank, Op.toR] at hr; subst hr
+    refine ⟨fun _ => rfl, fun s' k hex => ?_⟩
+    obtain ⟨hk, hc, _, _⟩ := exec_new H (by rfl) hex
+    obtain ⟨x, hx, hs⟩ := exec_add_val H hex
+    refine ⟨hk, ?_⟩
+    simp only [mstep] at hf
+    split at hf
+    · simp at hf; subst hf
+      rw [hc, hs]
+      refine ⟨fresh_ok ⟨_, rfl, by simp [AlignFits, AV.ofU64, atomFits, hx]⟩ (by simp) rfl, ha.drop 2⟩
+    · simp at hf
+  | lt | eq | and | or | sub | member | type | size | neg | root | concat _ | concatCached _ =>
     simp [Op.mapM] at hop; subst hop; simp [Exec.blank, Op.toR] at hr; subst hr
     refine ⟨fun _ => rfl, fun s' k hex => ?_⟩
     obtain ⟨hk, hc, _, hs⟩ := exec_new H (by rfl) hex
@@ -937,7 +1136,7 @@ theorem mstep_ok (H : Hooks) {p : Prims} {env : Env} {op : Op Expr} {r : ROp} (h
     have hc := exec_cache H (by simp) (by simp) hex
     obtain ⟨hk, hs⟩ := exec_push H hex
     simp [mstep] at hf; subst hf
-    exact ⟨hk, by rw [hs, hc]; exact ⟨fresh_ok trivial (by simp) rfl, ha⟩⟩
+    exact ⟨hk, by rw [hs, hc]; exact ⟨fresh_ok rfl (by simp) rfl, ha⟩⟩
   | pushState st v =>
     cases hv' : v.mapM (Expr.eval p env) with
     | none => simp [Op.mapM, hv'] at hop
@@ -1757,10 +1956,10 @@ def qV (q : LedgerState) : Nat → SV
   | 1 => q.effects
   | _ => q.state
 
-theorem minit_ok (q : LedgerState) : MAgrees (qV q) q.vm.cache minit q.vm.stack := by
+theorem minit_ok (q : LedgerState) (hq : q.WF) : MAgrees (qV q) q.vm.cache minit q.vm.stack := by
   rw [vm_eq]
   refine ⟨⟨rfl, by simp [minit, initStack], by simp [minit], by simp [minit], ?_⟩,
-    ⟨rfl, by simp [minit, initStack], fun _ => rfl, by simp [minit], ?_⟩,
+    ⟨hq, by simp [minit, initStack], fun _ => rfl, by simp [minit], ?_⟩,
     ⟨rfl, by simp [minit, initStack], fun _ => rfl, by simp [minit], ?_⟩, trivial⟩ <;>
   · intro n p h; simp [initStack] at h; obtain ⟨rfl, -⟩ := h; simp
 
@@ -1790,7 +1989,7 @@ theorem ledgerOracle_merge (H : Hooks) {p : Prims} {env : Env} {ops₁ ops₂ : 
   simp only [Option.bind_some, Option.pure_def, Option.bind_eq_bind]
   have he₁ := request_allEval hr₁ hrops₁
   have he₂ := request_allEval hr₂ hrops₂
-  have hs₁ := mcheck_sound (qV q) H f₁ ops₁ rops₁ minit q.vm hm₁ he₁ (minit_ok q)
+  have hs₁ := mcheck_sound (qV q) H f₁ ops₁ rops₁ minit q.vm hm₁ he₁ (minit_ok q hq)
   rw [query_eq, query_eq, hs₁.1 rops₂]
   cases hb : runR H rops₁ q.vm with
   | none => rfl
@@ -1810,37 +2009,37 @@ theorem ledgerOracle_merge (H : Hooks) {p : Prims} {env : Env} {ops₁ ops₂ : 
   simp only [mboundary, Bool.and_eq_true, beq_iff_eq] at hfin
   obtain ⟨⟨⟨⟨⟨⟨hst1, hev⟩, hes⟩, hefc⟩, hcv⟩, hcs⟩, hcfc⟩ := hfin
   have hstrong : st.strong = true := hab.1.2.1 true hst1
-  have heffv : eff.val = q.effects := by have := hab.2.1.1; rw [hev] at this; exact this
+  have hdec : decodeEffects eff.val = some eff.val := by have := hab.2.1.1; rw [hev] at this; exact this
   have heffs : eff.strong = false := hab.2.1.2.1 false hes
   have hctxv : ctx.val = q.context := by have := hab.2.2.1.1; rw [hcv] at this; exact this
   have hctxs : ctx.strong = false := hab.2.2.1.2.1 false hcs
-  have hfin₁ : finish q sb = some (sb.reads, { q with state := st.val }) := by
+  have hfin₁ : finish q sb = some (sb.reads, { q with state := st.val, effects := eff.val }) := by
     unfold finish; rw [hst]
-    simp only [hstrong, ite_true, heffv]
-    rw [show decodeEffects q.effects = some q.effects from hq]
+    simp only [hstrong, ite_true, hdec]
     rfl
   rw [hfin₁]
   simp only [Option.bind_some]
-  generalize hq₁ : ({ q with state := st.val } : LedgerState) = q₁
+  generalize hq₁ : ({ q with state := st.val, effects := eff.val } : LedgerState) = q₁
   have hq₁c : q₁.context = q.context := by rw [← hq₁]
-  have hq₁e : q₁.effects = q.effects := by rw [← hq₁]
+  have hq₁e : q₁.effects = eff.val := by rw [← hq₁]
+  have hq₁wf : q₁.WF := by rw [LedgerState.WF, hq₁e]; exact hdec
   have hq₁s : q₁.state = st.val := by rw [← hq₁]
   -- `ops₂` runs as with its cached flags cleared, after `ops₁` and alone
   have hinit_b : MAgrees (qV q₁) sb.cache minit sb.stack := by
     rw [hst]
     refine ⟨⟨by simp [MVal.Ok, minit, qV, hq₁s], by simp [minit, hstrong], by simp [minit], by simp [minit],
         hab.1.2.2.2.2⟩,
-      ⟨by simp [qV, hq₁e, heffv, MVal.Ok, minit], by simp [minit, heffs], fun _ => hab.2.1.2.2.1 hefc, by simp [minit],
+      ⟨by simp [qV, hq₁e, MVal.Ok, minit, hdec], by simp [minit, heffs], fun _ => hab.2.1.2.2.1 hefc, by simp [minit],
         hab.2.1.2.2.2.2⟩,
       ⟨by simp [qV, hq₁c, hctxv, MVal.Ok, minit], by simp [minit, hctxs], fun _ => hab.2.2.1.2.2.1 hcfc,
         by simp [minit], hab.2.2.1.2.2.2.2⟩, trivial⟩
   have hs₂b := mcheck_sound (qV q₁) H f₂ ops₂ rops₂ minit sb hm₂ he₂ hinit_b
-  have hs₂f := mcheck_sound (qV q₁) H f₂ ops₂ rops₂ minit q₁.vm hm₂ he₂ (minit_ok q₁)
+  have hs₂f := mcheck_sound (qV q₁) H f₂ ops₂ rops₂ minit q₁.vm hm₂ he₂ (minit_ok q₁ hq₁wf)
   have hprops := AllEval.props he₂
   have hsb : sb.er [] = q₁.vm.er sb.reads := by
     rw [vm_eq]
     simp only [VmState.er, hst, initStack, List.map_cons, List.map_nil, List.nil_append, List.append_nil]
-    simp [Entry.er, ← hq₁, heffv, hctxv, hstrong, heffs, hctxs]
+    simp [Entry.er, ← hq₁, hctxv, hstrong, heffs, hctxs]
   have hmerged : (runR H rops₂ sb).map (·.er []) = (runR H rops₂ q₁.vm).map (·.er sb.reads) := by
     rw [hs₂b.2.1 rfl, hs₂f.2.1 rfl, runR_er H [] _ _ (Nat.le_refl _) hprops, hsb,
       ← runR_er H sb.reads _ _ (Nat.le_refl _) hprops]

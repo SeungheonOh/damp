@@ -30,6 +30,7 @@ import Damp.Optimize.LedgerReuse
 import Damp.Optimize.LedgerDeadStore
 import Damp.Optimize.LedgerFrame
 import Damp.Optimize.LedgerMerge
+import Damp.Optimize.LedgerHoist
 import Damp.Optimize.InlineAll
 import Damp.Optimize.AssertEq
 import Damp.Optimize.Commute
@@ -115,6 +116,11 @@ import Damp.Proofs.Interface.TokenLogic
 import Damp.Proofs.Interface.CallLogic
 import Damp.Proofs.Ledger.TokensValues
 import Damp.Proofs.Ledger.TokensRuns
+import Damp.Proofs.Optimize.LedgerHoist
+import Damp.Proofs.Ledger.Coins
+import Damp.Proofs.Ledger.CoinsRuns
+import Damp.Proofs.Ledger.TokensRunsG
+import Damp.Proofs.Ledger.NestedDeep
 import Damp.Proofs.Optimize.LedgerSound
 import Damp.Proofs.Optimize.LedgerReuseBase
 import Damp.Proofs.Optimize.LedgerReuse

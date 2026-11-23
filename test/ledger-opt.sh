@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The opt-in ledger passes (`--ledger-opt`: `Circuit.ledgerReuse`, the --O2 passes again,
-# `Circuit.ledgerDeadStore`, `Circuit.ledgerMerge`; Damp/Optimize/Ledger*.lean), end to end.
+# `Circuit.ledgerDeadStore`, `Circuit.ledgerHoist`, `Circuit.ledgerMerge`; Damp/Optimize/Ledger*.lean),
+# end to end.
 #
 # 1. Builds every benchmark program at --O2 ($out/o2), at --O2 --ledger-opt ($out/lo), and at --O2
-#    with every ledger pass but `ledgerMerge` ($out/nm, through a small Lean driver written to
+#    with every ledger pass but `ledgerHoist` and `ledgerMerge` ($out/nm, through a small Lean driver written to
 #    $out/NoMerge.lean), and zerocash_core with compactc ($out/compact, for its Merkle paths).
 # 2. Prints, for every circuit the pass changed, instructions and rows (zkir-v3 mock-compile).
 # 3. Runs the benchmark calls through the real runtime against both builds and requires equal
@@ -11,7 +12,8 @@
 #    acceptance of the rewritten circuits' proof data (executor/test/ledger-opt.mjs); reports gas.
 #
 # LO_OUT overrides the output directory (default build/ledger-opt).
-# 4. Requires that `ledgerMerge` changes no circuit's rows and saves ledger programs (nm -> lo).
+# 4. Requires that `ledgerHoist` and `ledgerMerge` change no circuit's rows or instruction count and save
+#    ledger programs (nm -> lo).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,19 +29,20 @@ lake exe damp-bench --O2 --ledger-opt "$out/lo" >/dev/null
 if lake exe damp-bench --no-opt --ledger-opt "$out/refused" >/dev/null 2>&1; then
   echo "damp-bench accepted --no-opt --ledger-opt"; exit 1
 fi
-# --O2 and the ledger passes without the last one, `ledgerMerge`: what the merge is measured against.
+# --O2 and the ledger passes without the last two, `ledgerHoist` and `ledgerMerge` (which only regroup
+# ledger statements into requests): what the merge is measured against.
 cat > "$out/NoMerge.lean" <<'LEAN'
 import Bench
 open Damp
 
-/-- `Contract.optimize .full true` with `IR.ledgerPasses` minus its last pass, `ledgerMerge`. -/
+/-- `Contract.optimize .full true` with `IR.ledgerPasses` minus its last two, `ledgerHoist` and `ledgerMerge`. -/
 def noMerge (c : Contract) : Contract :=
   let f : IR.Pass := fun circ => IR.runPasses (IR.ledgerPasses.take 3) circ.optimizeFull
   { c with circuits := c.circuits.map f, «constructor» := c.«constructor».map f }
 
 def main (args : List String) : IO UInt32 := do
   let out := System.FilePath.mk (args.headD "nm")
-  unless IR.ledgerPasses.length = 4 do throw (IO.userError "ledgerPasses changed: update NoMerge")
+  unless IR.ledgerPasses.length = 5 do throw (IO.userError "ledgerPasses changed: update NoMerge")
   for c in [Bench.Counter.contract, Bench.Tiny.contract, Bench.Threading.contract, Bench.GasCost.contract,
       Bench.BlockTime.contract, Bench.UnshieldedTokens.contract, Bench.Coracle.contract,
       Bench.ElectionCore.contract, Bench.ZerocashCore.contract, Bench.Pm20028.contract,
@@ -56,6 +59,66 @@ def main (args : List String) : IO UInt32 := do
   return 0
 LEAN
 lake env lean --run "$out/NoMerge.lean" "$out/nm" >/dev/null
+# A program for the witness barrier: a ledger statement that reads the call context never moves
+# above `createZswapOutput` (which changes the context in the runtime, not in the model), built
+# at o2, nm and lo by its own driver (it is not a benchmark program).
+cat > "$out/Barrier.lean" <<'LEAN'
+import Bench
+open Damp
+
+/-! A contract for the witness barrier (`ctxWitness`, Damp/Optimize/LedgerFrame.lean): the runtime's
+`createZswapOutput` inserts the coin's commitment into the call context (`insertCommitment`), and
+`writeCoin` reads it back from there. A ledger statement reading the context must not move above it. -/
+namespace LoBarrier
+abbrev SR := Either ZswapCoinPublicKey ContractAddress
+
+ledger
+  count : Cell Field
+  held : Cell QualifiedShieldedCoinInfo
+
+/-- The contract's address, a guarded write (so that the next request does not bind it), a read,
+    the coin output, the coin-storing write, a write and a read. Without the barrier the
+    coin-storing write is merged into the read's request, above the output. -/
+circuit store (coin : ShieldedCoinInfo) (b : Boolean) : Field := do
+  const me ← Kernel.self
+  if% disclose b then count.write 1
+  const n ← count.read
+  createZswapOutput (disclose coin) (right me : SR)
+  held.writeCoin (disclose coin) (right me : SR)
+  count.write (n + 1)
+  return (← count.read)
+
+/-- The same through `receiveShielded` (the output and the claim of its commitment). -/
+circuit receive (coin : ShieldedCoinInfo) : Field := do
+  const n ← count.read
+  receiveShielded (disclose coin)
+  held.writeCoin (disclose coin) (right (← Kernel.self) : SR)
+  count.write (n + 1)
+  return (← count.read)
+
+/-- The stored coin's index. -/
+circuit peek : Uint64 := do
+  return (← held.read).mt_index
+
+contract lo_barrier
+end LoBarrier
+
+/-- `IR.ledgerPasses` minus `ledgerHoist` and `ledgerMerge`, as in NoMerge.lean. -/
+def noMerge (c : Contract) : Contract :=
+  let f : IR.Pass := fun circ => IR.runPasses (IR.ledgerPasses.take 3) circ.optimizeFull
+  { c with circuits := c.circuits.map f, «constructor» := c.«constructor».map f }
+
+def main (args : List String) : IO UInt32 := do
+  let out := System.FilePath.mk (args.headD "build")
+  let c := LoBarrier.contract
+  for (dir, m) in [("o2", c.optimize .full false), ("nm", noMerge c), ("lo", c.optimize .full true)] do
+    for circ in m.circuits ++ m.«constructor».toList do
+      if let .error e := circ.checkLedger then throw (IO.userError s!"{c.name}: {e}")
+    let srcs ← IO.ofExcept m.emitAll
+    m.writeFiles (out / dir / c.name) srcs
+  return 0
+LEAN
+lake env lean --run "$out/Barrier.lean" "$out" >/dev/null
 mkdir -p "$out/compact"
 compactc.bin --skip-zk bench/compact/zerocash_core.compact "$out/compact/zerocash_core" >/dev/null
 
@@ -90,13 +153,14 @@ python3 -I - "$out/classes.json" <<'PY'
 import json, sys
 tot = json.load(open(sys.argv[1]))['total']
 left = {k: v for k, v in tot.items() if (k.startswith('R:') and 'BIG' not in k and 'MULTILIMB' not in k)
-        or (k.startswith('D:') and 'across-root-writes' not in k and 'guard' not in k)}
+        or (k.startswith('D:') and 'across-root' not in k and 'guard' not in k)}
 print('left by the passes:', {k: v for k, v in tot.items() if k.startswith(('R:', 'D:'))})
 if left:
     print('FAIL: rewrites the passes should have made:', left); sys.exit(1)
 PY
 
-# `ledgerMerge` only regroups ledger statements: the same rows, fewer ledger programs.
+# `ledgerHoist` and `ledgerMerge` only reorder and regroup ledger statements: the same rows and
+# instruction count, fewer ledger programs.
 python3 -I - "$out/nm" "$out/lo" <<'PY'
 import glob, json, os, re, subprocess, sys, tempfile, shutil
 a, b = sys.argv[1], sys.argv[2]

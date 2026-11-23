@@ -18,6 +18,10 @@ private def one : Expr := .const 1
 /-- `Cell.read` of field `i` (alignment `field`) into `v`, under `g`. -/
 private def rd (g : Expr) (i v : Nat) : Stmt :=
   .ledger g [v] [.dup 0, .idx false false [key i], .popeq false [.field] [.var v]]
+/-- A lookup of the commitment `x0` in the context's `com_indices` (slot 1). -/
+private def ctxIdx (v : Nat) : Stmt :=
+  .ledger one [v] [.dup 2, .idx true false [key 1, ⟨[.bytes 32], [.const 0, .var 0]⟩],
+    .popeq true [.bytes 8] [.var v]]
 /-- A cached read of the call context's slot 0 (32 bytes, two limbs) into `v`, `v+1`. -/
 private def ctx (v : Nat) : Stmt :=
   .ledger one [v, v + 1] [.dup 2, .idx true false [key 0], .popeq true [.bytes 32] [.var v, .var (v + 1)]]
@@ -49,6 +53,15 @@ private def after (c : Circuit) : String := shape c.ledgerReuse
 #guard after (mk 1 [rd one 1 10, wr one 1 (.add (.var 10) (.var 0)), rd one 1 11] [.var 11]) == "LLB"
 -- A read of the call context survives writes of the contract state.
 #guard after (mk 1 [ctx 10, wr one 1 (.var 0), ctx 12] [.var 12]) == "LLBB"
+-- a lookup in the context's slot 1 (`com_indices`) is not kept across `createZswapOutput` or a contract
+-- call: the runtime's `createZswapOutput` adds to it (`keepsAcrossWitness`); slot 0 (the address) is
+#guard after (mk 1 [ctxIdx 10, .witness one "createZswapOutput" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) ==
+  "LWL"
+#guard after (mk 1 [ctxIdx 10, .witness one "call:I.c" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) == "LWL"
+#guard after (mk 1 [ctxIdx 10, .witness one "w" [.var 0] [] (.tuple []), ctxIdx 12] [.var 12]) == "LWB"
+#guard after (mk 1 [ctx 10, .witness one "createZswapOutput" [.var 0] [] (.tuple []), ctx 12] [.var 12]) == "LWBB"
+-- a fact about the contract state survives them (`CallIsolated`; the built-ins do not touch it)
+#guard after (mk 0 [rd one 1 10, .witness one "createZswapOutput" [] [] (.tuple []), rd one 1 11] [.var 11]) == "LWB"
 -- Reads of other fields in between do not stop it.
 #guard after (mk 0 [rd one 1 10, rd one 2 11, rd one 1 12] [.var 12]) == "LLB"
 -- The same guard (a variable) on both reads.

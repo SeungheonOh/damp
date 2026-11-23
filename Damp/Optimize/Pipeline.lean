@@ -55,6 +55,7 @@ import Damp.Optimize.ShareHashes
 import Damp.Optimize.LedgerReuse
 import Damp.Optimize.LedgerDeadStore
 import Damp.Optimize.LedgerMerge
+import Damp.Optimize.LedgerHoist
 import Damp.Crypto.Prims
 
 namespace Damp.IR
@@ -102,9 +103,11 @@ def Circuit.optimizeMax (c : Circuit) : Circuit := runPasses maxPasses c
     forwards are constants or earlier values, which those passes fold and
     share), then `ledgerDeadStore` (drop a write that a later write to the same
     cell overwrites; it needs the written values folded to constants or
-    expressions that cannot fail), then `ledgerMerge` (run consecutive ledger
-    statements with the same guard as one request when the VM cannot tell the
-    difference; every request pays for writing the state back).
+    expressions that cannot fail), then `ledgerHoist` (move a read of the call
+    context up to an earlier ledger statement it can be merged with), then
+    `ledgerMerge` (run consecutive ledger statements with the same guard as one
+    request when the VM cannot tell the difference; every request pays for
+    writing the state back).
     Not `Pass.Sound` as a whole: the circuit sends the ledger different Impact
     programs, so its public transcript and verifier key differ. Proved
     `Pass.SoundLedger` (`Damp/Proofs/Optimize/LedgerSound.lean`): against the
@@ -112,6 +115,6 @@ def Circuit.optimizeMax (c : Circuit) : Circuit := runPasses maxPasses c
     private transcript, private state and final ledger state are those of the
     original. -/
 def ledgerPasses : List Pass :=
-  [Circuit.ledgerReuse, Circuit.optimizeFull, Circuit.ledgerDeadStore, Circuit.ledgerMerge]
+  [Circuit.ledgerReuse, Circuit.optimizeFull, Circuit.ledgerDeadStore, Circuit.ledgerHoist, Circuit.ledgerMerge]
 
 end Damp.IR
